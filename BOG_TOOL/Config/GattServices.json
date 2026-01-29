@@ -1,0 +1,86 @@
+{
+  "deviceNamePrefix": "ESP32",
+  "services": [
+    {
+      "uuid": "00001800-0000-1000-8000-00805F9B34FB",
+      "name": "Generic Access",
+      "characteristics": [
+        { "uuid": "00002A00-0000-1000-8000-00805F9B34FB", "description": "Device Name", "properties": "Rd" },
+        { "uuid": "00002A01-0000-1000-8000-00805F9B34FB", "description": "Appearance", "properties": "Rd" }
+      ]
+    },
+    {
+      "uuid": "00001801-0000-1000-8000-00805F9B34FB",
+      "name": "Generic Attribute",
+      "characteristics": [
+        { "uuid": "00002A05-0000-1000-8000-00805F9B34FB", "description": "Service Changed", "properties": "Nfy" },
+        { "uuid": "00002902-0000-1000-8000-00805F9B34FB", "description": "Client Characteristic Configuration", "properties": null },
+        { "uuid": "00002B3A-0000-1000-8000-00805F9B34FB", "description": "Server Supported Features", "properties": "Rd" },
+        { "uuid": "00002B29-0000-1000-8000-00805F9B34FB", "description": "Client Supported Features", "properties": "Rd, Wr" }
+      ]
+    },
+    {
+      "uuid": "0000180A-0000-1000-8000-00805F9B34FB",
+      "name": "Device Information",
+      "characteristics": [
+        { "uuid": "00002A29-0000-1000-8000-00805F9B34FB", "description": "Manufacturer Name String", "properties": "Rd" },
+        { "uuid": "00002A24-0000-1000-8000-00805F9B34FB", "description": "Model Number String", "properties": "Rd" },
+        { "uuid": "00002A25-0000-1000-8000-00805F9B34FB", "description": "Serial Number String", "properties": "Rd" },
+        { "uuid": "00002A26-0000-1000-8000-00805F9B34FB", "description": "Firmware Revision String", "properties": "Rd" },
+        { "uuid": "00002A27-0000-1000-8000-00805F9B34FB", "description": "Hardware Revision String", "properties": "Rd" }
+      ]
+    },
+    {
+      "uuid": "00000000-6037-C6A0-264E-309A67CEB3D1",
+      "name": "Schedule",
+      "characteristics": [
+        { "uuid": "00000001-6037-C6A0-264E-309A67CEB3D1", "description": "Schedule Read And Write", "properties": "Rd Enc, Wr Enc" },
+        { "uuid": "00000002-6037-C6A0-264E-309A67CEB3D1", "description": "Time Write", "properties": "Wr Enc" }
+      ]
+    },
+    {
+      "uuid": "00000000-B018-FCAD-2244-C82E6B682734",
+      "name": "Valve",
+      "characteristics": [
+        { "uuid": "00000001-B018-FCAD-2244-C82E6B682734", "description": "Valve State Read", "valueDescription": "Read:\n0: undefined\n1: open\n2: closed", "properties": "Rd Enc" },
+        { "uuid": "00000002-B018-FCAD-2244-C82E6B682734", "description": "Valve Mode Read And Write", "valueDescription": "Read:\n0: auto\n1: open\n2: closed\n\nWrite:\n0: auto\n1: open\n2: closed", "properties": "Rd Enc, Wr Enc" },
+        { "uuid": "00000003-B018-FCAD-2244-C82E6B682734", "description": "Valve Interval Read And Write", "valueDescription": "Read:\n0: Valve Period (ms)\n1: Off Interval (ms)\n\nWrite:\n0: Valve Period (ms)\n1: Off Interval (ms)", "properties": "Rd Enc, Wr Enc" }
+      ]
+    },
+    {
+      "uuid": "00000000-AEF1-CA85-FB4D-3AAFEB7A605A",
+      "name": "Gas System",
+      "characteristics": [
+        { "uuid": "00000001-AEF1-CA85-FB4D-3AAFEB7A605A", "description": "Gas system status", "valueDescription": "Read:\n0: initially closed\n1: ok\n2: leak\n3-7: reserved\n8: low gas low output (ok)\n9: low gas low output leak check", "properties": "Rd Enc" },
+        { "uuid": "00000002-AEF1-CA85-FB4D-3AAFEB7A605A", "description": "CO2 Pressure when valve is closed", "valueDescription": "Read:\n0: value in mbar", "properties": "Rd Enc" },
+        { "uuid": "00000003-AEF1-CA85-FB4D-3AAFEB7A605A", "description": "CO2 Pressure when valve is open", "valueDescription": "Read:\n0: value in mbar", "properties": "Rd Enc" },
+        { "uuid": "00000004-AEF1-CA85-FB4D-3AAFEB7A605A", "description": "CO2 Pressure Limits", "valueDescription": "Read:\n0: gas_empty_low_limit (mbar)\n1: gas_empty_high_limit (mbar)\n2: leak_limit (mbar)\n3: press_change_limit (mbar)\n4: press_rise_limit (mbar)\n5: lglo_leak_limit (mbar)\n\nWrite:\n0: gas_empty_low_limit (mbar)\n1: gas_empty_high_limit (mbar)\n2: leak_limit (mbar)\n3: press_change_limit (mbar)\n4: press_rise_limit (mbar)\n5: lglo_leak_limit (mbar)", "properties": "Rd Enc, Wr Enc" },
+        { "uuid": "00000005-AEF1-CA85-FB4D-3AAFEB7A605A", "description": "CO2 Bottle", "valueDescription": "Read:\n0: released_gas_cumulated (g)\n1: bottle size (g)\n2: number of traps\n\nWrite:\n0: bottle size (0xFFFF=no change)\n1: number of traps", "properties": "Rd Enc, Wr Enc" }
+      ]
+    },
+    {
+      "uuid": "00000000-D1D0-4B64-AFCD-2F977AB4A11D",
+      "name": "OTA",
+      "characteristics": [
+        { "uuid": "00000001-D1D0-4B64-AFCD-2F977AB4A11D", "description": "OTA Status", "valueDescription": "Read:\n0: OTA not started\n1: waiting for data\n2: working (can't receive data)\n3: image valid\n4: image fail\n\nWrite:\n0: abort OTA\n1: start OTA\n2: finished writing\n3: reboot", "properties": "Rd Enc, Wr Enc" },
+        { "uuid": "00000002-D1D0-4B64-AFCD-2F977AB4A11D", "description": "OTA Data", "valueDescription": "Write:\n0: Firmware chunk by chunk", "properties": "Wr Enc" },
+        { "uuid": "00000003-D1D0-4B64-AFCD-2F977AB4A11D", "description": "Testing", "valueDescription": "Write:\n0: Magic Code 0x16E975D0 or 0xD075E916 to unlock\n\nRead:\n0: RTC time (7 bytes), toggles valve twice", "properties": "Rd, Wr" }
+      ]
+    }
+  ],
+  "appServiceUuids": [
+    "00000000-B018-FCAD-2244-C82E6B682734",
+    "00000000-AEF1-CA85-FB4D-3AAFEB7A605A",
+    "00000000-D1D0-4B64-AFCD-2F977AB4A11D"
+  ],
+  "appCharacteristicKeys": {
+    "mainService": "00000000-AEF1-CA85-FB4D-3AAFEB7A605A",
+    "valveControl": "00000002-B018-FCAD-2244-C82E6B682734",
+    "pressureRead": "00000002-AEF1-CA85-FB4D-3AAFEB7A605A",
+    "gasSystemStatus": "00000001-AEF1-CA85-FB4D-3AAFEB7A605A",
+    "rtc": "00000002-6037-C6A0-264E-309A67CEB3D1",
+    "otaStatus": "00000001-D1D0-4B64-AFCD-2F977AB4A11D",
+    "otaData": "00000002-D1D0-4B64-AFCD-2F977AB4A11D",
+    "testing": "00000003-D1D0-4B64-AFCD-2F977AB4A11D"
+  }
+}

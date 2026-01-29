@@ -1,0 +1,84 @@
+/* Language switch button */
+"language.switch_to_zh" = "中文";
+"language.switch_to_en" = "English";
+
+/* Mode */
+"mode.picker_label" = "Mode";
+"mode.production_test" = "Production Test";
+"mode.debug" = "Debug";
+
+/* Log */
+"log.title" = "Log";
+"log.pin_top" = "Pin";
+"log.clear" = "Clear";
+
+/* Device list */
+"device_list.title" = "BLE Devices";
+"device_list.connected" = "Connected";
+"device_list.disconnect" = "Disconnect";
+"device_list.filter_rules" = "Filter Rules";
+"device_list.stop_scan" = "Stop Scan";
+"device_list.scan" = "Scan";
+"device_list.connect" = "Connect";
+"device_list.name_column" = "Name";
+"device_list.rssi_column" = "RSSI";
+"device_list.id_column" = "ID";
+"device_list.gatt_protocol" = "GATT Protocol";
+
+/* GATT protocol page */
+"gatt.title" = "BLE GATT Protocol";
+"gatt.not_loaded" = "GATT config not loaded";
+"gatt.data_source" = "Source: GattServices.json";
+"gatt.app_uses" = "Used by App";
+"gatt.app_badge" = "App";
+
+/* Filter rules */
+"filter.title" = "Filter Rules";
+"filter.rssi" = "RSSI";
+"filter.min_dbm" = "Min dBm";
+"filter.signal_hint" = "When enabled, only show devices with signal ≥ this value (e.g. -80)";
+"filter.name" = "Name";
+"filter.name_placeholder" = "BOG,CO2 (comma-separated, match any)";
+"filter.name_hint" = "When enabled, only show devices whose name contains any of these keywords";
+"filter.exclude_unnamed" = "Exclude unnamed devices";
+"filter.empty_hint" = "When checked, hide devices with empty or \"Unknown\" name";
+
+/* Debug mode */
+"debug.title" = "Debug";
+"debug.current_pressure" = "Current pressure:";
+"debug.device_rtc" = "Device RTC (continuous read)";
+"debug.connect_first" = "Please connect a device first";
+"debug.rtc" = "RTC";
+"debug.system_time" = "System time";
+"debug.write_rtc" = "Write RTC";
+"debug.device_time" = "Device time";
+"debug.time_diff" = "Time diff from system:";
+"debug.valve" = "Valve";
+"debug.valve_state" = "Valve state";
+"debug.valve_close" = "Close";
+"debug.valve_open" = "Open";
+"debug.pressure" = "Pressure";
+"debug.open_pressure" = "Open pressure";
+"debug.close_pressure" = "Close pressure";
+"debug.read" = "Read";
+
+/* Production test */
+"production_test.title" = "Production Test";
+"production_test.log_title" = "Test log";
+"production_test.connect_first" = "Please connect a device first";
+"production_test.start" = "Start test";
+"production_test.running" = "Testing...";
+
+/* OTA */
+"ota.title" = "OTA";
+"ota.firmware_version" = "Current firmware version";
+"ota.unknown" = "Unknown";
+"ota.browse" = "Browse firmware";
+"ota.not_selected" = "Not selected";
+"ota.start" = "Start OTA";
+"ota.progress" = "Progress";
+"ota.ready" = "Ready";
+"ota.completed" = "Completed";
+
+/* Menu */
+"menu.floating" = "Floating";
