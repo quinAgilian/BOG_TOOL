@@ -8,7 +8,7 @@ struct DeviceListView: View {
     @State private var showGattProtocol = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(appLanguage.string("device_list.title"))
                     .font(.headline)
@@ -48,8 +48,8 @@ struct DeviceListView: View {
                 DeviceTableSection(ble: ble)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .sheet(isPresented: $showGattProtocol) {
             GattProtocolView()
         }
@@ -68,7 +68,7 @@ struct DeviceTableSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             Table(sortedDevices, selection: $selectedId, sortOrder: $sortOrder) {
                 TableColumn(appLanguage.string("device_list.name_column"), value: \.name)
                 TableColumn(appLanguage.string("device_list.rssi_column"), value: \.sortKeyForRssi) { (device: BLEDevice) in
@@ -76,7 +76,7 @@ struct DeviceTableSection: View {
                 }
                 TableColumn(appLanguage.string("device_list.id_column"), value: \.shortId)
             }
-            .frame(height: 160)
+            .frame(height: 140)
             HStack {
                 if let id = selectedId.first, let device = ble.discoveredDevices.first(where: { $0.id == id }) {
                     Button(appLanguage.string("device_list.connect")) {

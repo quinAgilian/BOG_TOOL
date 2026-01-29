@@ -20,14 +20,14 @@ struct OTASectionView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(appLanguage.string("ota.title"))
                 .font(.subheadline)
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
             
             // 当前固件版本
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: 6) {
                 Text(appLanguage.string("ota.firmware_version"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -37,7 +37,7 @@ struct OTASectionView: View {
             }
             
             // 固件选择
-            HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
                 Text(appLanguage.string("ota.browse"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -45,54 +45,47 @@ struct OTASectionView: View {
                     .font(.system(.caption, design: .monospaced))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.secondary.opacity(0.12))
-                    .cornerRadius(8)
-                Button(appLanguage.string("ota.browse")) {
+                    .cornerRadius(6)
+                Spacer(minLength: 8)
+                Button {
                     ble.browseAndSaveFirmware()
+                } label: {
+                    Text(appLanguage.string("ota.browse"))
+                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
             }
             
-            // 启动 OTA + 进度
-            HStack(alignment: .center, spacing: 12) {
-                Button(appLanguage.string("ota.start")) {
+            // 进度条（靠左）+ Start OTA 按键（靠右）同一行
+            HStack(alignment: .center, spacing: 8) {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color.secondary.opacity(0.2))
+                            .frame(height: 6)
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color.accentColor)
+                            .frame(width: max(0, geo.size.width * ble.otaProgress), height: 6)
+                    }
+                }
+                .frame(height: 6)
+                Spacer(minLength: 8)
+                Button {
                     ble.startOTA()
+                } label: {
+                    Text(appLanguage.string("ota.start"))
+                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!ble.isConnected || ble.selectedFirmwareURL == nil || ble.isOTAInProgress || !ble.isOtaAvailable)
-                
-                if ble.isOTAInProgress {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                }
-                
-                Spacer(minLength: 8)
-                
-                Text(statusText)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(ble.isOTAInProgress ? Color.accentColor : .secondary)
-            }
-            
-            // 进度条
-            VStack(alignment: .leading, spacing: 4) {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color.secondary.opacity(0.2))
-                            .frame(height: 8)
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color.accentColor)
-                            .frame(width: max(0, geo.size.width * ble.otaProgress), height: 8)
-                    }
-                }
-                .frame(height: 8)
             }
         }
-        .padding(8)
+        .padding(6)
         .background(Color.primary.opacity(0.04))
-        .cornerRadius(10)
+        .cornerRadius(8)
     }
 }

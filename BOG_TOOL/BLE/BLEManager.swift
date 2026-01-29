@@ -198,15 +198,43 @@ final class BLEManager: NSObject, ObservableObject {
         otaStatusCharacteristic != nil && otaDataCharacteristic != nil
     }
     
-    /// 选择固件文件并保存路径（产测与 Debug 共用，仅此一处调用）
+    /// 选择固件文件并保存路径（产测与 Debug 共用，仅此一处调用）；下次打开程序会自动恢复上次选择的固件
     func browseAndSaveFirmware() {
+        NSApp.activate(ignoringOtherApps: true)
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else {
+            // 无窗口时用 runModal，确保至少能弹出
+            runFirmwareOpenPanel(panel: makeFirmwareOpenPanel())
+            return
+        }
+
+        let panel = makeFirmwareOpenPanel()
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self = self, response == .OK, let url = panel.url else { return }
+            let path = url.path
+            UserDefaults.standard.set(path, forKey: Self.otaFirmwarePathKey)
+            self.selectedFirmwareURL = url
+            self.appendLog("[OTA] 已选择固件: \(url.lastPathComponent)")
+        }
+    }
+
+    private func makeFirmwareOpenPanel() -> NSOpenPanel {
         let panel = NSOpenPanel()
         panel.title = "选择固件"
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.data]
-        panel.allowedContentTypes.append(UTType(filenameExtension: "bin") ?? .data)
+        // 按尾缀筛选，默认只显示 .bin 固件
+        panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
+        if let last = selectedFirmwareURL, last.isFileURL {
+            panel.directoryURL = last.deletingLastPathComponent()
+        } else if let path = UserDefaults.standard.string(forKey: Self.otaFirmwarePathKey), !path.isEmpty {
+            let dir = (path as NSString).deletingLastPathComponent
+            if !dir.isEmpty { panel.directoryURL = URL(fileURLWithPath: dir) }
+        }
+        return panel
+    }
+
+    private func runFirmwareOpenPanel(panel: NSOpenPanel) {
         if panel.runModal() == .OK, let url = panel.url {
             let path = url.path
             UserDefaults.standard.set(path, forKey: Self.otaFirmwarePathKey)

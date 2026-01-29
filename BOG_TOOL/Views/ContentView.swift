@@ -53,8 +53,8 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
 
                 ScrollView {
                     Group {
@@ -65,7 +65,7 @@ struct ContentView: View {
                             DebugModeView(ble: ble)
                         }
                     }
-                    .padding(8)
+                    .padding(6)
                 }
                 .frame(minWidth: 320)
             }
@@ -90,8 +90,8 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
                 .background(Color(nsColor: .windowBackgroundColor))
                 
                 ScrollViewReader { proxy in
@@ -105,7 +105,7 @@ struct ContentView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(6)
+                        .padding(5)
                     }
                     .onChange(of: ble.logMessages.count, perform: { _ in
                         if let last = ble.logMessages.indices.last {

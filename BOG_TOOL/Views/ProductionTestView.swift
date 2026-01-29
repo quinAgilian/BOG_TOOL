@@ -9,29 +9,32 @@ struct ProductionTestView: View {
     @State private var stepIndex = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(appLanguage.string("production_test.title"))
                 .font(.headline)
 
             if ble.isConnected {
-                Button(action: runProductionTest) {
-                    HStack {
-                        if isRunning {
-                            ProgressView()
-                                .scaleEffect(0.8)
+                HStack(alignment: .center, spacing: 8) {
+                    Spacer(minLength: 8)
+                    Button(action: runProductionTest) {
+                        HStack(spacing: 6) {
+                            if isRunning {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            }
+                            Text(isRunning ? appLanguage.string("production_test.running") : appLanguage.string("production_test.start"))
                         }
-                        Text(isRunning ? appLanguage.string("production_test.running") : appLanguage.string("production_test.start"))
+                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                        .padding(.vertical, 5)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isRunning)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(isRunning)
 
                 if !testLog.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(appLanguage.string("production_test.log_title"))
-                            .font(.subheadline)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                         ScrollViewReader { proxy in
                             ScrollView {
@@ -43,7 +46,7 @@ struct ProductionTestView: View {
                                     }
                                 }
                             }
-                            .frame(height: 120)
+                            .frame(height: 88)
                             .onChange(of: testLog.count) { _ in
                                 if let last = testLog.indices.last {
                                     proxy.scrollTo(last, anchor: .bottom)
@@ -51,9 +54,9 @@ struct ProductionTestView: View {
                             }
                         }
                     }
-                    .padding(8)
+                    .padding(6)
                     .background(Color.secondary.opacity(0.1))
-                    .cornerRadius(8)
+                    .cornerRadius(6)
                 }
             } else {
                 Text(appLanguage.string("production_test.connect_first"))
@@ -62,10 +65,10 @@ struct ProductionTestView: View {
             
             OTASectionView(ble: ble)
         }
-        .padding(8)
+        .padding(6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.03))
-        .cornerRadius(10)
+        .cornerRadius(8)
     }
 
     private func runProductionTest() {
