@@ -46,6 +46,7 @@
 "device_info.model" = "Model";
 "device_info.hw" = "HW";
 "device_info.loading" = "Loading…";
+"device_info.not_available" = "Device info not available";
 
 /* GATT protocol page */
 "gatt.title" = "BLE GATT Protocol";
@@ -119,6 +120,8 @@
 "ota.not_selected" = "Not selected";
 "ota.start" = "Start OTA";
 "ota.cancel" = "Cancel OTA";
+"ota.reboot" = "Reboot";
+"ota.auto_reboot_after_ota" = "Auto send reboot after OTA completes";
 "ota.progress" = "Progress";
 "ota.ready" = "Ready";
 "ota.completed" = "Completed";

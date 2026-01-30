@@ -133,6 +133,30 @@ struct OTASectionView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!ble.isConnected || (!ble.isOTAInProgress && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
             }
+            
+            // OTA 完成后是否自动发送 reboot
+            Toggle(isOn: Binding(
+                get: { ble.autoSendRebootAfterOTA },
+                set: { ble.autoSendRebootAfterOTA = $0 }
+            )) {
+                Text(appLanguage.string("ota.auto_reboot_after_ota"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.checkbox)
+            
+            // Reboot 单独一行，右对齐，宽度与其它操作按钮一致
+            HStack(alignment: .center, spacing: 0) {
+                Spacer(minLength: 0)
+                Button {
+                    ble.sendReboot()
+                } label: {
+                    Text(appLanguage.string("ota.reboot"))
+                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!ble.isConnected || !ble.isOtaAvailable || ble.isOTAInProgress)
+            }
         }
         .padding(6)
         .background(otaSectionBackground)

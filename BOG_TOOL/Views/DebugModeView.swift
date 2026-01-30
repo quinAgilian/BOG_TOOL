@@ -15,10 +15,6 @@ struct DebugModeView: View {
     @ObservedObject var ble: BLEManager
     /// 阀门控制：Auto 不显示开/关键，Manual 显示
     @State private var valveControlMode: ValveControlMode = .manual
-    /// Debug 下阀门状态轮询间隔（纳秒）
-    private let valvePollInterval: UInt64 = 2_000_000_000  // 2 秒
-    /// Debug 下压力轮询间隔（纳秒），用于实时显示压力
-    private let pressurePollInterval: UInt64 = 1_500_000_000  // 1.5 秒
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -42,18 +38,6 @@ struct DebugModeView: View {
                         .padding(.vertical, 3)
                         .background(Color.secondary.opacity(0.2))
                         .cornerRadius(5)
-                }
-                .task(id: ble.isConnected) {
-                    guard ble.isConnected else { return }
-                    while !Task.isCancelled && ble.isConnected && !ble.areCharacteristicsReady {
-                        try? await Task.sleep(nanoseconds: 200_000_000)
-                    }
-                    guard ble.isConnected else { return }
-                    while !Task.isCancelled && ble.isConnected {
-                        ble.readPressure(silent: true)
-                        ble.readPressureOpen(silent: true)
-                        try? await Task.sleep(nanoseconds: pressurePollInterval)
-                    }
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -225,6 +209,15 @@ struct DebugModeView: View {
                     .cornerRadius(6)
                 }
                 Spacer(minLength: 8)
+                Button {
+                    ble.readValveMode()
+                    ble.readValveState()
+                } label: {
+                    Text(appLanguage.string("debug.read"))
+                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady)
                 Picker("", selection: valveControlModeBinding) {
                     Text(appLanguage.string("debug.valve_control_auto")).tag(ValveControlMode.auto)
                     Text(appLanguage.string("debug.valve_control_manual")).tag(ValveControlMode.manual)
@@ -258,17 +251,6 @@ struct DebugModeView: View {
         .onReceive(ble.$lastValveModeValue) { newValue in
             if newValue == "auto" { valveControlMode = .auto }
             else if newValue == "open" || newValue == "closed" { valveControlMode = .manual }
-        }
-        .task(id: ble.isConnected) {
-            guard ble.isConnected else { return }
-            while !Task.isCancelled && ble.isConnected && !ble.areCharacteristicsReady {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-            }
-            guard ble.isConnected else { return }
-            while !Task.isCancelled && ble.isConnected {
-                ble.readValveState()
-                try? await Task.sleep(nanoseconds: valvePollInterval)
-            }
         }
     }
     

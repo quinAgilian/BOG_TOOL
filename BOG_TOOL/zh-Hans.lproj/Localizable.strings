@@ -46,6 +46,7 @@
 "device_info.model" = "型号";
 "device_info.hw" = "硬件版本";
 "device_info.loading" = "读取中…";
+"device_info.not_available" = "设备未提供基础信息";
 
 /* GATT 协议页 */
 "gatt.title" = "BLE GATT 协议";
@@ -119,6 +120,8 @@
 "ota.not_selected" = "未选择";
 "ota.start" = "启动 OTA";
 "ota.cancel" = "取消 OTA";
+"ota.reboot" = "重启";
+"ota.auto_reboot_after_ota" = "OTA 完成后自动发送重启";
 "ota.progress" = "进度";
 "ota.ready" = "就绪";
 "ota.completed" = "完成";

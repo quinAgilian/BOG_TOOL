@@ -191,6 +191,10 @@ private struct DeviceInfoStrip: View {
                     }
                 }
                 .font(.system(.caption, design: .monospaced))
+            } else if ble.isConnected && ble.areCharacteristicsReady {
+                Text(appLanguage.string("device_info.not_available"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
                 Text(appLanguage.string("device_info.loading"))
                     .font(.caption)

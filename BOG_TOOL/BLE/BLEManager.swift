@@ -4,6 +4,14 @@ import Combine
 import AppKit
 import UniformTypeIdentifiers
 
+/// 无 actor 隔离的常量，供 CBCentralManager/CBPeripheral 回调（nonisolated）使用
+private enum BLEManagerConstants {
+    static let deviceInfoServiceUUIDString = "0000180a-0000-1000-8000-00805f9b34fb"
+    static var mainAppServiceCBUUIDs: [CBUUID] {
+        GattMapping.appServiceCBUUIDs.filter { $0.uuidString.lowercased() != deviceInfoServiceUUIDString }
+    }
+}
+
 /// BLE 连接管理，用于与 ESP32-C2 通信
 @MainActor
 final class BLEManager: NSObject, ObservableObject {
@@ -144,9 +152,14 @@ final class BLEManager: NSObject, ObservableObject {
     private var valveStateAuthErrorLogged = false
     /// 先读再设：读完后若已是目标状态则仅警告，否则写入。nil = 无待处理
     private var pendingValveSetOpen: Bool?
+    /// OTA 数据包确认（读到 image valid）后是否自动发送 reboot 命令；由 UI 复选框控制
+    @Published var autoSendRebootAfterOTA: Bool = true
     
-    /// Device Information 服务与特征 UUID（标准 GATT）
+    /// Device Information 服务与特征 UUID（标准 GATT）；连接且主 GATT 就绪后再单独发现并读取
     private static let deviceInfoServiceUUID = CBUUID(string: "180A")
+    private static var deviceInfoServiceUUIDString: String { BLEManagerConstants.deviceInfoServiceUUIDString }
+    /// 主业务服务（不含 180A），连接后先发现这些；Device Info 在主特征就绪后再发现
+    private static var mainAppServiceCBUUIDs: [CBUUID] { BLEManagerConstants.mainAppServiceCBUUIDs }
     private static let charManufacturerUUID = CBUUID(string: "2A29")
     private static let charModelUUID = CBUUID(string: "2A24")
     private static let charSerialUUID = CBUUID(string: "2A25")
@@ -353,6 +366,11 @@ final class BLEManager: NSObject, ObservableObject {
         } else if value == 3 {
             appendLog("[OTA] 已写 Status=3 (reboot)")
         }
+    }
+    
+    /// 发送 reboot 指令（写 OTA Status=3）；单独点击「重启」时直接写入，不查询状态
+    func sendReboot() {
+        writeOtaStatus(3)
     }
     
     /// 写一包 OTA 数据（每包 ≤ 200 字节）
@@ -576,15 +594,19 @@ final class BLEManager: NSObject, ObservableObject {
         case .sentFinishedPolling:
             switch value {
             case 3:
-                appendLog("[OTA] 设备校验通过 (image valid)，写 Status=3 (reboot)")
+                appendLog("[OTA] 设备校验通过 (image valid)")
                 otaFlowState = .done
                 if let start = otaStartTime {
                     otaCompletedDuration = Date().timeIntervalSince(start)
                 }
                 isOTAInProgress = false
                 otaStartTime = nil
-                writeOtaStatus(3)
-                appendLog("[OTA] 已发 reboot，设备将重启并断开连接")
+                if autoSendRebootAfterOTA {
+                    writeOtaStatus(3)
+                    appendLog("[OTA] 已自动发送 reboot，设备将重启并断开连接")
+                } else {
+                    appendLog("[OTA] 未自动发送 reboot（可手动点「重启」）")
+                }
             case 4:
                 appendLog("[OTA] 设备校验失败 (image fail)", level: .error)
                 otaFlowState = .failed("image fail")
@@ -667,7 +689,8 @@ final class BLEManager: NSObject, ObservableObject {
     
     private func discoverServicesAndCharacteristics(for peripheral: CBPeripheral) {
         peripheral.delegate = self
-        peripheral.discoverServices(GattMapping.appServiceCBUUIDs)
+        // 连接后先只发现主业务服务；Device Information (180A) 在主特征就绪后再发现并读取
+        peripheral.discoverServices(Self.mainAppServiceCBUUIDs)
     }
     
     private func updateCharacteristics(from service: CBService) {
@@ -695,6 +718,8 @@ final class BLEManager: NSObject, ObservableObject {
             readValveState()
             readPressure(silent: true)
             readPressureOpen(silent: true)
+            // 连接且主 GATT 就绪后，再发现并读取 Device Information (SN/FW 等)
+            connectedPeripheral?.discoverServices([Self.deviceInfoServiceUUID])
         }
     }
 }
@@ -820,9 +845,12 @@ extension BLEManager: CBPeripheralDelegate {
             Task { @MainActor in appendLog("发现服务失败: \(error!.localizedDescription)", level: .error) }
             return
         }
-        let appServiceSet = Set(GattMapping.appServiceCBUUIDs.map { $0.uuidString })
+        let mainServiceSet = Set(BLEManagerConstants.mainAppServiceCBUUIDs.map { $0.uuidString.lowercased() })
         for service in peripheral.services ?? [] {
-            if appServiceSet.contains(service.uuid.uuidString) {
+            let uuidLower = service.uuid.uuidString.lowercased()
+            let isMain = mainServiceSet.contains(uuidLower)
+            let isDeviceInfo = (uuidLower == BLEManagerConstants.deviceInfoServiceUUIDString)
+            if isMain || isDeviceInfo {
                 peripheral.discoverCharacteristics(nil, for: service)
             }
         }
@@ -836,7 +864,8 @@ extension BLEManager: CBPeripheralDelegate {
         Task { @MainActor in
             updateCharacteristics(from: service)
             // Device Information 服务：连接成功后自动读 SN、固件版本等
-            if service.uuid.uuidString.lowercased() == "0000180a-0000-1000-8000-00805f9b34fb" {
+            if service.uuid.uuidString.lowercased() == BLEManagerConstants.deviceInfoServiceUUIDString {
+                appendLog("正在读取 Device Information (SN/FW/制造商等)...")
                 for char in service.characteristics ?? [] {
                     peripheral.readValue(for: char)
                 }
@@ -1014,7 +1043,7 @@ extension BLEManager: CBPeripheralDelegate {
             let min = Int(bytes[1])
             let hour = Int(bytes[2])
             let day = Int(bytes[3])
-            let weekday = Int(bytes[4])
+            _ = Int(bytes[4]) // weekday, 解码用
             let month = Int(bytes[5])
             let year = 2000 + Int(bytes[6])
             return String(format: "%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec)
