@@ -9,8 +9,22 @@
 
 /* Log */
 "log.title" = "Log";
+"log.level" = "Level:";
+"log.level_debug" = "Debug";
+"log.level_info" = "Info";
+"log.level_warning" = "Warning";
+"log.level_error" = "Error";
 "log.pin_top" = "Pin";
+"log.auto_scroll" = "Auto scroll";
+"log.auto_scroll_hint" = "When on, log area scrolls to bottom on new entries.";
 "log.clear" = "Clear";
+
+/* Connection / pairing error */
+"error.pairing_removed_hint" = "Device cleared pairing. Remove it in System Settings → Bluetooth, then try again.";
+"error.dismiss" = "Dismiss";
+
+"valve.warning_already_open" = "Valve is already open.";
+"valve.warning_already_closed" = "Valve is already closed.";
 
 /* Device list */
 "device_list.title" = "BLE Devices";
@@ -24,6 +38,14 @@
 "device_list.rssi_column" = "RSSI";
 "device_list.id_column" = "ID";
 "device_list.gatt_protocol" = "GATT Protocol";
+
+"device_info.title" = "Device info";
+"device_info.sn" = "SN";
+"device_info.fw" = "FW";
+"device_info.manufacturer" = "Manufacturer";
+"device_info.model" = "Model";
+"device_info.hw" = "HW";
+"device_info.loading" = "Loading…";
 
 /* GATT protocol page */
 "gatt.title" = "BLE GATT Protocol";
@@ -46,21 +68,36 @@
 /* Debug mode */
 "debug.title" = "Debug";
 "debug.current_pressure" = "Current pressure:";
-"debug.device_rtc" = "Device RTC (continuous read)";
+"debug.device_rtc" = "Device RTC";
 "debug.connect_first" = "Please connect a device first";
 "debug.rtc" = "RTC";
 "debug.system_time" = "System time";
 "debug.write_rtc" = "Write RTC";
+"debug.read_rtc" = "Read RTC";
 "debug.device_time" = "Device time";
 "debug.time_diff" = "Time diff from system:";
 "debug.valve" = "Valve";
-"debug.valve_state" = "Valve state";
+"debug.valve_control_auto" = "Auto";
+"debug.valve_control_manual" = "Manual";
+"debug.valve_mode" = "Mode";
+"debug.valve_mode_auto" = "auto";
+"debug.valve_state" = "State";
 "debug.valve_close" = "Close";
 "debug.valve_open" = "Open";
+"debug.valve_switch" = "Valve";
 "debug.pressure" = "Pressure";
 "debug.open_pressure" = "Open pressure";
 "debug.close_pressure" = "Close pressure";
 "debug.read" = "Read";
+
+/* UUID debug (read/write by characteristic) */
+"debug.uuid_title" = "UUID Read/Write";
+"debug.uuid_write" = "Write";
+"debug.uuid_read" = "Read";
+"debug.uuid_select" = "Select characteristic…";
+"debug.uuid_hex_placeholder" = "Hex (e.g. 01 02 03)";
+"debug.uuid_send" = "Send to device";
+"debug.uuid_read_btn" = "Read";
 
 /* Production test */
 "production_test.title" = "Production Test";
@@ -71,14 +108,21 @@
 
 /* OTA */
 "ota.title" = "OTA";
+"ota.title_not_started" = "OTA (not started)";
+"ota.title_completed" = "OTA (completed)";
+"ota.title_completed_with_duration" = "OTA (completed, %@)";
+"ota.title_in_progress_format" = "OTA (in progress, %.2f%%)";
+"ota.progress_elapsed_remaining" = "Progress %.2f%% | Elapsed %@ | Left ~%@";
 "ota.firmware_version" = "Current firmware version";
 "ota.unknown" = "Unknown";
 "ota.browse" = "Browse firmware";
 "ota.not_selected" = "Not selected";
 "ota.start" = "Start OTA";
+"ota.cancel" = "Cancel OTA";
 "ota.progress" = "Progress";
 "ota.ready" = "Ready";
 "ota.completed" = "Completed";
+"ota.completed_with_duration" = "Completed, %@";
 
 /* Menu */
 "menu.floating" = "Floating";

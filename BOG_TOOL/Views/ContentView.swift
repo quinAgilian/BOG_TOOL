@@ -38,6 +38,10 @@ struct ContentView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @StateObject private var ble = BLEManager()
     @State private var selectedMode: AppMode = .productionTest
+    /// 是否开启日志自动滚动到底部，默认开启
+    @State private var logAutoScrollEnabled = true
+    /// 上次执行自动滚动的时刻，用于节流（避免刷屏时无法控制）
+    @State private var lastAutoScrollDate: Date = .distantPast
 
     var body: some View {
         HSplitView {
@@ -55,6 +59,11 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
+
+                // 设备基础信息：连接后显示在模式选择下方、模式内容上方，保证可见
+                if ble.isConnected {
+                    DeviceInfoStrip(ble: ble)
+                }
 
                 ScrollView {
                     Group {
@@ -85,8 +94,14 @@ struct ContentView: View {
                     }
                     .buttonStyle(PinTopButtonStyle(isFloating: appSettings.windowFloating))
                     .keyboardShortcut(.space, modifiers: [])
+                    Toggle(isOn: $logAutoScrollEnabled) {
+                        Text(appLanguage.string("log.auto_scroll"))
+                            .font(.caption)
+                    }
+                    .toggleStyle(.checkbox)
+                    .help(appLanguage.string("log.auto_scroll_hint"))
                     Button(appLanguage.string("log.clear")) {
-                        ble.logMessages.removeAll()
+                        ble.clearLog()
                     }
                     .buttonStyle(.plain)
                 }
@@ -94,22 +109,31 @@ struct ContentView: View {
                 .padding(.vertical, 4)
                 .background(Color(nsColor: .windowBackgroundColor))
                 
+                // 日志等级过滤
+                LogLevelFilterView(ble: ble)
+                
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(ble.logMessages.enumerated()), id: \.offset) { i, msg in
-                                Text(msg)
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(ble.displayedLogEntries) { entry in
+                                Text(entry.line)
                                     .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(LogLevelColor.color(entry.level))
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
                                     .textSelection(.enabled)
-                                    .id(i)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(5)
+                        .id(0)
                     }
-                    .onChange(of: ble.logMessages.count, perform: { _ in
-                        if let last = ble.logMessages.indices.last {
-                            proxy.scrollTo(last, anchor: .bottom)
+                    .onChange(of: ble.logEntries.count, perform: { _ in
+                        guard logAutoScrollEnabled else { return }
+                        let now = Date()
+                        if now.timeIntervalSince(lastAutoScrollDate) >= 0.4 {
+                            proxy.scrollTo(0, anchor: .bottom)
+                            lastAutoScrollDate = now
                         }
                     })
                 }
@@ -129,6 +153,118 @@ struct ContentView: View {
     private func applyWindowFloating(_ floating: Bool) {
         let level: NSWindow.Level = floating ? .floating : .normal
         (NSApp.keyWindow ?? NSApp.mainWindow)?.level = level
+    }
+}
+
+/// 设备基础信息条：连接后显示在产测/Debug 模式下方（SN、FW、制造商等）
+private struct DeviceInfoStrip: View {
+    @EnvironmentObject private var appLanguage: AppLanguage
+    @ObservedObject var ble: BLEManager
+
+    private var hasAnyInfo: Bool {
+        ble.deviceSerialNumber != nil || ble.currentFirmwareVersion != nil
+            || ble.deviceManufacturer != nil || ble.deviceModelNumber != nil || ble.deviceHardwareRevision != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(appLanguage.string("device_info.title"))
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+            if hasAnyInfo {
+                HStack(alignment: .top, spacing: 12) {
+                    if let v = ble.deviceSerialNumber {
+                        item(appLanguage.string("device_info.sn"), v)
+                    }
+                    if let v = ble.currentFirmwareVersion {
+                        item(appLanguage.string("device_info.fw"), v)
+                    }
+                    if let v = ble.deviceManufacturer {
+                        item(appLanguage.string("device_info.manufacturer"), v)
+                    }
+                    if let v = ble.deviceModelNumber {
+                        item(appLanguage.string("device_info.model"), v)
+                    }
+                    if let v = ble.deviceHardwareRevision {
+                        item(appLanguage.string("device_info.hw"), v)
+                    }
+                }
+                .font(.system(.caption, design: .monospaced))
+            } else {
+                Text(appLanguage.string("device_info.loading"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04))
+        .cornerRadius(8)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+    }
+
+    private func item(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text("\(label):")
+                .foregroundStyle(.secondary)
+            Text(value)
+        }
+    }
+}
+
+/// 日志等级对应颜色（DEBUG 用 secondary 避免白字在浅色背景下不可见）
+private enum LogLevelColor {
+    static func color(_ level: BLEManager.LogLevel) -> Color {
+        switch level {
+        case .debug: return .secondary
+        case .info: return .primary
+        case .warning: return .orange
+        case .error: return .red
+        }
+    }
+}
+
+/// 日志等级过滤：Debug / Info / Warning / Error 勾选
+private struct LogLevelFilterView: View {
+    @ObservedObject var ble: BLEManager
+    @EnvironmentObject private var appLanguage: AppLanguage
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(appLanguage.string("log.level"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle(isOn: $ble.showLogLevelDebug) {
+                Text(appLanguage.string("log.level_debug"))
+                    .font(.caption)
+                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.debug))
+            }
+            .toggleStyle(.checkbox)
+            Toggle(isOn: $ble.showLogLevelInfo) {
+                Text(appLanguage.string("log.level_info"))
+                    .font(.caption)
+                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.info))
+            }
+            .toggleStyle(.checkbox)
+            Toggle(isOn: $ble.showLogLevelWarning) {
+                Text(appLanguage.string("log.level_warning"))
+                    .font(.caption)
+                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.warning))
+            }
+            .toggleStyle(.checkbox)
+            Toggle(isOn: $ble.showLogLevelError) {
+                Text(appLanguage.string("log.level_error"))
+                    .font(.caption)
+                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.error))
+            }
+            .toggleStyle(.checkbox)
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 

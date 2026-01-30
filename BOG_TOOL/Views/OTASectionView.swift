@@ -9,22 +9,68 @@ struct OTASectionView: View {
         ble.selectedFirmwareURL?.lastPathComponent ?? appLanguage.string("ota.not_selected")
     }
     
-    private var statusText: String {
+    /// 将秒数格式化为 "m:ss"
+    private static func formatOTATime(_ sec: TimeInterval) -> String {
+        let m = max(0, Int(sec)) / 60
+        let s = max(0, Int(sec)) % 60
+        return String(format: "%d:%02d", m, s)
+    }
+    
+    /// 状态行：进行中显示进度+已用+剩余；完成后显示完成；新会话显示就绪
+    private func statusText(now: Date = Date()) -> String {
         if ble.isOTAInProgress {
-            return "\(appLanguage.string("ota.progress")) \(Int(ble.otaProgress * 100))%"
+            let start = ble.otaStartTime ?? now
+            let elapsed = now.timeIntervalSince(start)
+            let remaining: TimeInterval? = (ble.otaProgress > 0 && ble.otaProgress < 1)
+                ? elapsed / ble.otaProgress * (1 - ble.otaProgress)
+                : nil
+            let remainingStr = remaining.map(Self.formatOTATime) ?? "--"
+            return String(format: appLanguage.string("ota.progress_elapsed_remaining"), ble.otaProgress * 100, Self.formatOTATime(elapsed), remainingStr)
         }
-        if ble.otaProgress >= 1 && !ble.isOTAInProgress {
+        if ble.otaProgress >= 1 {
+            if let dur = ble.otaCompletedDuration {
+                return String(format: appLanguage.string("ota.completed_with_duration"), Self.formatOTATime(dur))
+            }
             return appLanguage.string("ota.completed")
         }
         return appLanguage.string("ota.ready")
     }
     
+    /// 标题：进行中 → 百分比；完成 → 完成；新会话 → 未开始
+    private var otaTitleText: String {
+        if ble.isOTAInProgress {
+            return String(format: appLanguage.string("ota.title_in_progress_format"), ble.otaProgress * 100)
+        }
+        if ble.otaProgress >= 1 {
+            if let dur = ble.otaCompletedDuration {
+                return String(format: appLanguage.string("ota.title_completed_with_duration"), Self.formatOTATime(dur))
+            }
+            return appLanguage.string("ota.title_completed")
+        }
+        return appLanguage.string("ota.title_not_started")
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(appLanguage.string("ota.title"))
+            Text(otaTitleText)
                 .font(.subheadline)
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
+            
+            // 状态行（进行中时每秒刷新已用/剩余时间）
+            Group {
+                if ble.isOTAInProgress {
+                    TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                        Text(statusText(now: context.date))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(statusText())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             
             // 当前固件版本
             HStack(alignment: .center, spacing: 6) {
@@ -75,17 +121,41 @@ struct OTASectionView: View {
                 .frame(height: 6)
                 Spacer(minLength: 8)
                 Button {
-                    ble.startOTA()
+                    if ble.isOTAInProgress {
+                        ble.cancelOTA()
+                    } else {
+                        ble.startOTA()
+                    }
                 } label: {
-                    Text(appLanguage.string("ota.start"))
+                    Text(ble.isOTAInProgress ? appLanguage.string("ota.cancel") : appLanguage.string("ota.start"))
                         .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!ble.isConnected || ble.selectedFirmwareURL == nil || ble.isOTAInProgress || !ble.isOtaAvailable)
+                .disabled(!ble.isConnected || (!ble.isOTAInProgress && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
             }
         }
         .padding(6)
-        .background(Color.primary.opacity(0.04))
+        .background(otaSectionBackground)
         .cornerRadius(8)
+    }
+    
+    /// 未启动：正常；失败：红；进行中：蓝色呼吸灯；完成：绿
+    private var otaSectionBackground: some View {
+        Group {
+            if ble.isOTAInProgress {
+                TimelineView(.periodic(from: .now, by: 0.03)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    let phase = t.truncatingRemainder(dividingBy: 1.5) / 1.5 * (2 * .pi)
+                    let opacity = 0.14 + 0.18 * (0.5 + 0.5 * cos(phase))
+                    Color.blue.opacity(opacity)
+                }
+            } else if ble.isOTAFailed {
+                Color.red.opacity(0.18)
+            } else if ble.otaProgress >= 1 {
+                Color.green.opacity(0.15)
+            } else {
+                Color.primary.opacity(0.04)
+            }
+        }
     }
 }

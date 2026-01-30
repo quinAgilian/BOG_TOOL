@@ -9,8 +9,22 @@
 
 /* 日志 */
 "log.title" = "日志";
+"log.level" = "等级:";
+"log.level_debug" = "Debug";
+"log.level_info" = "Info";
+"log.level_warning" = "Warning";
+"log.level_error" = "Error";
 "log.pin_top" = "置顶";
+"log.auto_scroll" = "自动滚动";
+"log.auto_scroll_hint" = "开启后，新日志时自动滚动到底部。";
 "log.clear" = "清空";
+
+/* 连接/配对错误 */
+"error.pairing_removed_hint" = "设备已清除配对信息。请在「系统设置 → 蓝牙」中移除该设备后重试连接。";
+"error.dismiss" = "知道了";
+
+"valve.warning_already_open" = "当前已是开启状态";
+"valve.warning_already_closed" = "当前已是关闭状态";
 
 /* 设备列表 */
 "device_list.title" = "BLE 设备";
@@ -24,6 +38,14 @@
 "device_list.rssi_column" = "RSSI";
 "device_list.id_column" = "标识";
 "device_list.gatt_protocol" = "GATT 协议";
+
+"device_info.title" = "设备基础信息";
+"device_info.sn" = "SN";
+"device_info.fw" = "FW";
+"device_info.manufacturer" = "制造商";
+"device_info.model" = "型号";
+"device_info.hw" = "硬件版本";
+"device_info.loading" = "读取中…";
 
 /* GATT 协议页 */
 "gatt.title" = "BLE GATT 协议";
@@ -46,21 +68,36 @@
 /* Debug 模式 */
 "debug.title" = "Debug 模式";
 "debug.current_pressure" = "当前压力:";
-"debug.device_rtc" = "设备 RTC（持续读取）";
+"debug.device_rtc" = "设备 RTC";
 "debug.connect_first" = "请先连接设备";
 "debug.rtc" = "RTC";
 "debug.system_time" = "系统时间";
 "debug.write_rtc" = "写入 RTC";
+"debug.read_rtc" = "读取 RTC";
 "debug.device_time" = "设备时间";
 "debug.time_diff" = "与系统时间差:";
 "debug.valve" = "阀门";
-"debug.valve_state" = "阀门状态";
-"debug.valve_close" = "关闭";
+"debug.valve_control_auto" = "自动";
+"debug.valve_control_manual" = "手动";
+"debug.valve_mode" = "模式";
+"debug.valve_mode_auto" = "自动";
+"debug.valve_state" = "状态";
+"debug.valve_close" = "关";
 "debug.valve_open" = "开";
+"debug.valve_switch" = "电磁阀";
 "debug.pressure" = "压力";
 "debug.open_pressure" = "开阀压力";
 "debug.close_pressure" = "关阀压力";
 "debug.read" = "读取";
+
+/* UUID 调试（按特征读写） */
+"debug.uuid_title" = "UUID 读写";
+"debug.uuid_write" = "写";
+"debug.uuid_read" = "读";
+"debug.uuid_select" = "选择特征…";
+"debug.uuid_hex_placeholder" = "十六进制（如 01 02 03）";
+"debug.uuid_send" = "发送到设备";
+"debug.uuid_read_btn" = "读取";
 
 /* 产测模式 */
 "production_test.title" = "产测模式";
@@ -71,14 +108,21 @@
 
 /* OTA */
 "ota.title" = "OTA";
+"ota.title_not_started" = "OTA (未开始)";
+"ota.title_completed" = "OTA (完成)";
+"ota.title_completed_with_duration" = "OTA (完成, %@)";
+"ota.title_in_progress_format" = "OTA (进行中, %.2f%%)";
+"ota.progress_elapsed_remaining" = "进度 %.2f%% | 已用 %@ | 剩余 ~%@";
 "ota.firmware_version" = "当前固件版本";
 "ota.unknown" = "未知";
 "ota.browse" = "选择固件";
 "ota.not_selected" = "未选择";
 "ota.start" = "启动 OTA";
+"ota.cancel" = "取消 OTA";
 "ota.progress" = "进度";
 "ota.ready" = "就绪";
 "ota.completed" = "完成";
+"ota.completed_with_duration" = "完成, %@";
 
 /* 菜单 */
 "menu.floating" = "置顶";

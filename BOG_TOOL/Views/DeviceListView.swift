@@ -7,8 +7,30 @@ struct DeviceListView: View {
     @State private var showFilterPopover = false
     @State private var showGattProtocol = false
 
+    private var connectionErrorMessage: String? {
+        if let key = ble.errorMessageKey { return appLanguage.string(key) }
+        return ble.errorMessage
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let msg = connectionErrorMessage {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button(appLanguage.string("error.dismiss")) {
+                        ble.clearError()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.12))
+                .cornerRadius(8)
+            }
             HStack {
                 Text(appLanguage.string("device_list.title"))
                     .font(.headline)

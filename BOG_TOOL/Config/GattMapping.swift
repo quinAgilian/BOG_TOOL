@@ -33,6 +33,13 @@ enum GattMapping {
         return CBUUID(string: uuidString)
     }
     
+    /// 按 CBUUID 返回对应的 key（ALIAS），用于日志 wr/rd 格式
+    static func characteristicKey(for uuid: CBUUID) -> String? {
+        guard let keys = config?.appCharacteristicKeys else { return nil }
+        let uuidStr = uuid.uuidString.lowercased()
+        return keys.first { $0.value.lowercased() == uuidStr }?.key
+    }
+    
     /// 所有服务与特征的完整定义（可用于调试或 UI 展示）
     static var services: [GattServiceDefinition] {
         config?.services ?? []
@@ -54,9 +61,12 @@ enum GattMapping {
     // MARK: - 常用 Key 常量（仅 key 名不硬编码 UUID）
     enum Key {
         static let valveControl = "valveControl"
+        static let valveState = "valveState"
         static let pressureRead = "pressureRead"
+        static let pressureOpen = "pressureOpen"
         static let gasSystemStatus = "gasSystemStatus"
         static let rtc = "rtc"
+        static let testing = "testing"
         static let otaStatus = "otaStatus"
         static let otaData = "otaData"
     }
@@ -76,19 +86,24 @@ enum GattMapping {
     
     private static func fallbackCharacteristicUUIDs() -> [CBUUID] {
         [CBUUID(string: "00000002-B018-FCAD-2244-C82E6B682734"),
+         CBUUID(string: "00000001-B018-FCAD-2244-C82E6B682734"),
          CBUUID(string: "00000002-AEF1-CA85-FB4D-3AAFEB7A605A"),
          CBUUID(string: "00000001-AEF1-CA85-FB4D-3AAFEB7A605A"),
          CBUUID(string: "00000002-6037-C6A0-264E-309A67CEB3D1"),
          CBUUID(string: "00000001-D1D0-4B64-AFCD-2F977AB4A11D"),
-         CBUUID(string: "00000002-D1D0-4B64-AFCD-2F977AB4A11D")]
+         CBUUID(string: "00000002-D1D0-4B64-AFCD-2F977AB4A11D"),
+         CBUUID(string: "00000003-D1D0-4B64-AFCD-2F977AB4A11D")]
     }
     
     private static func fallbackCharacteristicUUID(forKey key: String) -> CBUUID? {
         let map: [String: String] = [
             Key.valveControl: "00000002-B018-FCAD-2244-C82E6B682734",
+            Key.valveState: "00000001-B018-FCAD-2244-C82E6B682734",
             Key.pressureRead: "00000002-AEF1-CA85-FB4D-3AAFEB7A605A",
+            Key.pressureOpen: "00000003-AEF1-CA85-FB4D-3AAFEB7A605A",
             Key.gasSystemStatus: "00000001-AEF1-CA85-FB4D-3AAFEB7A605A",
             Key.rtc: "00000002-6037-C6A0-264E-309A67CEB3D1",
+            Key.testing: "00000003-D1D0-4B64-AFCD-2F977AB4A11D",
             Key.otaStatus: "00000001-D1D0-4B64-AFCD-2F977AB4A11D",
             Key.otaData: "00000002-D1D0-4B64-AFCD-2F977AB4A11D"
         ]

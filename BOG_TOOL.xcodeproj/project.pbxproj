@@ -13,6 +13,7 @@
 		A1000004 /* DeviceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004 /* DeviceListView.swift */; };
 		A1000018 /* GattProtocolView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000018 /* GattProtocolView.swift */; };
 		A1000019 /* OTASectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000019 /* OTASectionView.swift */; };
+		A1000020 /* UUIDDebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020 /* UUIDDebugView.swift */; };
 		A1000005 /* ProductionTestView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005 /* ProductionTestView.swift */; };
 		A1000007 /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000007 /* BLEManager.swift */; };
 		A1000008 /* BLEDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000008 /* BLEDevice.swift */; };
@@ -33,6 +34,7 @@
 		A2000004 /* DeviceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListView.swift; sourceTree = "<group>"; };
 		A2000018 /* GattProtocolView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GattProtocolView.swift; sourceTree = "<group>"; };
 		A2000019 /* OTASectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTASectionView.swift; sourceTree = "<group>"; };
+		A2000020 /* UUIDDebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UUIDDebugView.swift; sourceTree = "<group>"; };
 		A2000005 /* ProductionTestView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionTestView.swift; sourceTree = "<group>"; };
 		A2000007 /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
 		A2000008 /* BLEDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEDevice.swift; sourceTree = "<group>"; };
@@ -100,6 +102,7 @@
 				A2000004 /* DeviceListView.swift */,
 				A2000018 /* GattProtocolView.swift */,
 				A2000019 /* OTASectionView.swift */,
+				A2000020 /* UUIDDebugView.swift */,
 				A2000005 /* ProductionTestView.swift */,
 			);
 			path = Views;
@@ -142,6 +145,7 @@
 				A6000002 /* Sources */,
 				A4000001 /* Frameworks */,
 				A6000003 /* Resources */,
+				A6000004 /* Copy app to project dir */,
 			);
 			buildRules = (
 			);
@@ -199,6 +203,27 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		A6000004 /* Copy app to project dir */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy app to project dir";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "rm -rf \"${SRCROOT}/${PRODUCT_NAME}.app\"\ncp -R \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app\" \"${SRCROOT}/\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		A6000002 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -210,6 +235,7 @@
 				A1000004 /* DeviceListView.swift in Sources */,
 				A1000018 /* GattProtocolView.swift in Sources */,
 				A1000019 /* OTASectionView.swift in Sources */,
+				A1000020 /* UUIDDebugView.swift in Sources */,
 				A1000005 /* ProductionTestView.swift in Sources */,
 				A1000007 /* BLEManager.swift in Sources */,
 				A1000008 /* BLEDevice.swift in Sources */,
@@ -325,11 +351,13 @@
 		A9000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = "arm64 x86_64";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = BOG_TOOL/BOG_TOOL.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
