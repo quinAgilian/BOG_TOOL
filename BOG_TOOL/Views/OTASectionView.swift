@@ -4,6 +4,8 @@ import SwiftUI
 struct OTASectionView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    /// 是否为模态模式（用于OTA进行中的独占窗口）
+    var isModal: Bool = false
     
     private var firmwareDisplayName: String {
         ble.selectedFirmwareURL?.lastPathComponent ?? appLanguage.string("ota.not_selected")
@@ -72,9 +74,9 @@ struct OTASectionView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: isModal ? 10 : 6) {
             Text(otaTitleText)
-                .font(.subheadline)
+                .font(isModal ? .system(.title2, design: .monospaced) : .system(.subheadline, design: .monospaced))
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
             
@@ -83,74 +85,116 @@ struct OTASectionView: View {
                 if ble.isOTAInProgress {
                     TimelineView(.periodic(from: .now, by: 1.0)) { context in
                         Text(statusText(now: context.date))
-                            .font(.caption)
+                            .font(isModal ? .system(.body, design: .monospaced) : .system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                 } else {
                     Text(statusText())
-                        .font(.caption)
+                        .font(isModal ? .system(.body, design: .monospaced) : .system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
             }
             
-            // 当前固件版本
-            HStack(alignment: .center, spacing: 6) {
-                Text(appLanguage.string("ota.firmware_version"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(ble.currentFirmwareVersion ?? appLanguage.string("ota.unknown"))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(ble.currentFirmwareVersion != nil ? .primary : .secondary)
-            }
-            
-            // 目标固件大小（当前选择的 .bin 文件）
-            HStack(alignment: .center, spacing: 6) {
-                Text(appLanguage.string("ota.firmware_size"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(ble.selectedFirmwareSizeDisplay)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            
-            // 固件选择
-            HStack(alignment: .center, spacing: 8) {
-                Text(appLanguage.string("ota.browse"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(firmwareDisplayName)
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.12))
-                    .cornerRadius(6)
-                Spacer(minLength: 8)
-                Button {
-                    ble.browseAndSaveFirmware()
-                } label: {
-                    Text(appLanguage.string("ota.browse"))
-                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+            // 模态模式下隐藏固件选择和浏览按钮，只显示关键信息
+            if !isModal {
+                // 当前固件版本
+                HStack(alignment: .center, spacing: 6) {
+                    Text(appLanguage.string("ota.firmware_version"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(ble.currentFirmwareVersion ?? appLanguage.string("ota.unknown"))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(ble.currentFirmwareVersion != nil ? .primary : .secondary)
                 }
-                .buttonStyle(.borderedProminent)
-            }
-            
-            // 进度条（靠左）+ Start OTA 按键（靠右）同一行
-            HStack(alignment: .center, spacing: 8) {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Color.secondary.opacity(0.2))
-                            .frame(height: 6)
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Color.accentColor)
-                            .frame(width: max(0, geo.size.width * ble.otaProgress), height: 6)
+                
+                // 目标固件大小（当前选择的 .bin 文件）
+                HStack(alignment: .center, spacing: 6) {
+                    Text(appLanguage.string("ota.firmware_size"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(ble.selectedFirmwareSizeDisplay)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                
+                // 固件选择
+                HStack(alignment: .center, spacing: 8) {
+                    Text(appLanguage.string("ota.browse"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(firmwareDisplayName)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.12))
+                        .cornerRadius(6)
+                    Spacer(minLength: 8)
+                    Button {
+                        ble.browseAndSaveFirmware()
+                    } label: {
+                        Text(appLanguage.string("ota.browse"))
+                            .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } else {
+                // 模态模式下显示更详细的信息
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(appLanguage.string("ota.firmware_version"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(ble.currentFirmwareVersion ?? appLanguage.string("ota.unknown"))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(ble.currentFirmwareVersion != nil ? .primary : .secondary)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text(appLanguage.string("ota.firmware_size"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(ble.selectedFirmwareSizeDisplay)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    
+                    // 显示固件文件名
+                    HStack(alignment: .center, spacing: 8) {
+                        Text(appLanguage.string("ota.browse"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(firmwareDisplayName)
+                            .font(.system(.body, design: .monospaced))
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.12))
+                            .cornerRadius(8)
                     }
                 }
-                .frame(height: 6)
-                Spacer(minLength: 8)
+            }
+            
+            // 进度条（靠左）+ Start/Cancel OTA 按键（靠右）同一行
+            HStack(alignment: .center, spacing: 12) {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: isModal ? 4 : 3, style: .continuous)
+                            .fill(Color.secondary.opacity(0.2))
+                            .frame(height: isModal ? 12 : 6)
+                        RoundedRectangle(cornerRadius: isModal ? 4 : 3, style: .continuous)
+                            .fill(Color.accentColor)
+                            .frame(width: max(0, geo.size.width * ble.otaProgress), height: isModal ? 12 : 6)
+                    }
+                }
+                .frame(height: isModal ? 12 : 6)
+                Spacer(minLength: 12)
                 Button {
                     if ble.isOTAInProgress {
                         ble.cancelOTA()
@@ -159,42 +203,68 @@ struct OTASectionView: View {
                     }
                 } label: {
                     Text(ble.isOTAInProgress ? appLanguage.string("ota.cancel") : appLanguage.string("ota.start"))
-                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                        .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(isModal ? .large : .regular)
                 .disabled(!ble.isConnected || (!ble.isOTAInProgress && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
             }
             
             // OTA 完成后是否自动发送 reboot（当前固定为选中，复选框禁用）
-            Toggle(isOn: .constant(true)) {
-                Text(appLanguage.string("ota.auto_reboot_after_ota"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if !isModal {
+                Toggle(isOn: .constant(true)) {
+                    Text(appLanguage.string("ota.auto_reboot_after_ota"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .toggleStyle(.checkbox)
+                .disabled(true)
             }
-            .toggleStyle(.checkbox)
-            .disabled(true)
         }
-        .padding(6)
+        .padding(isModal ? 20 : 6)
         .background(otaSectionBackground)
-        .cornerRadius(8)
+        .clipShape(RoundedRectangle(cornerRadius: isModal ? 16 : 8, style: .continuous))
+        .frame(maxWidth: isModal ? 600 : nil)
     }
     
     /// 未启动：正常；失败：红；进行中：蓝色呼吸灯；完成：绿
+    /// 模态模式下，背景需要不透明以确保圆角完美
     private var otaSectionBackground: some View {
         Group {
             if ble.isOTAInProgress {
-                TimelineView(.periodic(from: .now, by: 0.03)) { context in
-                    let t = context.date.timeIntervalSinceReferenceDate
-                    let phase = t.truncatingRemainder(dividingBy: 1.5) / 1.5 * (2 * .pi)
-                    let opacity = 0.14 + 0.18 * (0.5 + 0.5 * cos(phase))
-                    Color.blue.opacity(opacity)
+                ZStack {
+                    // 模态模式下先添加不透明背景，确保圆角完美
+                    if isModal {
+                        Color(nsColor: .windowBackgroundColor)
+                    }
+                    // 然后添加呼吸灯效果
+                    TimelineView(.periodic(from: .now, by: 0.03)) { context in
+                        let t = context.date.timeIntervalSinceReferenceDate
+                        let phase = t.truncatingRemainder(dividingBy: 1.5) / 1.5 * (2 * .pi)
+                        let opacity = 0.14 + 0.18 * (0.5 + 0.5 * cos(phase))
+                        Color.blue.opacity(opacity)
+                    }
                 }
             } else if ble.isOTAFailed {
-                Color.red.opacity(0.18)
+                ZStack {
+                    if isModal {
+                        Color(nsColor: .windowBackgroundColor)
+                    }
+                    Color.red.opacity(0.18)
+                }
             } else if ble.otaProgress >= 1 {
-                Color.green.opacity(0.15)
+                ZStack {
+                    if isModal {
+                        Color(nsColor: .windowBackgroundColor)
+                    }
+                    Color.green.opacity(0.15)
+                }
             } else {
-                Color.primary.opacity(0.04)
+                if isModal {
+                    Color(nsColor: .windowBackgroundColor)
+                } else {
+                    Color.primary.opacity(0.04)
+                }
             }
         }
     }

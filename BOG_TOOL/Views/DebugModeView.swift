@@ -91,7 +91,7 @@ struct DebugModeView: View {
                         .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!ble.isConnected)
+                .disabled(!ble.isConnected || ble.isOTAInProgress)
             }
 
             HStack(alignment: .center, spacing: 8) {
@@ -124,7 +124,7 @@ struct DebugModeView: View {
                         .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!ble.isConnected || !ble.areCharacteristicsReady)
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
             }
         }
         .padding(6)
@@ -217,7 +217,7 @@ struct DebugModeView: View {
                         .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!ble.isConnected || !ble.areCharacteristicsReady)
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
                 Picker("", selection: valveControlModeBinding) {
                     Text(appLanguage.string("debug.valve_control_auto")).tag(ValveControlMode.auto)
                     Text(appLanguage.string("debug.valve_control_manual")).tag(ValveControlMode.manual)
@@ -235,7 +235,7 @@ struct DebugModeView: View {
                             .toggleStyle(.switch)
                             .labelsHidden()
                     }
-                    .disabled(!ble.isConnected)
+                    .disabled(!ble.isConnected || ble.isOTAInProgress)
                     if let key = ble.valveOperationWarning, !key.isEmpty {
                         Text(appLanguage.string(key))
                             .font(.caption)
@@ -298,7 +298,7 @@ struct DebugModeView: View {
                         .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!ble.isConnected)
+                .disabled(!ble.isConnected || ble.isOTAInProgress)
             }
         }
         .padding(6)

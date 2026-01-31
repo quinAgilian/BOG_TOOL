@@ -28,7 +28,7 @@ struct ProductionTestView: View {
                         .padding(.vertical, 5)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isRunning)
+                    .disabled(isRunning || ble.isOTAInProgress)
                 }
 
                 if !testLog.isEmpty {

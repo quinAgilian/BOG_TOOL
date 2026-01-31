@@ -143,6 +143,14 @@ struct ContentView: View {
         }
         .frame(minWidth: 760, minHeight: 520)
         .background(WindowLevelSetter(floating: appSettings.windowFloating))
+        .allowsHitTesting(!ble.isOTAInProgress) // OTA 进行中时禁用背景所有交互
+        .overlay {
+            // OTA 进行中的独占模态窗口（永远置顶，阻止所有其他操作）
+            if ble.isOTAInProgress {
+                OTAExclusiveOverlay(ble: ble)
+                    .allowsHitTesting(true) // OTA 覆盖层可以接收交互
+            }
+        }
         .onAppear {
             // 启动时先激活窗口，再设置置顶，否则未激活时 level 可能不生效
             NSApp.activate(ignoringOtherApps: true)
@@ -269,6 +277,38 @@ private struct LogLevelFilterView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+/// OTA 独占模式覆盖层：OTA 进行中时显示，阻塞所有其他操作
+/// 此覆盖层永远置顶，用户无法操作到背景窗口的任何内容
+private struct OTAExclusiveOverlay: View {
+    @EnvironmentObject private var appLanguage: AppLanguage
+    @ObservedObject var ble: BLEManager
+    
+    var body: some View {
+        ZStack {
+            // 半透明背景，完全覆盖整个窗口，阻止所有其他交互
+            Color.black.opacity(0.6)
+                .ignoresSafeArea(.all)
+                .contentShape(Rectangle()) // 确保整个背景区域可接收点击事件
+                .onTapGesture {
+                    // 点击背景不执行任何操作，确保用户必须通过取消按钮来退出OTA
+                    // 这样可以防止用户误操作或尝试绕过OTA独占模式
+                }
+            
+            // 中间的 OTA 视图（模态模式）
+            VStack(spacing: 20) {
+                Text(appLanguage.string("ota.exclusive_title"))
+                    .font(.title)
+                    .fontWeight(.bold)
+                    .foregroundStyle(.primary)
+                
+                OTASectionView(ble: ble, isModal: true)
+                    .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity) // 确保覆盖整个窗口
     }
 }
 

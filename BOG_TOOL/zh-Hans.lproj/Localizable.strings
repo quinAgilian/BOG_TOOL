@@ -131,6 +131,7 @@
 "ota.ready" = "就绪";
 "ota.completed" = "完成";
 "ota.completed_with_duration" = "完成, %@";
+"ota.exclusive_title" = "OTA 进行中";
 
 /* 菜单 */
 "menu.floating" = "置顶";

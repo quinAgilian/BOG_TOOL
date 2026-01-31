@@ -131,6 +131,7 @@
 "ota.ready" = "Ready";
 "ota.completed" = "Completed";
 "ota.completed_with_duration" = "Completed, %@";
+"ota.exclusive_title" = "OTA in Progress";
 
 /* Menu */
 "menu.floating" = "Floating";
