@@ -15,6 +15,8 @@
 "log.level_warning" = "Warning";
 "log.level_error" = "Error";
 "log.pin_top" = "置顶";
+"log.show_area" = "显示日志";
+"log.hide_area" = "隐藏日志";
 "log.auto_scroll" = "自动滚动";
 "log.auto_scroll_hint" = "开启后，新日志时自动滚动到底部。";
 "log.clear" = "清空";
@@ -37,6 +39,7 @@
 "device_list.name_column" = "Name";
 "device_list.rssi_column" = "RSSI";
 "device_list.id_column" = "标识";
+"device_list.production_test_rules" = "产测规则";
 "device_list.gatt_protocol" = "GATT 协议";
 
 "device_info.title" = "设备基础信息";
@@ -110,12 +113,50 @@
 "production_test.start" = "开始产测";
 "production_test.running" = "测试进行中...";
 
+/* 产测规则 */
+"production_test_rules.title" = "产测规则 (SOP)";
+"production_test_rules.firmware_version_title" = "固件版本配置";
+"production_test_rules.firmware_version_label" = "期望版本：";
+"production_test_rules.firmware_version_placeholder" = "1.1.1";
+"production_test_rules.firmware_version_hint" = "将检查设备固件版本是否包含此值。自动保存。";
+"production_test_rules.procedure_title" = "测试流程";
+"production_test_rules.procedure_description" = "本产测遵循标准化流程，用于验证设备功能。每个步骤必须满足指定的判定标准。";
+"production_test_rules.steps_title" = "测试步骤";
+"production_test_rules.step1_title" = "连接设备";
+"production_test_rules.step1_desc" = "与设备建立连接。";
+"production_test_rules.step1_criteria" = "✓ 通过：连接成功。✗ 失败：错误码-1，用户需重新测试。";
+"production_test_rules.step2_title" = "确认固件版本";
+"production_test_rules.step2_desc" = "检查设备固件版本是否与期望版本匹配。";
+"production_test_rules.step2_criteria" = "✓ 通过：固件版本号包含配置的版本字符串。";
+"production_test_rules.step3_title" = "读取 RTC";
+"production_test_rules.step3_desc" = "读取设备RTC并与系统时间比较。";
+"production_test_rules.step3_criteria" = "✓ 通过：时间误差 ≤ 2秒。⚠ 警告：2-5秒，将写入RTC并重新读取。✗ 失败：> 5秒。";
+"production_test_rules.step4_title" = "读取压力值";
+"production_test_rules.step4_desc" = "读取关闭和开启状态下的压力值。";
+"production_test_rules.step4_criteria" = "✓ 通过：关闭状态 > 1.300 mbar，开启状态 > 1.1 mbar。";
+"production_test_rules.step5_title" = "待定";
+"production_test_rules.step5_desc" = "待定义的额外测试步骤。";
+"production_test_rules.step5_criteria" = "";
+"production_test_rules.step_disconnect_title" = "安全断开连接";
+"production_test_rules.step_disconnect_desc" = "所有测试完成后安全断开设备连接。";
+"production_test_rules.step_disconnect_criteria" = "✓ 通过：设备成功断开连接。";
+"production_test_rules.drag_hint" = "拖动以重新排序（第一步和最后一步已锁定）";
+"production_test_rules.notes_title" = "注意事项";
+"production_test_rules.note1" = "开始测试前确保设备已正确连接。";
+"production_test_rules.note2" = "如果连接失败（错误码-1），用户必须重新连接并重测。";
+"production_test_rules.note3" = "固件版本通过子字符串匹配方式检查配置的版本。";
+
 /* OTA */
 "ota.title" = "OTA";
 "ota.title_not_started" = "OTA (未开始)";
 "ota.title_completed" = "OTA (完成)";
 "ota.title_completed_with_duration" = "OTA (完成, %@)";
 "ota.title_in_progress_format" = "OTA (进行中, %.2f%%)";
+"ota.title_waiting_reboot" = "OTA (等待重启, %d秒)";
+"ota.title_failed" = "OTA (失败)";
+"ota.title_cancelled" = "OTA (已取消)";
+"ota.failed" = "OTA 失败";
+"ota.cancelled" = "OTA 已取消";
 "ota.progress_elapsed_remaining" = "进度 %.2f%% | 已用 %@ | 剩余 ~%@";
 "ota.progress_elapsed_rate_remaining" = "进度 %.2f%% | 已用 %@ | %@ | 剩余 ~%@";
 "ota.firmware_version" = "当前固件版本";
@@ -131,7 +172,16 @@
 "ota.ready" = "就绪";
 "ota.completed" = "完成";
 "ota.completed_with_duration" = "完成, %@";
+"ota.waiting_validation" = "等待设备校验中... (已用 %@)";
+"ota.waiting_reboot_countdown" = "等待重启确认... (%d秒后自动重启)";
+"ota.completed_waiting_reboot" = "OTA完成 (%@)，等待重启确认... (%d秒后自动重启)";
+"ota.reboot" = "重启设备";
+"ota.reboot_with_countdown" = "重启设备 (%d)";
 "ota.exclusive_title" = "OTA 进行中";
+"ota.exclusive_title_failed" = "OTA 失败";
+"ota.exclusive_title_cancelled" = "OTA 已取消";
+"ota.close" = "关闭";
+"ota.exclusive_title_reboot" = "OTA 完成，等待重启";
 
 /* 菜单 */
 "menu.floating" = "置顶";

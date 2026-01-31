@@ -25,9 +25,34 @@ struct OTASectionView: View {
         return String(format: "%3d kbps", min(999, max(0, kbps)))
     }
     
-    /// 状态行：进行中显示进度+已用+当前速率+剩余（按当前传输速率估算）；完成后显示完成；新会话显示就绪
+    /// 状态行：进行中显示进度+已用+当前速率+剩余；失败显示失败信息；取消显示取消信息；等待校验/重启显示相应提示；完成后显示完成；新会话显示就绪
     private func statusText(now: Date = Date()) -> String {
+        // 优先检查失败状态
+        if ble.isOTAFailed {
+            return appLanguage.string("ota.failed")
+        }
+        
+        // 检查取消状态
+        if ble.isOTACancelled {
+            return appLanguage.string("ota.cancelled")
+        }
+        
+        // 如果OTA完成等待重启
+        if ble.isOTACompletedWaitingReboot {
+            if let dur = ble.otaCompletedDuration {
+                return String(format: appLanguage.string("ota.completed_waiting_reboot"), Self.formatOTATime(dur), ble.rebootCountdown)
+            }
+            return String(format: appLanguage.string("ota.waiting_reboot_countdown"), ble.rebootCountdown)
+        }
+        
         if ble.isOTAInProgress {
+            // 如果进度100%且正在等待设备校验
+            if ble.otaProgress >= 1 && ble.isOTAWaitingValidation {
+                let start = ble.otaStartTime ?? now
+                let elapsed = now.timeIntervalSince(start)
+                return String(format: appLanguage.string("ota.waiting_validation"), Self.formatOTATime(elapsed))
+            }
+            // 正常传输中
             let start = ble.otaStartTime ?? now
             let elapsed = now.timeIntervalSince(start)
             let progress = ble.otaProgress
@@ -50,21 +75,37 @@ struct OTASectionView: View {
             }
             return String(format: appLanguage.string("ota.progress_elapsed_rate_remaining"), progress * 100, Self.formatOTATime(elapsed), rateStr, remainingStr)
         }
-        if ble.otaProgress >= 1 {
+        
+        // 已完成（成功）
+        if ble.otaProgress >= 1 && !ble.isOTAFailed && !ble.isOTACancelled {
             if let dur = ble.otaCompletedDuration {
                 return String(format: appLanguage.string("ota.completed_with_duration"), Self.formatOTATime(dur))
             }
             return appLanguage.string("ota.completed")
         }
+        
         return appLanguage.string("ota.ready")
     }
     
-    /// 标题：进行中 → 百分比；完成 → 完成；新会话 → 未开始
+    /// 标题：失败 → 失败；取消 → 取消；进行中 → 百分比；等待重启 → 等待重启；完成 → 完成；新会话 → 未开始
     private var otaTitleText: String {
+        // 优先检查失败状态
+        if ble.isOTAFailed {
+            return appLanguage.string("ota.title_failed")
+        }
+        
+        // 检查取消状态
+        if ble.isOTACancelled {
+            return appLanguage.string("ota.title_cancelled")
+        }
+        
+        if ble.isOTACompletedWaitingReboot {
+            return String(format: appLanguage.string("ota.title_waiting_reboot"), ble.rebootCountdown)
+        }
         if ble.isOTAInProgress {
             return String(format: appLanguage.string("ota.title_in_progress_format"), ble.otaProgress * 100)
         }
-        if ble.otaProgress >= 1 {
+        if ble.otaProgress >= 1 && !ble.isOTAFailed && !ble.isOTACancelled {
             if let dur = ble.otaCompletedDuration {
                 return String(format: appLanguage.string("ota.title_completed_with_duration"), Self.formatOTATime(dur))
             }
@@ -80,9 +121,9 @@ struct OTASectionView: View {
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
             
-            // 状态行（进行中时每秒刷新已用/剩余时间）
+            // 状态行（进行中时每秒刷新已用/剩余时间，等待重启时每秒刷新倒计时）
             Group {
-                if ble.isOTAInProgress {
+                if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot {
                     TimelineView(.periodic(from: .now, by: 1.0)) { context in
                         Text(statusText(now: context.date))
                             .font(isModal ? .system(.body, design: .monospaced) : .system(.caption, design: .monospaced))
@@ -196,18 +237,40 @@ struct OTASectionView: View {
                 .frame(height: isModal ? 12 : 6)
                 Spacer(minLength: 12)
                 Button {
-                    if ble.isOTAInProgress {
+                    if ble.isOTAFailed || ble.isOTACancelled {
+                        // 失败或取消：关闭弹窗（清除状态）
+                        ble.clearOTAStatus()
+                    } else if ble.isOTACompletedWaitingReboot {
+                        // OTA完成等待重启：立即发送reboot
+                        ble.sendReboot()
+                    } else if ble.isOTAInProgress {
+                        // OTA进行中：取消OTA
                         ble.cancelOTA()
                     } else {
+                        // 未开始：启动OTA
                         ble.startOTA()
                     }
                 } label: {
-                    Text(ble.isOTAInProgress ? appLanguage.string("ota.cancel") : appLanguage.string("ota.start"))
-                        .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                    if ble.isOTAFailed {
+                        Text(appLanguage.string("ota.close"))
+                            .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                    } else if ble.isOTACancelled {
+                        Text(appLanguage.string("ota.close"))
+                            .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                    } else if ble.isOTACompletedWaitingReboot {
+                        // 显示重启按钮和倒计时
+                        Text(ble.rebootCountdown > 0 
+                            ? String(format: appLanguage.string("ota.reboot_with_countdown"), ble.rebootCountdown)
+                            : appLanguage.string("ota.reboot"))
+                            .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                    } else {
+                        Text(ble.isOTAInProgress ? appLanguage.string("ota.cancel") : appLanguage.string("ota.start"))
+                            .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(isModal ? .large : .regular)
-                .disabled(!ble.isConnected || (!ble.isOTAInProgress && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
+                .disabled(!ble.isConnected || (!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && !ble.isOTAFailed && !ble.isOTACancelled && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
             }
             
             // OTA 完成后是否自动发送 reboot（当前固定为选中，复选框禁用）
@@ -227,7 +290,7 @@ struct OTASectionView: View {
         .frame(maxWidth: isModal ? 600 : nil)
     }
     
-    /// 未启动：正常；失败：红；进行中：蓝色呼吸灯；完成：绿
+    /// 未启动：正常；失败：红；取消：橙；进行中：蓝色呼吸灯；完成：绿
     /// 模态模式下，背景需要不透明以确保圆角完美
     private var otaSectionBackground: some View {
         Group {
@@ -252,7 +315,14 @@ struct OTASectionView: View {
                     }
                     Color.red.opacity(0.18)
                 }
-            } else if ble.otaProgress >= 1 {
+            } else if ble.isOTACancelled {
+                ZStack {
+                    if isModal {
+                        Color(nsColor: .windowBackgroundColor)
+                    }
+                    Color.orange.opacity(0.15)
+                }
+            } else if ble.otaProgress >= 1 && !ble.isOTAFailed && !ble.isOTACancelled {
                 ZStack {
                     if isModal {
                         Color(nsColor: .windowBackgroundColor)

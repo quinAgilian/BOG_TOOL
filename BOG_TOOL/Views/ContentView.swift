@@ -38,6 +38,8 @@ struct ContentView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @StateObject private var ble = BLEManager()
     @State private var selectedMode: AppMode = .productionTest
+    /// 是否显示日志区域，默认开启
+    @State private var showLogArea = true
     /// 是否开启日志自动滚动到底部，默认开启
     @State private var logAutoScrollEnabled = true
     /// 上次执行自动滚动的时刻，用于节流（避免刷屏时无法控制）
@@ -47,6 +49,25 @@ struct ContentView: View {
         HSplitView {
             // 左侧：设备与模式
             VStack(alignment: .leading, spacing: 0) {
+                // 顶部工具栏：中英文切换、置顶按钮和日志区域开关
+                HStack {
+                    Spacer()
+                    Button(appLanguage.switchButtonTitle, action: { appLanguage.toggle() })
+                        .buttonStyle(.bordered)
+                    Button(appLanguage.string("log.pin_top")) {
+                        appSettings.windowFloating = !appSettings.windowFloating
+                        applyWindowFloating(appSettings.windowFloating)
+                    }
+                    .buttonStyle(PinTopButtonStyle(isFloating: appSettings.windowFloating))
+                    .keyboardShortcut(.space, modifiers: [])
+                    Button(showLogArea ? appLanguage.string("log.hide_area") : appLanguage.string("log.show_area")) {
+                        showLogArea.toggle()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                
                 DeviceListView(ble: ble)
 
                 Divider()
@@ -79,78 +100,72 @@ struct ContentView: View {
                 .frame(minWidth: 320)
             }
             .frame(minWidth: 360)
-
-            // 右侧：日志
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text(appLanguage.string("log.title"))
-                        .font(.headline)
-                    Spacer()
-                    Button(appLanguage.switchButtonTitle, action: { appLanguage.toggle() })
-                        .buttonStyle(.bordered)
-                    Button(appLanguage.string("log.pin_top")) {
-                        appSettings.windowFloating = !appSettings.windowFloating
-                        applyWindowFloating(appSettings.windowFloating)
-                    }
-                    .buttonStyle(PinTopButtonStyle(isFloating: appSettings.windowFloating))
-                    .keyboardShortcut(.space, modifiers: [])
-                    Toggle(isOn: $logAutoScrollEnabled) {
-                        Text(appLanguage.string("log.auto_scroll"))
-                            .font(.caption)
-                    }
-                    .toggleStyle(.checkbox)
-                    .help(appLanguage.string("log.auto_scroll_hint"))
-                    Button(appLanguage.string("log.clear")) {
-                        ble.clearLog()
-                    }
-                    .buttonStyle(.plain)
+            .allowsHitTesting(!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && !ble.isOTAFailed) // OTA 进行中、等待重启或失败时禁用左侧操作区域
+            .overlay {
+                // OTA 进行中、等待重启或失败时，在左侧区域显示半透明覆盖层
+                if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed {
+                    OTAExclusiveOverlay(ble: ble)
+                        .allowsHitTesting(true) // OTA 覆盖层可以接收交互
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color(nsColor: .windowBackgroundColor))
-                
-                // 日志等级过滤
-                LogLevelFilterView(ble: ble)
-                
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(ble.displayedLogEntries) { entry in
-                                Text(entry.line)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(LogLevelColor.color(entry.level))
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(5)
-                        .id(0)
-                    }
-                    .onChange(of: ble.logEntries.count, perform: { _ in
-                        guard logAutoScrollEnabled else { return }
-                        let now = Date()
-                        if now.timeIntervalSince(lastAutoScrollDate) >= 0.4 {
-                            proxy.scrollTo(0, anchor: .bottom)
-                            lastAutoScrollDate = now
-                        }
-                    })
-                }
-                .background(Color(nsColor: .textBackgroundColor))
             }
-            .frame(minWidth: 380)
+
+            // 右侧：日志（OTA 进行中时仍然可以查看和操作）
+            if showLogArea {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Text(appLanguage.string("log.title"))
+                            .font(.headline)
+                        Spacer()
+                        Toggle(isOn: $logAutoScrollEnabled) {
+                            Text(appLanguage.string("log.auto_scroll"))
+                                .font(.caption)
+                        }
+                        .toggleStyle(.checkbox)
+                        .help(appLanguage.string("log.auto_scroll_hint"))
+                        Button(appLanguage.string("log.clear")) {
+                            ble.clearLog()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    
+                    // 日志等级过滤
+                    LogLevelFilterView(ble: ble)
+                    
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(ble.displayedLogEntries) { entry in
+                                    Text(entry.line)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(LogLevelColor.color(entry.level))
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(5)
+                            .id(0)
+                        }
+                        .onChange(of: ble.logEntries.count, perform: { _ in
+                            guard logAutoScrollEnabled else { return }
+                            let now = Date()
+                            if now.timeIntervalSince(lastAutoScrollDate) >= 0.4 {
+                                proxy.scrollTo(0, anchor: .bottom)
+                                lastAutoScrollDate = now
+                            }
+                        })
+                    }
+                    .background(Color(nsColor: .textBackgroundColor))
+                }
+                .frame(minWidth: 380)
+            }
         }
         .frame(minWidth: 760, minHeight: 520)
         .background(WindowLevelSetter(floating: appSettings.windowFloating))
-        .allowsHitTesting(!ble.isOTAInProgress) // OTA 进行中时禁用背景所有交互
-        .overlay {
-            // OTA 进行中的独占模态窗口（永远置顶，阻止所有其他操作）
-            if ble.isOTAInProgress {
-                OTAExclusiveOverlay(ble: ble)
-                    .allowsHitTesting(true) // OTA 覆盖层可以接收交互
-            }
-        }
         .onAppear {
             // 启动时先激活窗口，再设置置顶，否则未激活时 level 可能不生效
             NSApp.activate(ignoringOtherApps: true)
@@ -280,26 +295,39 @@ private struct LogLevelFilterView: View {
     }
 }
 
-/// OTA 独占模式覆盖层：OTA 进行中时显示，阻塞所有其他操作
-/// 此覆盖层永远置顶，用户无法操作到背景窗口的任何内容
+/// OTA 独占模式覆盖层：OTA 进行中或等待重启时显示，只覆盖左侧操作区域
+/// 右侧日志区域保持可操作，用户可以查看日志和切换日志等级
 private struct OTAExclusiveOverlay: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
     
+    private var overlayTitle: String {
+        if ble.isOTAFailed {
+            return appLanguage.string("ota.exclusive_title_failed")
+        }
+        if ble.isOTACancelled {
+            return appLanguage.string("ota.exclusive_title_cancelled")
+        }
+        if ble.isOTACompletedWaitingReboot {
+            return appLanguage.string("ota.exclusive_title_reboot")
+        }
+        return appLanguage.string("ota.exclusive_title")
+    }
+    
     var body: some View {
         ZStack {
-            // 半透明背景，完全覆盖整个窗口，阻止所有其他交互
+            // 半透明背景，覆盖左侧操作区域，阻止所有其他交互
             Color.black.opacity(0.6)
                 .ignoresSafeArea(.all)
                 .contentShape(Rectangle()) // 确保整个背景区域可接收点击事件
                 .onTapGesture {
-                    // 点击背景不执行任何操作，确保用户必须通过取消按钮来退出OTA
+                    // 点击背景不执行任何操作，确保用户必须通过按钮来操作
                     // 这样可以防止用户误操作或尝试绕过OTA独占模式
                 }
             
             // 中间的 OTA 视图（模态模式）
             VStack(spacing: 20) {
-                Text(appLanguage.string("ota.exclusive_title"))
+                Text(overlayTitle)
                     .font(.title)
                     .fontWeight(.bold)
                     .foregroundStyle(.primary)
@@ -308,7 +336,7 @@ private struct OTAExclusiveOverlay: View {
                     .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity) // 确保覆盖整个窗口
+        .frame(maxWidth: .infinity, maxHeight: .infinity) // 确保覆盖整个左侧区域
     }
 }
 

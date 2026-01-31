@@ -15,6 +15,8 @@
 "log.level_warning" = "Warning";
 "log.level_error" = "Error";
 "log.pin_top" = "Pin";
+"log.show_area" = "Show Log";
+"log.hide_area" = "Hide Log";
 "log.auto_scroll" = "Auto scroll";
 "log.auto_scroll_hint" = "When on, log area scrolls to bottom on new entries.";
 "log.clear" = "Clear";
@@ -37,6 +39,7 @@
 "device_list.name_column" = "Name";
 "device_list.rssi_column" = "RSSI";
 "device_list.id_column" = "ID";
+"device_list.production_test_rules" = "Production Test Rules";
 "device_list.gatt_protocol" = "GATT Protocol";
 
 "device_info.title" = "Device info";
@@ -110,12 +113,50 @@
 "production_test.start" = "Start test";
 "production_test.running" = "Testing...";
 
+/* Production test rules */
+"production_test_rules.title" = "Production Test Rules (SOP)";
+"production_test_rules.firmware_version_title" = "Firmware Version Configuration";
+"production_test_rules.firmware_version_label" = "Expected Version:";
+"production_test_rules.firmware_version_placeholder" = "1.1.1";
+"production_test_rules.firmware_version_hint" = "The firmware version will be checked against this value. Saved automatically.";
+"production_test_rules.procedure_title" = "Test Procedure";
+"production_test_rules.procedure_description" = "This production test follows a standardized procedure to verify device functionality. Each step must pass the specified criteria.";
+"production_test_rules.steps_title" = "Test Steps";
+"production_test_rules.step1_title" = "Connect Device";
+"production_test_rules.step1_desc" = "Establish connection with the device.";
+"production_test_rules.step1_criteria" = "✓ Pass: Connection successful. ✗ Fail: Error code -1, user must retest.";
+"production_test_rules.step2_title" = "Verify Firmware Version";
+"production_test_rules.step2_desc" = "Check that the device firmware version matches the expected version.";
+"production_test_rules.step2_criteria" = "✓ Pass: Firmware version contains the configured version string.";
+"production_test_rules.step3_title" = "Read RTC";
+"production_test_rules.step3_desc" = "Read the device RTC and compare with system time.";
+"production_test_rules.step3_criteria" = "✓ Pass: Time difference ≤ 2 seconds. ⚠ Warning: 2-5 seconds, will write RTC and re-read. ✗ Fail: > 5 seconds.";
+"production_test_rules.step4_title" = "Read Pressure Values";
+"production_test_rules.step4_desc" = "Read pressure values in both closed and open states.";
+"production_test_rules.step4_criteria" = "✓ Pass: Closed state > 1.300 mbar, Open state > 1.1 mbar.";
+"production_test_rules.step5_title" = "TBD";
+"production_test_rules.step5_desc" = "Additional test steps to be defined.";
+"production_test_rules.step5_criteria" = "";
+"production_test_rules.step_disconnect_title" = "Safely Disconnect Device";
+"production_test_rules.step_disconnect_desc" = "Safely disconnect from the device after all tests are completed.";
+"production_test_rules.step_disconnect_criteria" = "✓ Pass: Device disconnected successfully.";
+"production_test_rules.drag_hint" = "Drag to reorder (first and last steps are locked)";
+"production_test_rules.notes_title" = "Important Notes";
+"production_test_rules.note1" = "Ensure device is properly connected before starting the test.";
+"production_test_rules.note2" = "If connection fails (error code -1), the user must reconnect and retest.";
+"production_test_rules.note3" = "Firmware version is checked by substring matching against the configured version.";
+
 /* OTA */
 "ota.title" = "OTA";
 "ota.title_not_started" = "OTA (not started)";
 "ota.title_completed" = "OTA (completed)";
 "ota.title_completed_with_duration" = "OTA (completed, %@)";
 "ota.title_in_progress_format" = "OTA (in progress, %.2f%%)";
+"ota.title_waiting_reboot" = "OTA (waiting reboot, %d sec)";
+"ota.title_failed" = "OTA (Failed)";
+"ota.title_cancelled" = "OTA (Cancelled)";
+"ota.failed" = "OTA Failed";
+"ota.cancelled" = "OTA Cancelled";
 "ota.progress_elapsed_remaining" = "Progress %.2f%% | Elapsed %@ | Left ~%@";
 "ota.progress_elapsed_rate_remaining" = "Progress %.2f%% | Elapsed %@ | %@ | Left ~%@";
 "ota.firmware_version" = "Current firmware version";
@@ -131,7 +172,16 @@
 "ota.ready" = "Ready";
 "ota.completed" = "Completed";
 "ota.completed_with_duration" = "Completed, %@";
+"ota.waiting_validation" = "Waiting for device validation... (elapsed %@)";
+"ota.waiting_reboot_countdown" = "Waiting for reboot confirmation... (auto reboot in %d seconds)";
+"ota.completed_waiting_reboot" = "OTA completed (%@), waiting for reboot confirmation... (auto reboot in %d seconds)";
+"ota.reboot" = "Reboot Device";
+"ota.reboot_with_countdown" = "Reboot Device (%d)";
 "ota.exclusive_title" = "OTA in Progress";
+"ota.exclusive_title_failed" = "OTA Failed";
+"ota.exclusive_title_cancelled" = "OTA Cancelled";
+"ota.close" = "Close";
+"ota.exclusive_title_reboot" = "OTA Completed, Waiting for Reboot";
 
 /* Menu */
 "menu.floating" = "Floating";

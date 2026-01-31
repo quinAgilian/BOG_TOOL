@@ -5,6 +5,7 @@ struct DeviceListView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
     @State private var showFilterPopover = false
+    @State private var showProductionTestRules = false
     @State private var showGattProtocol = false
 
     private var connectionErrorMessage: String? {
@@ -35,6 +36,10 @@ struct DeviceListView: View {
                 Text(appLanguage.string("device_list.title"))
                     .font(.headline)
                 Spacer()
+                Button(appLanguage.string("device_list.production_test_rules")) {
+                    showProductionTestRules = true
+                }
+                .buttonStyle(.bordered)
                 Button(appLanguage.string("device_list.gatt_protocol")) {
                     showGattProtocol = true
                 }
@@ -72,6 +77,9 @@ struct DeviceListView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        .sheet(isPresented: $showProductionTestRules) {
+            ProductionTestRulesView()
+        }
         .sheet(isPresented: $showGattProtocol) {
             GattProtocolView()
         }
