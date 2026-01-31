@@ -7,8 +7,10 @@ import UniformTypeIdentifiers
 /// 无 actor 隔离的常量，供 CBCentralManager/CBPeripheral 回调（nonisolated）使用
 private enum BLEManagerConstants {
     static let deviceInfoServiceUUIDString = "0000180a-0000-1000-8000-00805f9b34fb"
+    static let deviceInfoServiceCBUUID = CBUUID(string: "180A")  // 使用短格式，CBUUID 会自动处理
     static var mainAppServiceCBUUIDs: [CBUUID] {
-        GattMapping.appServiceCBUUIDs.filter { $0.uuidString.lowercased() != deviceInfoServiceUUIDString }
+        // 使用 CBUUID 对象比较，可以正确处理短格式和完整格式
+        GattMapping.appServiceCBUUIDs.filter { $0 != deviceInfoServiceCBUUID }
     }
 }
 
@@ -44,6 +46,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaProgress: Double = 0
     /// OTA 是否进行中
     @Published var isOTAInProgress: Bool = false
+    /// 当前 OTA 目标固件总字节数（用于进度行显示传输速率与剩余时间），开始 OTA 时设置，结束/取消/断开时清空
+    @Published var otaFirmwareTotalBytes: Int?
     /// 单次 OTA 开始时间（用于显示已用/剩余时间），结束时置 nil
     @Published var otaStartTime: Date?
     /// OTA 成功完成时的耗时（秒），用于完成后在状态/标题显示
@@ -95,6 +99,11 @@ final class BLEManager: NSObject, ObservableObject {
     /// 连接后是否已发现并缓存了 GATT 特征（压力/RTC 等），为 true 后才应发起读/写，避免「未连接或特征不可用」和连接超时
     @Published var areCharacteristicsReady: Bool = false
     
+    /// 调试用：最近一次按 UUID 读取的结果（UUID、hex、原始 Data），用于 UUIDDebugView 显示 hex + 解码
+    @Published var lastDebugReadUUID: String?
+    @Published var lastDebugReadHex: String?
+    @Published var lastDebugReadData: Data?
+    
     // MARK: - Internal
     private var centralManager: CBCentralManager!
     private var hasAutoStartedScan = false
@@ -107,6 +116,8 @@ final class BLEManager: NSObject, ObservableObject {
     private var testingCharacteristic: CBCharacteristic?
     private var otaStatusCharacteristic: CBCharacteristic?
     private var otaDataCharacteristic: CBCharacteristic?
+    /// 调试用：当前等待读取回调的特征 UUID，用于将 didUpdateValueFor 结果交给 UUIDDebugView
+    private var pendingDebugReadUUID: String?
     
     private var valveControlCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.valveControl) }
     private var valveStateCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.valveState) }
@@ -119,6 +130,9 @@ final class BLEManager: NSObject, ObservableObject {
     private var otaDataCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.otaData) }
     
     private static let otaFirmwarePathKey = "ota.selectedFirmwarePath"
+    private static let otaFirmwareBookmarkKey = "ota.selectedFirmwareBookmark"
+    /// 通过书签恢复的固件 URL，已调用 startAccessingSecurityScopedResource，更换选择时需 stop
+    private var securityScopedFirmwareURL: URL?
     /// OTA 流程状态机：写 start(1) → 等设备返回 1（或超时）→ 发块（每包仅写+延时，不读 Status）→ 写 finished(2) → 轮询 3/4
     private enum OTAFlowState {
         case idle
@@ -156,7 +170,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var autoSendRebootAfterOTA: Bool = true
     
     /// Device Information 服务与特征 UUID（标准 GATT）；连接且主 GATT 就绪后再单独发现并读取
-    private static let deviceInfoServiceUUID = CBUUID(string: "180A")
+    private static let deviceInfoServiceUUID = BLEManagerConstants.deviceInfoServiceCBUUID
     private static var deviceInfoServiceUUIDString: String { BLEManagerConstants.deviceInfoServiceUUIDString }
     /// 主业务服务（不含 180A），连接后先发现这些；Device Info 在主特征就绪后再发现
     private static var mainAppServiceCBUUIDs: [CBUUID] { BLEManagerConstants.mainAppServiceCBUUIDs }
@@ -174,6 +188,22 @@ final class BLEManager: NSObject, ObservableObject {
     }
     
     private func loadSavedFirmwareURL() {
+        // 优先用安全作用域书签恢复（沙盒下重启后仍可访问）
+        if let data = UserDefaults.standard.data(forKey: Self.otaFirmwareBookmarkKey) {
+            var isStale = false
+            guard let url = try? URL(resolvingBookmarkData: data, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale),
+                  url.startAccessingSecurityScopedResource() else {
+                UserDefaults.standard.removeObject(forKey: Self.otaFirmwareBookmarkKey)
+                return
+            }
+            selectedFirmwareURL = url
+            securityScopedFirmwareURL = url
+            if isStale, let newData = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
+                UserDefaults.standard.set(newData, forKey: Self.otaFirmwareBookmarkKey)
+            }
+            return
+        }
+        // 兼容旧版：仅存了路径；重启后沙盒可能无法访问，仅当文件存在时恢复
         guard let path = UserDefaults.standard.string(forKey: Self.otaFirmwarePathKey),
               !path.isEmpty,
               FileManager.default.fileExists(atPath: path) else { return }
@@ -412,12 +442,7 @@ final class BLEManager: NSObject, ObservableObject {
         let panel = makeFirmwareOpenPanel()
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self = self, response == .OK, let url = panel.url else { return }
-            let path = url.path
-            UserDefaults.standard.set(path, forKey: Self.otaFirmwarePathKey)
-            self.selectedFirmwareURL = url
-            self.appendLog("[OTA] 已选择固件: \(url.lastPathComponent)")
-            self.appendLog("[OTA] 路径: \(path)")
-            self.appendLog("[OTA] 大小: \(self.fileSizeString(for: url))")
+            self.applySelectedFirmwareURL(url)
         }
     }
 
@@ -440,13 +465,24 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func runFirmwareOpenPanel(panel: NSOpenPanel) {
         if panel.runModal() == .OK, let url = panel.url {
-            let path = url.path
-            UserDefaults.standard.set(path, forKey: Self.otaFirmwarePathKey)
-            selectedFirmwareURL = url
-            appendLog("[OTA] 已选择固件: \(url.lastPathComponent)")
-            appendLog("[OTA] 路径: \(path)")
-            appendLog("[OTA] 大小: \(fileSizeString(for: url))")
+            applySelectedFirmwareURL(url)
         }
+    }
+
+    /// 应用用户选择的固件 URL：释放旧的安全作用域、保存书签、更新 selectedFirmwareURL
+    private func applySelectedFirmwareURL(_ url: URL) {
+        if let old = securityScopedFirmwareURL {
+            old.stopAccessingSecurityScopedResource()
+            securityScopedFirmwareURL = nil
+        }
+        if let data = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
+            UserDefaults.standard.set(data, forKey: Self.otaFirmwareBookmarkKey)
+        }
+        UserDefaults.standard.removeObject(forKey: Self.otaFirmwarePathKey)
+        selectedFirmwareURL = url
+        appendLog("[OTA] 已选择固件: \(url.lastPathComponent)")
+        appendLog("[OTA] 路径: \(url.path)")
+        appendLog("[OTA] 大小: \(fileSizeString(for: url))")
     }
     
     private func fileSizeString(for url: URL) -> String {
@@ -454,6 +490,12 @@ final class BLEManager: NSObject, ObservableObject {
         if n < 1024 { return "\(n) B" }
         if n < 1024 * 1024 { return "\(n / 1024) KB" }
         return String(format: "%.2f MB", Double(n) / (1024 * 1024))
+    }
+    
+    /// 当前选择固件的大小字符串（供 OTA 区域显示目标固件大小）
+    var selectedFirmwareSizeDisplay: String {
+        guard let url = selectedFirmwareURL else { return "—" }
+        return fileSizeString(for: url)
     }
     
     /// 启动 OTA（产测与 Debug 共用，按 GATT 协议：start(1) → 写块 → finished(2) → 轮询 Status → reboot(3) 或 abort(0)）
@@ -490,6 +532,7 @@ final class BLEManager: NSObject, ObservableObject {
         otaProgress = 0
         otaCompletedDuration = nil
         otaStartTime = Date()
+        otaFirmwareTotalBytes = data.count
         lastLoggedOtaProgressStep = -1
         lastPublishedOtaProgressPercent = -1
         otaChunkWriteStartTime = nil
@@ -511,6 +554,7 @@ final class BLEManager: NSObject, ObservableObject {
         otaFlowState = .idle
         isOTAInProgress = false
         otaStartTime = nil
+        otaFirmwareTotalBytes = nil
     }
     
     /// 启动确认超时：若设备未在时间内返回 Status=1，直接开始发块，确保能进入 OTA 进度
@@ -589,6 +633,7 @@ final class BLEManager: NSObject, ObservableObject {
                 otaFlowState = .failed("device did not ack start (status=\(value))")
                 isOTAInProgress = false
                 otaStartTime = nil
+                otaFirmwareTotalBytes = nil
                 writeOtaStatus(0)
             }
         case .sentFinishedPolling:
@@ -601,6 +646,7 @@ final class BLEManager: NSObject, ObservableObject {
                 }
                 isOTAInProgress = false
                 otaStartTime = nil
+                otaFirmwareTotalBytes = nil
                 if autoSendRebootAfterOTA {
                     writeOtaStatus(3)
                     appendLog("[OTA] 已自动发送 reboot，设备将重启并断开连接")
@@ -612,6 +658,7 @@ final class BLEManager: NSObject, ObservableObject {
                 otaFlowState = .failed("image fail")
                 isOTAInProgress = false
                 otaStartTime = nil
+                otaFirmwareTotalBytes = nil
                 writeOtaStatus(0)
             default:
                 Task { @MainActor in
@@ -687,6 +734,69 @@ final class BLEManager: NSObject, ObservableObject {
         return data
     }
     
+    /// 调试用：按 UUID 从已发现的服务/特征中查找 CBCharacteristic
+    private func characteristic(for uuidString: String) -> CBCharacteristic? {
+        guard let peripheral = connectedPeripheral else { return nil }
+        let target = uuidString.lowercased()
+        for service in peripheral.services ?? [] {
+            for char in service.characteristics ?? [] {
+                if char.uuid.uuidString.lowercased() == target { return char }
+            }
+        }
+        return nil
+    }
+    
+    /// 调试用：向指定 UUID 特征写入 hex 字符串（空格可选）
+    func writeToCharacteristic(uuidString: String, hex: String) {
+        guard let data = dataFromHexString(hex), !data.isEmpty else {
+            appendLog("[GATT] 无效 hex，跳过写入", level: .error)
+            return
+        }
+        guard let char = characteristic(for: uuidString) else {
+            appendLog("[GATT] 未找到特征 \(uuidString)，跳过写入", level: .error)
+            return
+        }
+        writeToCharacteristic(char, data: data)
+    }
+    
+    /// 调试用：读取指定 UUID 特征；结果在 didUpdateValueFor 中写入 lastDebugRead* 供 UI 显示
+    func readCharacteristic(uuidString: String) {
+        guard let char = characteristic(for: uuidString) else {
+            appendLog("[GATT] 未找到特征 \(uuidString)，跳过读取", level: .error)
+            return
+        }
+        pendingDebugReadUUID = uuidString
+        readCharacteristic(char)
+    }
+    
+    /// 调试用：按 GATT 协议将特征值 Data 解码为可读字符串（压力/ RTC/阀门/OTA/Device Info 等）
+    func decodedString(forCharacteristicUUID uuidString: String, data: Data) -> String {
+        let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        guard let key = GattMapping.characteristicKey(for: CBUUID(string: uuidString)) else {
+            if let str = stringFromDeviceInfoData(data), !str.isEmpty { return str }
+            return hex
+        }
+        switch key {
+        case GattMapping.Key.pressureRead, GattMapping.Key.pressureOpen:
+            return formatPressureData(data)
+        case GattMapping.Key.rtc, GattMapping.Key.testing:
+            return formatRTCData(data)
+        case GattMapping.Key.gasSystemStatus:
+            return formatGasStatusData(data)
+        case GattMapping.Key.otaStatus:
+            if let b = data.first { return "\(b)" }
+            return hex
+        case GattMapping.Key.valveControl:
+            if let b = data.first { return formatValveModeData(b) }
+            return hex
+        case GattMapping.Key.valveState:
+            if let b = data.first { return formatValveStateData(b) }
+            return hex
+        default:
+            return hex
+        }
+    }
+    
     private func discoverServicesAndCharacteristics(for peripheral: CBPeripheral) {
         peripheral.delegate = self
         // 连接后先只发现主业务服务；Device Information (180A) 在主特征就绪后再发现并读取
@@ -719,7 +829,19 @@ final class BLEManager: NSObject, ObservableObject {
             readPressure(silent: true)
             readPressureOpen(silent: true)
             // 连接且主 GATT 就绪后，再发现并读取 Device Information (SN/FW 等)
-            connectedPeripheral?.discoverServices([Self.deviceInfoServiceUUID])
+            appendLog("开始发现 Device Information 服务 (180A)...")
+            // 先检查是否已经在已发现的服务列表中（使用 CBUUID 对象比较）
+            if let deviceInfoService = connectedPeripheral?.services?.first(where: { 
+                $0.uuid == Self.deviceInfoServiceUUID
+            }) {
+                // 服务已存在，直接发现特征
+                appendLog("Device Information 服务已在服务列表中，直接发现特征")
+                connectedPeripheral?.discoverCharacteristics(nil, for: deviceInfoService)
+            } else {
+                // 服务不存在，尝试发现
+                appendLog("Device Information 服务不在列表中，调用 discoverServices")
+                connectedPeripheral?.discoverServices([Self.deviceInfoServiceUUID])
+            }
         }
     }
 }
@@ -833,6 +955,7 @@ extension BLEManager: CBCentralManagerDelegate {
             otaFlowState = .idle
             isOTAInProgress = false
             otaStartTime = nil
+            otaFirmwareTotalBytes = nil
         }
     }
     
@@ -846,11 +969,30 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
         let mainServiceSet = Set(BLEManagerConstants.mainAppServiceCBUUIDs.map { $0.uuidString.lowercased() })
-        for service in peripheral.services ?? [] {
+        let deviceInfoServiceUUID = Self.deviceInfoServiceUUID  // 使用 CBUUID 对象进行比较
+        let services = peripheral.services ?? []
+        Task { @MainActor in appendLog("发现 \(services.count) 个服务") }
+        for service in services {
             let uuidLower = service.uuid.uuidString.lowercased()
             let isMain = mainServiceSet.contains(uuidLower)
-            let isDeviceInfo = (uuidLower == BLEManagerConstants.deviceInfoServiceUUIDString)
+            // 使用 CBUUID 对象比较，可以正确处理短格式（180A）和完整格式（0000180A-...）
+            let isDeviceInfo = (service.uuid == deviceInfoServiceUUID)
+            Task { @MainActor in 
+                if isDeviceInfo {
+                    appendLog("发现 Device Information 服务: \(service.uuid.uuidString)")
+                    appendLog("  期望 UUID: \(deviceInfoServiceUUID.uuidString) (短格式: 180A)", level: .debug)
+                    appendLog("  实际 UUID: \(service.uuid.uuidString)", level: .debug)
+                    appendLog("  UUID 匹配: \(isDeviceInfo)", level: .debug)
+                } else {
+                    appendLog("服务 \(service.uuid.uuidString) 不是 Device Information", level: .debug)
+                }
+            }
             if isMain || isDeviceInfo {
+                Task { @MainActor in 
+                    if isDeviceInfo {
+                        appendLog("开始发现 Device Information 服务的特征...")
+                    }
+                }
                 peripheral.discoverCharacteristics(nil, for: service)
             }
         }
@@ -862,16 +1004,42 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
         Task { @MainActor in
+            // 使用 CBUUID 对象比较，可以正确处理短格式和完整格式
+            let isDeviceInfo = (service.uuid == Self.deviceInfoServiceUUID)
+            if isDeviceInfo {
+                appendLog("发现特征完成: Device Information 服务，共 \(service.characteristics?.count ?? 0) 个特征")
+            } else {
+                appendLog("发现特征完成: 服务 \(service.uuid.uuidString)，共 \(service.characteristics?.count ?? 0) 个特征", level: .debug)
+            }
+            
             updateCharacteristics(from: service)
             // Device Information 服务：连接成功后自动读 SN、固件版本等
-            if service.uuid.uuidString.lowercased() == BLEManagerConstants.deviceInfoServiceUUIDString {
-                appendLog("正在读取 Device Information (SN/FW/制造商等)...")
-                for char in service.characteristics ?? [] {
-                    peripheral.readValue(for: char)
+            if isDeviceInfo {
+                let chars = service.characteristics ?? []
+                appendLog("发现 Device Information 服务，共 \(chars.count) 个特征")
+                if chars.isEmpty {
+                    appendLog("[Device Info] 警告：Device Information 服务没有发现任何特征", level: .warning)
+                } else {
+                    for char in chars {
+                        let charName = deviceInfoCharacteristicName(for: char.uuid)
+                        appendLog("  - 特征 \(char.uuid.uuidString): \(charName)")
+                        peripheral.readValue(for: char)
+                    }
+                    appendLog("正在读取 Device Information (SN/FW/制造商等)...")
                 }
             }
             appendLog("服务与特征就绪")
         }
+    }
+    
+    /// 获取 Device Information 特征的可读名称（用于调试日志）
+    @MainActor private func deviceInfoCharacteristicName(for uuid: CBUUID) -> String {
+        if uuid == Self.charManufacturerUUID { return "制造商 (2A29)" }
+        if uuid == Self.charModelUUID { return "型号 (2A24)" }
+        if uuid == Self.charSerialUUID { return "序列号 (2A25)" }
+        if uuid == Self.charFirmwareUUID { return "固件版本 (2A26)" }
+        if uuid == Self.charHardwareUUID { return "硬件版本 (2A27)" }
+        return "未知"
     }
     
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -900,6 +1068,12 @@ extension BLEManager: CBPeripheralDelegate {
         let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
         let isOtaStatusRead = (GattMapping.characteristicKey(for: characteristic.uuid) == GattMapping.Key.otaStatus)
         Task { @MainActor in
+            if let pending = pendingDebugReadUUID, characteristic.uuid.uuidString.lowercased() == pending.lowercased() {
+                lastDebugReadUUID = characteristic.uuid.uuidString
+                lastDebugReadHex = hex
+                lastDebugReadData = data
+                pendingDebugReadUUID = nil
+            }
             if !(isOtaStatusRead && isOTAInProgress) { appendLog("rd:\(uuidTag): \(alias) : \(hex)", level: .debug) }
             if let u = pressureReadCBUUID, characteristic.uuid == u {
                 lastPressureValue = formatPressureData(data)
@@ -940,23 +1114,36 @@ extension BLEManager: CBPeripheralDelegate {
                     }
                     pendingValveSetOpen = nil
                 }
-            } else if characteristic.uuid == BLEManager.charManufacturerUUID || characteristic.uuid == BLEManager.charModelUUID || characteristic.uuid == BLEManager.charSerialUUID || characteristic.uuid == BLEManager.charFirmwareUUID || characteristic.uuid == BLEManager.charHardwareUUID,
-                      let str = stringFromDeviceInfoData(data) {
-                if characteristic.uuid == BLEManager.charManufacturerUUID {
-                    deviceManufacturer = str
-                    appendLog("制造商: \(str)")
-                } else if characteristic.uuid == BLEManager.charModelUUID {
-                    deviceModelNumber = str
-                    appendLog("型号: \(str)")
-                } else if characteristic.uuid == BLEManager.charSerialUUID {
-                    deviceSerialNumber = str
-                    appendLog("SN: \(str)")
-                } else if characteristic.uuid == BLEManager.charFirmwareUUID {
-                    currentFirmwareVersion = str
-                    appendLog("FW: \(str)")
+            } else if characteristic.uuid == BLEManager.charManufacturerUUID || characteristic.uuid == BLEManager.charModelUUID || characteristic.uuid == BLEManager.charSerialUUID || characteristic.uuid == BLEManager.charFirmwareUUID || characteristic.uuid == BLEManager.charHardwareUUID {
+                // Device Information 特征：先记录原始数据，再尝试解析
+                let charName = deviceInfoCharacteristicName(for: characteristic.uuid)
+                appendLog("[Device Info] 读取 \(charName): hex=\(hex), 长度=\(data.count)", level: .debug)
+                
+                if let str = stringFromDeviceInfoData(data), !str.isEmpty {
+                    // 成功解析为字符串
+                    if characteristic.uuid == BLEManager.charManufacturerUUID {
+                        deviceManufacturer = str
+                        appendLog("制造商: \(str)")
+                    } else if characteristic.uuid == BLEManager.charModelUUID {
+                        deviceModelNumber = str
+                        appendLog("型号: \(str)")
+                    } else if characteristic.uuid == BLEManager.charSerialUUID {
+                        deviceSerialNumber = str
+                        appendLog("SN: \(str)")
+                    } else if characteristic.uuid == BLEManager.charFirmwareUUID {
+                        currentFirmwareVersion = str
+                        appendLog("FW: \(str)")
+                    } else if characteristic.uuid == BLEManager.charHardwareUUID {
+                        deviceHardwareRevision = str
+                        appendLog("硬件版本: \(str)")
+                    }
                 } else {
-                    deviceHardwareRevision = str
-                    appendLog("硬件版本: \(str)")
+                    // 数据为空或无法解析为 UTF-8 字符串
+                    if data.isEmpty {
+                        appendLog("[Device Info] \(charName): 数据为空", level: .warning)
+                    } else {
+                        appendLog("[Device Info] \(charName): 无法解析为 UTF-8 字符串 (hex: \(hex))", level: .warning)
+                    }
                 }
             } else {
                 appendLog("[GATT] 未识别特征 \(alias)", level: .warning)
@@ -975,6 +1162,7 @@ extension BLEManager: CBPeripheralDelegate {
                     otaFlowState = .failed(error.localizedDescription)
                     isOTAInProgress = false
                     otaStartTime = nil
+                    otaFirmwareTotalBytes = nil
                 }
             }
         } else {

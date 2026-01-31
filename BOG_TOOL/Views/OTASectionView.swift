@@ -9,23 +9,44 @@ struct OTASectionView: View {
         ble.selectedFirmwareURL?.lastPathComponent ?? appLanguage.string("ota.not_selected")
     }
     
-    /// 将秒数格式化为 "m:ss"
+    /// 将秒数格式化为 "00:00"（两位分、两位秒，整体长度固定）
     private static func formatOTATime(_ sec: TimeInterval) -> String {
-        let m = max(0, Int(sec)) / 60
-        let s = max(0, Int(sec)) % 60
-        return String(format: "%d:%02d", m, s)
+        let total = max(0, Int(sec))
+        let m = min(99, total / 60)
+        let s = total % 60
+        return String(format: "%02d:%02d", m, s)
     }
     
-    /// 状态行：进行中显示进度+已用+剩余；完成后显示完成；新会话显示就绪
+    /// 将字节/秒格式化为 "XXX kbps"（千比特/秒，整数，整体长度固定）
+    private static func formatTransferRate(bytesPerSecond: Double) -> String {
+        let kbps = Int(bytesPerSecond * 8 / 1000)
+        return String(format: "%3d kbps", min(999, max(0, kbps)))
+    }
+    
+    /// 状态行：进行中显示进度+已用+当前速率+剩余（按当前传输速率估算）；完成后显示完成；新会话显示就绪
     private func statusText(now: Date = Date()) -> String {
         if ble.isOTAInProgress {
             let start = ble.otaStartTime ?? now
             let elapsed = now.timeIntervalSince(start)
-            let remaining: TimeInterval? = (ble.otaProgress > 0 && ble.otaProgress < 1)
-                ? elapsed / ble.otaProgress * (1 - ble.otaProgress)
-                : nil
-            let remainingStr = remaining.map(Self.formatOTATime) ?? "--"
-            return String(format: appLanguage.string("ota.progress_elapsed_remaining"), ble.otaProgress * 100, Self.formatOTATime(elapsed), remainingStr)
+            let progress = ble.otaProgress
+            var rateStr = "  — kbps"
+            var remainingStr = "00:00"
+            if let total = ble.otaFirmwareTotalBytes, total > 0, elapsed > 0 {
+                let bytesSent = Int(progress * Double(total))
+                let rate = Double(bytesSent) / elapsed
+                rateStr = Self.formatTransferRate(bytesPerSecond: rate)
+                if progress > 0, progress < 1, rate > 0 {
+                    let remainingBytes = Int((1 - progress) * Double(total))
+                    let remaining = TimeInterval(remainingBytes) / rate
+                    remainingStr = Self.formatOTATime(remaining)
+                }
+            } else if progress > 0, progress < 1 {
+                let remaining = elapsed / progress * (1 - progress)
+                remainingStr = Self.formatOTATime(remaining)
+            } else {
+                remainingStr = "00:00"
+            }
+            return String(format: appLanguage.string("ota.progress_elapsed_rate_remaining"), progress * 100, Self.formatOTATime(elapsed), rateStr, remainingStr)
         }
         if ble.otaProgress >= 1 {
             if let dur = ble.otaCompletedDuration {
@@ -82,6 +103,16 @@ struct OTASectionView: View {
                     .foregroundStyle(ble.currentFirmwareVersion != nil ? .primary : .secondary)
             }
             
+            // 目标固件大小（当前选择的 .bin 文件）
+            HStack(alignment: .center, spacing: 6) {
+                Text(appLanguage.string("ota.firmware_size"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(ble.selectedFirmwareSizeDisplay)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            
             // 固件选择
             HStack(alignment: .center, spacing: 8) {
                 Text(appLanguage.string("ota.browse"))
@@ -134,29 +165,14 @@ struct OTASectionView: View {
                 .disabled(!ble.isConnected || (!ble.isOTAInProgress && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
             }
             
-            // OTA 完成后是否自动发送 reboot
-            Toggle(isOn: Binding(
-                get: { ble.autoSendRebootAfterOTA },
-                set: { ble.autoSendRebootAfterOTA = $0 }
-            )) {
+            // OTA 完成后是否自动发送 reboot（当前固定为选中，复选框禁用）
+            Toggle(isOn: .constant(true)) {
                 Text(appLanguage.string("ota.auto_reboot_after_ota"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .toggleStyle(.checkbox)
-            
-            // Reboot 单独一行，右对齐，宽度与其它操作按钮一致
-            HStack(alignment: .center, spacing: 0) {
-                Spacer(minLength: 0)
-                Button {
-                    ble.sendReboot()
-                } label: {
-                    Text(appLanguage.string("ota.reboot"))
-                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
-                }
-                .buttonStyle(.bordered)
-                .disabled(!ble.isConnected || !ble.isOtaAvailable || ble.isOTAInProgress)
-            }
+            .disabled(true)
         }
         .padding(6)
         .background(otaSectionBackground)

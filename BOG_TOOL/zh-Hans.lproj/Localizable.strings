@@ -97,6 +97,9 @@
 "debug.uuid_read" = "读";
 "debug.uuid_select" = "选择特征…";
 "debug.uuid_hex_placeholder" = "十六进制（如 01 02 03）";
+"debug.uuid_preset_custom" = "自定义 hex";
+"debug.uuid_time_auto" = "Auto";
+"debug.uuid_time_custom" = "自定义";
 "debug.uuid_send" = "发送到设备";
 "debug.uuid_read_btn" = "读取";
 
@@ -114,7 +117,9 @@
 "ota.title_completed_with_duration" = "OTA (完成, %@)";
 "ota.title_in_progress_format" = "OTA (进行中, %.2f%%)";
 "ota.progress_elapsed_remaining" = "进度 %.2f%% | 已用 %@ | 剩余 ~%@";
+"ota.progress_elapsed_rate_remaining" = "进度 %.2f%% | 已用 %@ | %@ | 剩余 ~%@";
 "ota.firmware_version" = "当前固件版本";
+"ota.firmware_size" = "目标固件大小";
 "ota.unknown" = "未知";
 "ota.browse" = "选择固件";
 "ota.not_selected" = "未选择";

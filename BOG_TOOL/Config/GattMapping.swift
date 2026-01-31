@@ -58,6 +58,44 @@ enum GattMapping {
     /// 是否成功从 JSON 加载（用于调试）
     static var isLoadedFromFile: Bool { config != nil }
     
+    /// 按特征 UUID 返回协议中 Write 段的预设选项（单字节 0–255 → 标签），用于调试界面下拉 + 自定义 hex
+    /// 解析 valueDescription 中 "Write:\n0: xxx\n1: yyy" 形式，仅保留 key 为 0–255 的项
+    static func writePresets(forCharacteristicUUID uuidString: String) -> [(value: UInt8, label: String)] {
+        let target = uuidString.lowercased()
+        for service in (config?.services ?? []) {
+            for char in service.characteristics {
+                guard char.uuid.lowercased() == target,
+                      let raw = char.valueDescription, !raw.isEmpty else { continue }
+                return parseWritePresetsFromValueDescription(raw)
+            }
+        }
+        return []
+    }
+    
+    private static func parseWritePresetsFromValueDescription(_ raw: String) -> [(value: UInt8, label: String)] {
+        var result: [(value: UInt8, label: String)] = []
+        let lines = raw.components(separatedBy: .newlines)
+        var inWrite = false
+        for line in lines {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.lowercased() == "write:" {
+                inWrite = true
+                continue
+            }
+            if inWrite && !t.isEmpty {
+                if t.lowercased() == "read:" { break }
+                guard let colonIdx = t.firstIndex(of: ":"), colonIdx != t.endIndex else { continue }
+                let keyPart = String(t[..<colonIdx]).trimmingCharacters(in: .whitespaces)
+                let valuePart = String(t[t.index(after: colonIdx)...]).trimmingCharacters(in: .whitespaces)
+                guard !keyPart.isEmpty, !valuePart.isEmpty,
+                      let num = UInt8(keyPart),
+                      keyPart.allSatisfy({ $0.isNumber }) else { continue }
+                result.append((num, valuePart))
+            }
+        }
+        return result
+    }
+    
     // MARK: - 常用 Key 常量（仅 key 名不硬编码 UUID）
     enum Key {
         static let valveControl = "valveControl"

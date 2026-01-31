@@ -97,6 +97,9 @@
 "debug.uuid_read" = "Read";
 "debug.uuid_select" = "Select characteristic…";
 "debug.uuid_hex_placeholder" = "Hex (e.g. 01 02 03)";
+"debug.uuid_preset_custom" = "Custom hex";
+"debug.uuid_time_auto" = "Auto";
+"debug.uuid_time_custom" = "Custom";
 "debug.uuid_send" = "Send to device";
 "debug.uuid_read_btn" = "Read";
 
@@ -114,7 +117,9 @@
 "ota.title_completed_with_duration" = "OTA (completed, %@)";
 "ota.title_in_progress_format" = "OTA (in progress, %.2f%%)";
 "ota.progress_elapsed_remaining" = "Progress %.2f%% | Elapsed %@ | Left ~%@";
+"ota.progress_elapsed_rate_remaining" = "Progress %.2f%% | Elapsed %@ | %@ | Left ~%@";
 "ota.firmware_version" = "Current firmware version";
+"ota.firmware_size" = "Firmware size";
 "ota.unknown" = "Unknown";
 "ota.browse" = "Browse firmware";
 "ota.not_selected" = "Not selected";
