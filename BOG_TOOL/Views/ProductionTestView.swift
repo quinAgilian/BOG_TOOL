@@ -1438,7 +1438,7 @@ struct ProductionTestView: View {
                     stepResults[step.id] = pressureMessages.joined(separator: "\n")
                     stepStatuses[step.id] = pressurePassed ? .passed : .failed
                     
-                case "step_ota": // 断开连接前 OTA（默认启用，使用已选固件执行一次 OTA）
+                case "step_ota": // 断开连接前 OTA（默认启用，仅当固件版本与期望不一致时才执行 OTA）
                     self.log("步骤: 断开前 OTA", level: .info)
                     
                     if ble.selectedFirmwareURL == nil {
@@ -1448,6 +1448,14 @@ struct ProductionTestView: View {
                         isRunning = false
                         currentStepId = nil
                         return
+                    }
+                    
+                    // 固件版本已与期望一致则跳过 OTA，无需升级
+                    if let currentFw = ble.currentFirmwareVersion, currentFw == rules.firmwareVersion {
+                        self.log("固件版本已与期望一致（\(currentFw)），跳过 OTA", level: .info)
+                        stepResults[step.id] = "OTA: 已跳过（FW \(currentFw) ✓）"
+                        stepStatuses[step.id] = .passed
+                        break
                     }
                     
                     let valveOpened = await ensureValveOpen()
