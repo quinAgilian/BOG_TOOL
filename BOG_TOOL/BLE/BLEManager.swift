@@ -45,6 +45,15 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var lastOtaStatusValue: UInt8?
     /// 当前选择的固件 URL（持久化到 UserDefaults）
     @Published var selectedFirmwareURL: URL?
+    /// 从当前选择的固件文件名解析出的版本号（如 1.0.5），供 OTA 区域显示
+    var parsedFirmwareVersion: String? {
+        guard let url = selectedFirmwareURL else { return nil }
+        let name = url.deletingPathExtension().lastPathComponent
+        let parts = name.components(separatedBy: "_").filter { Int($0) != nil }
+        if parts.count >= 3 { return parts.suffix(3).joined(separator: ".") }
+        let (_, fw) = extractFirmwareVersions(from: name)
+        return fw.isEmpty ? nil : fw
+    }
     /// OTA 进度 0...1
     @Published var otaProgress: Double = 0
     /// OTA 是否进行中
@@ -115,6 +124,10 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var scanFilterExcludeUnnamed: Bool = true
     /// 连接后是否已发现并缓存了 GATT 特征（压力/RTC 等），为 true 后才应发起读/写，避免「未连接或特征不可用」和连接超时
     @Published var areCharacteristicsReady: Bool = false
+    /// 当前在设备列表中选中的设备 ID（与 DeviceListView / DebugModeView 同步）
+    @Published var selectedDeviceId: UUID? = nil
+    /// 是否已成功读取过 RTC（用于 Write RTC 按钮可用性）
+    var hasRTCRetrievedSuccessfully: Bool { !lastRTCValue.isEmpty && lastRTCValue != "--" }
     
     /// 调试用：最近一次按 UUID 读取的结果（UUID、hex、原始 Data），用于 UUIDDebugView 显示 hex + 解码
     @Published var lastDebugReadUUID: String?
@@ -461,6 +474,27 @@ final class BLEManager: NSObject, ObservableObject {
     /// 读取 RTC：从 OTA Testing 特征读 7 字节（需先调用一次 writeTestingUnlock）
     func readRTC() {
         readCharacteristic(testingCharacteristic)
+    }
+    
+    /// 将当前系统时间写入设备 RTC（7 字节：秒、分、时、日、星期、月、年-2000），然后触发读取验证
+    func writeRTCTime() {
+        let cal = Calendar.current
+        let now = Date()
+        let sec = UInt8(cal.component(.second, from: now))
+        let minute = UInt8(cal.component(.minute, from: now))
+        let hour = UInt8(cal.component(.hour, from: now))
+        let day = UInt8(cal.component(.day, from: now))
+        let weekday = UInt8(cal.component(.weekday, from: now)) // 1=Sun ... 7=Sat
+        let month = UInt8(cal.component(.month, from: now))
+        let year = cal.component(.year, from: now)
+        let yearByte = UInt8(Swift.max(0, Swift.min(255, year - 2000)))
+        let data = Data([sec, minute, hour, day, weekday, month, yearByte])
+        let hexString = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        writeRTCTrigger(hexString: hexString)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            readRTC()
+        }
     }
     
     // MARK: - OTA（逻辑见 Config/OTA_Flow.md）
