@@ -41,6 +41,7 @@
 "device_list.id_column" = "标识";
 "device_list.production_test_rules" = "产测规则";
 "device_list.gatt_protocol" = "GATT 协议";
+"device_list.select_device_first" = "请先选择设备";
 
 "device_info.title" = "设备基础信息";
 "device_info.sn" = "SN";
@@ -110,16 +111,42 @@
 /* 产测模式 */
 "production_test.title" = "产测模式";
 "production_test.log_title" = "产测日志";
+"production_test.steps_title" = "测试步骤";
 "production_test.connect_first" = "请先连接设备";
 "production_test.start" = "开始产测";
 "production_test.running" = "测试进行中...";
+"production_test.steps" = "步骤";
+"production_test.enabled_steps" = "已启用";
+"production_test.status_pending" = "待测试";
+"production_test.status_running" = "进行中";
+"production_test.status_passed" = "通过";
+"production_test.status_failed" = "失败";
+"production_test.status_skipped" = "已跳过";
+"production_test.test_result" = "测试结果";
+"production_test.execution_log" = "执行日志";
+"production_test.connected" = "设备已连接";
+"production_test.disconnected" = "已断开";
+"production_test.sn_invalid" = "SN无效";
+"production_test_rules.summary" = "测试规则摘要";
+"production_test.test_result_summary" = "测试结果摘要";
+"production_test.test_results" = "测试结果";
+"production_test.passed_steps" = "通过步骤";
 
 /* 产测规则 */
 "production_test_rules.title" = "产测规则 (SOP)";
-"production_test_rules.firmware_version_title" = "固件版本配置";
-"production_test_rules.firmware_version_label" = "期望版本：";
-"production_test_rules.firmware_version_placeholder" = "1.1.1";
-"production_test_rules.firmware_version_hint" = "将检查设备固件版本是否包含此值。自动保存。";
+"production_test_rules.firmware_version_title" = "版本配置";
+"production_test_rules.bootloader_version_label" = "Bootloader：";
+"production_test_rules.bootloader_version_placeholder" = "例如：2";
+"production_test_rules.firmware_version_label" = "FW 版本：";
+"production_test_rules.firmware_version_placeholder" = "1.0.5";
+"production_test_rules.firmware_version_hint" = "将检查设备固件版本是否与此值一致，不一致则触发OTA。自动保存。";
+"production_test_rules.firmware_upgrade_enabled" = "启用固件版本升级";
+"production_test_rules.use_parsed_version" = "使用 %@";
+"production_test_rules.use_parsed_version_hint" = "使用从固件文件名解析的版本号";
+"production_test_rules.parsed_version_hint" = "从文件名解析: %@";
+"production_test_rules.hardware_version_label" = "HW 版本：";
+"production_test_rules.hardware_version_placeholder" = "P02V02R00";
+"production_test_rules.serial_number_hint" = "设备序列号（SN）必须有效且不能为空，将从设备读取并验证。";
 "production_test_rules.procedure_title" = "测试流程";
 "production_test_rules.procedure_description" = "本产测遵循标准化流程，用于验证设备功能。每个步骤必须满足指定的判定标准。";
 "production_test_rules.steps_title" = "测试步骤";
@@ -129,9 +156,9 @@
 "production_test_rules.step2_title" = "确认固件版本";
 "production_test_rules.step2_desc" = "检查设备固件版本是否与期望版本匹配。";
 "production_test_rules.step2_criteria" = "✓ 通过：固件版本号包含配置的版本字符串。";
-"production_test_rules.step3_title" = "读取 RTC";
-"production_test_rules.step3_desc" = "读取设备RTC并与系统时间比较。";
-"production_test_rules.step3_criteria" = "✓ 通过：时间误差 ≤ 2秒。⚠ 警告：2-5秒，将写入RTC并重新读取。✗ 失败：> 5秒。";
+"production_test_rules.step3_title" = "检查 RTC";
+"production_test_rules.step3_desc" = "检查设备RTC并与系统时间比较。";
+"production_test_rules.step3_criteria" = "✓ 通过：时间误差 ≤ 60秒。⚠ 警告：60-300秒，将写入RTC并重新检查。✗ 失败：> 5秒。";
 "production_test_rules.step4_title" = "读取压力值";
 "production_test_rules.step4_desc" = "读取关闭和开启状态下的压力值。";
 "production_test_rules.step4_criteria" = "✓ 通过：关闭状态 > 1.300 mbar，开启状态 > 1.1 mbar。";
@@ -142,10 +169,31 @@
 "production_test_rules.step_disconnect_desc" = "所有测试完成后安全断开设备连接。";
 "production_test_rules.step_disconnect_criteria" = "✓ 通过：设备成功断开连接。";
 "production_test_rules.drag_hint" = "拖动以重新排序（第一步和最后一步已锁定）";
+"production_test_rules.edit_order" = "编辑顺序";
+"production_test_rules.done_editing" = "完成";
 "production_test_rules.notes_title" = "注意事项";
 "production_test_rules.note1" = "开始测试前确保设备已正确连接。";
 "production_test_rules.note2" = "如果连接失败（错误码-1），用户必须重新连接并重测。";
 "production_test_rules.note3" = "固件版本通过子字符串匹配方式检查配置的版本。";
+"production_test_rules.thresholds_title" = "阈值配置";
+"production_test_rules.rtc_time_diff" = "RTC时间差阈值";
+"production_test_rules.rtc_pass_threshold" = "通过阈值";
+"production_test_rules.rtc_fail_threshold" = "失败阈值";
+"production_test_rules.rtc_write_enabled" = "启用RTC写入";
+"production_test_rules.rtc_write_retry_count" = "写入重试次数";
+"production_test_rules.timeouts" = "等待超时配置";
+"production_test_rules.rtc_read_timeout" = "RTC读取超时";
+"production_test_rules.device_info_timeout" = "设备信息读取超时";
+"production_test_rules.ota_start_timeout" = "OTA启动等待超时";
+"production_test_rules.reconnect_timeout" = "设备重新连接超时";
+"production_test_rules.valve_open_timeout" = "阀门打开超时";
+"production_test_rules.unit_seconds" = "秒";
+"production_test_rules.pressure_thresholds" = "压力阈值";
+"production_test_rules.pressure_closed_min" = "关闭状态最小值";
+"production_test_rules.pressure_open_min" = "开启状态最小值";
+"production_test_rules.pressure_diff_check" = "启用压力差值检查";
+"production_test_rules.pressure_diff_threshold" = "压力差值阈值";
+"production_test_rules.unit_mbar" = "mbar";
 
 /* OTA */
 "ota.title" = "OTA";

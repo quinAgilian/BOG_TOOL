@@ -147,24 +147,28 @@ struct OTASectionView: View {
             
             // 模态模式下隐藏固件选择和浏览按钮，只显示关键信息
             if !isModal {
-                // 当前固件版本
+                // 固件版本：current 和 goal（goal 后面显示固件大小）
                 HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
-                    Text(appLanguage.string("ota.firmware_version"))
+                    Text("fw:")
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Text("current:")
                         .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Text(ble.currentFirmwareVersion ?? appLanguage.string("ota.unknown"))
                         .font(UIDesignSystem.Typography.monospacedCaption)
                         .foregroundStyle(ble.currentFirmwareVersion != nil ? UIDesignSystem.Foreground.primary : UIDesignSystem.Foreground.secondary)
-                }
-                
-                // 目标固件大小（当前选择的 .bin 文件）
-                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
-                    Text(appLanguage.string("ota.firmware_size"))
+                    Text("goal:")
                         .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    Text(ble.selectedFirmwareSizeDisplay)
+                    Text(ble.parsedFirmwareVersion ?? appLanguage.string("ota.not_selected"))
                         .font(UIDesignSystem.Typography.monospacedCaption)
-                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        .foregroundStyle(ble.parsedFirmwareVersion != nil ? UIDesignSystem.Foreground.primary : UIDesignSystem.Foreground.secondary)
+                    if ble.selectedFirmwareURL != nil {
+                        Text("(\(ble.selectedFirmwareSizeDisplay))")
+                            .font(UIDesignSystem.Typography.monospacedCaption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    }
                 }
                 
                 // 固件选择
@@ -195,22 +199,30 @@ struct OTASectionView: View {
                 VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                     HStack(alignment: .center, spacing: UIDesignSystem.Spacing.lg) {
                         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
-                            Text(appLanguage.string("ota.firmware_version"))
-                                .font(UIDesignSystem.Typography.caption)
-                                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                            Text(ble.currentFirmwareVersion ?? appLanguage.string("ota.unknown"))
-                                .font(UIDesignSystem.Typography.monospaced)
-                                .foregroundStyle(ble.currentFirmwareVersion != nil ? UIDesignSystem.Foreground.primary : UIDesignSystem.Foreground.secondary)
+                            HStack(spacing: UIDesignSystem.Spacing.sm) {
+                                Text("fw:")
+                                    .font(UIDesignSystem.Typography.caption)
+                                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                                Text("current:")
+                                    .font(UIDesignSystem.Typography.caption)
+                                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                                Text(ble.currentFirmwareVersion ?? appLanguage.string("ota.unknown"))
+                                    .font(UIDesignSystem.Typography.monospaced)
+                                    .foregroundStyle(ble.currentFirmwareVersion != nil ? UIDesignSystem.Foreground.primary : UIDesignSystem.Foreground.secondary)
+                                Text("goal:")
+                                    .font(UIDesignSystem.Typography.caption)
+                                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                                Text(ble.parsedFirmwareVersion ?? appLanguage.string("ota.not_selected"))
+                                    .font(UIDesignSystem.Typography.monospaced)
+                                    .foregroundStyle(ble.parsedFirmwareVersion != nil ? UIDesignSystem.Foreground.primary : UIDesignSystem.Foreground.secondary)
+                                if ble.selectedFirmwareURL != nil {
+                                    Text("(\(ble.selectedFirmwareSizeDisplay))")
+                                        .font(UIDesignSystem.Typography.monospaced)
+                                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                                }
+                            }
                         }
                         Spacer()
-                        VStack(alignment: .trailing, spacing: UIDesignSystem.Spacing.xs) {
-                            Text(appLanguage.string("ota.firmware_size"))
-                                .font(UIDesignSystem.Typography.caption)
-                                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                            Text(ble.selectedFirmwareSizeDisplay)
-                                .font(UIDesignSystem.Typography.monospaced)
-                                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                        }
                     }
                     
                     // 显示固件文件名

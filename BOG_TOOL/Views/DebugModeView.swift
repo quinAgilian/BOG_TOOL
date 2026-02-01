@@ -18,6 +18,9 @@ struct DebugModeView: View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
             Text(appLanguage.string("debug.title"))
                 .font(UIDesignSystem.Typography.sectionTitle)
+            
+            // 连接/断开按钮区域
+            connectionSection
 
             rtcSection
             valveSection
@@ -49,15 +52,66 @@ struct DebugModeView: View {
                         .background(Color.secondary.opacity(0.2))
                         .cornerRadius(UIDesignSystem.CornerRadius.sm)
                 }
-            } else {
-                Text(appLanguage.string("debug.connect_first"))
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
         }
         .padding(UIDesignSystem.Padding.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(UIDesignSystem.Background.subtle)
         .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+    
+    // MARK: - 连接区域
+    
+    /// 获取当前选中的设备
+    private var selectedDevice: BLEDevice? {
+        guard let deviceId = ble.selectedDeviceId else { return nil }
+        return ble.discoveredDevices.first(where: { $0.id == deviceId })
+    }
+    
+    private var connectionSection: some View {
+        HStack(spacing: UIDesignSystem.Spacing.md) {
+            if ble.isConnected {
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
+                    Text(ble.connectedDeviceName ?? appLanguage.string("device_list.connected"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
+                Spacer()
+                Button {
+                    ble.disconnect()
+                } label: {
+                    Text(appLanguage.string("device_list.disconnect"))
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                }
+                .buttonStyle(.bordered)
+                .disabled(ble.isOTAInProgress)
+            } else {
+                Text(appLanguage.string("debug.connect_first"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Spacer()
+                if let device = selectedDevice {
+                    Button {
+                        ble.connect(to: device)
+                    } label: {
+                        Text(appLanguage.string("device_list.connect"))
+                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(ble.isOTAInProgress)
+                } else {
+                    Text(appLanguage.string("device_list.select_device_first"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
+            }
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.sm)
     }
     
     // MARK: - RTC 区域（仅 UI）
@@ -82,13 +136,13 @@ struct DebugModeView: View {
                 .cornerRadius(UIDesignSystem.CornerRadius.sm)
                 Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
-                    ble.writeRTCTrigger(hexString: "01")
+                    ble.writeRTCTime()
                 } label: {
                     Text(appLanguage.string("debug.write_rtc"))
                         .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!ble.isConnected || ble.isOTAInProgress)
+                .disabled(!ble.isConnected || !ble.hasRTCRetrievedSuccessfully || ble.isOTAInProgress)
             }
 
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
@@ -114,7 +168,6 @@ struct DebugModeView: View {
                 }
                 Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
-                    ble.writeTestingUnlock()
                     ble.readRTC()
                 } label: {
                     Text(appLanguage.string("debug.read_rtc"))
@@ -272,7 +325,7 @@ struct DebugModeView: View {
                 Text(appLanguage.string("debug.valve_control_manual"))
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                Spacer()
                 HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Toggle("", isOn: manualModeBinding)
                         .toggleStyle(.switch)
@@ -288,7 +341,12 @@ struct DebugModeView: View {
                 Text(appLanguage.string("debug.valve_switch"))
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                if let key = ble.valveOperationWarning, !key.isEmpty {
+                    Text(appLanguage.string(key))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(.orange)
+                }
+                Spacer()
                 HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Toggle("", isOn: valveSwitchBinding)
                         .toggleStyle(.switch)
@@ -299,11 +357,6 @@ struct DebugModeView: View {
                     }
                 }
                 .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress || isSettingValve || !isManualMode)
-                if let key = ble.valveOperationWarning, !key.isEmpty {
-                    Text(appLanguage.string(key))
-                        .font(UIDesignSystem.Typography.caption)
-                        .foregroundStyle(.orange)
-                }
             }
         }
         .padding(UIDesignSystem.Padding.sm)

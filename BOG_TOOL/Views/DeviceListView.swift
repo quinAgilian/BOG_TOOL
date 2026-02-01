@@ -4,13 +4,21 @@ import SwiftUI
 struct DeviceListView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    var selectedMode: AppMode  // 当前模式：产测或Debug
     @State private var showFilterPopover = false
     @State private var showProductionTestRules = false
     @State private var showGattProtocol = false
+    @State private var selectedId: Set<UUID> = []  // 选中的设备ID
 
     private var connectionErrorMessage: String? {
         if let key = ble.errorMessageKey { return appLanguage.string(key) }
         return ble.errorMessage
+    }
+    
+    /// 获取当前选中的设备
+    private var selectedDevice: BLEDevice? {
+        guard let id = selectedId.first else { return nil }
+        return ble.discoveredDevices.first(where: { $0.id == id })
     }
 
     var body: some View {
@@ -47,10 +55,6 @@ struct DeviceListView: View {
                 if ble.isConnected {
                     Text(ble.connectedDeviceName ?? appLanguage.string("device_list.connected"))
                         .foregroundStyle(.green)
-                    Button(appLanguage.string("device_list.disconnect")) {
-                        ble.disconnect()
-                    }
-                    .buttonStyle(.bordered)
                 } else {
                     Button(appLanguage.string("device_list.filter_rules")) {
                         showFilterPopover = true
@@ -72,16 +76,32 @@ struct DeviceListView: View {
             }
 
             if !ble.isConnected {
-                DeviceTableSection(ble: ble)
+                DeviceTableSection(ble: ble, selectedId: $selectedId, selectedMode: selectedMode)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .sheet(isPresented: $showProductionTestRules) {
-            ProductionTestRulesView()
+            ProductionTestRulesView(ble: ble)
         }
         .sheet(isPresented: $showGattProtocol) {
             GattProtocolView()
+        }
+        .onChange(of: selectedId) { newValue in
+            // 更新 BLEManager 中的选中设备ID
+            ble.selectedDeviceId = newValue.first
+        }
+        .onChange(of: ble.selectedDeviceId) { newValue in
+            // 当 BLEManager 中的选中设备ID变化时，同步到 UI（如果 UI 中未选中）
+            if newValue != nil && selectedId.isEmpty {
+                selectedId = [newValue!]
+            }
+        }
+        .onChange(of: ble.isConnected) { connected in
+            // 连接成功时，如果 UI 中未选中设备，自动选中连接的设备
+            if connected, let deviceId = ble.selectedDeviceId, selectedId.isEmpty {
+                selectedId = [deviceId]
+            }
         }
     }
 }
@@ -90,8 +110,9 @@ struct DeviceListView: View {
 struct DeviceTableSection: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    @Binding var selectedId: Set<UUID>  // 从父视图传入
+    var selectedMode: AppMode  // 当前模式
     @State private var sortOrder: [KeyPathComparator<BLEDevice>] = [KeyPathComparator(\.name, order: .forward)]
-    @State private var selectedId: Set<UUID> = []
 
     private var sortedDevices: [BLEDevice] {
         ble.discoveredDevices.sorted(using: sortOrder)
@@ -107,15 +128,6 @@ struct DeviceTableSection: View {
                 TableColumn(appLanguage.string("device_list.id_column"), value: \.shortId)
             }
             .frame(height: 140)
-            HStack {
-                if let id = selectedId.first, let device = ble.discoveredDevices.first(where: { $0.id == id }) {
-                    Button(appLanguage.string("device_list.connect")) {
-                        ble.connect(to: device)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                Spacer()
-            }
         }
     }
 }

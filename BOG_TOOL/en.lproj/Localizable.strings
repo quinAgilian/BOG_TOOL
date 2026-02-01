@@ -41,6 +41,7 @@
 "device_list.id_column" = "ID";
 "device_list.production_test_rules" = "Production Test Rules";
 "device_list.gatt_protocol" = "GATT Protocol";
+"device_list.select_device_first" = "Please select a device first";
 
 "device_info.title" = "Device info";
 "device_info.sn" = "SN";
@@ -110,16 +111,42 @@
 /* Production test */
 "production_test.title" = "Production Test";
 "production_test.log_title" = "Test log";
+"production_test.steps_title" = "Test Steps";
 "production_test.connect_first" = "Please connect a device first";
 "production_test.start" = "Start test";
 "production_test.running" = "Testing...";
+"production_test.steps" = "steps";
+"production_test.enabled_steps" = "enabled";
+"production_test.status_pending" = "Pending";
+"production_test.status_running" = "Running";
+"production_test.status_passed" = "Passed";
+"production_test.status_failed" = "Failed";
+"production_test.status_skipped" = "Skipped";
+"production_test.test_result" = "Test Result";
+"production_test.execution_log" = "Execution Log";
+"production_test.connected" = "Device Connected";
+"production_test.disconnected" = "Disconnected";
+"production_test.sn_invalid" = "SN Invalid";
+"production_test_rules.summary" = "Test Rules Summary";
+"production_test.test_result_summary" = "Test Result Summary";
+"production_test.test_results" = "Test Results";
+"production_test.passed_steps" = "Passed Steps";
 
 /* Production test rules */
 "production_test_rules.title" = "Production Test Rules (SOP)";
-"production_test_rules.firmware_version_title" = "Firmware Version Configuration";
-"production_test_rules.firmware_version_label" = "Expected Version:";
-"production_test_rules.firmware_version_placeholder" = "1.1.1";
-"production_test_rules.firmware_version_hint" = "The firmware version will be checked against this value. Saved automatically.";
+"production_test_rules.firmware_version_title" = "Version Configuration";
+"production_test_rules.bootloader_version_label" = "Bootloader:";
+"production_test_rules.bootloader_version_placeholder" = "e.g., 2";
+"production_test_rules.firmware_version_label" = "FW Version:";
+"production_test_rules.firmware_version_placeholder" = "1.0.5";
+"production_test_rules.firmware_version_hint" = "Will check if device firmware version matches this value, otherwise trigger OTA. Auto-saved.";
+"production_test_rules.firmware_upgrade_enabled" = "Enable Firmware Version Upgrade";
+"production_test_rules.use_parsed_version" = "Use %@";
+"production_test_rules.use_parsed_version_hint" = "Use version parsed from firmware filename";
+"production_test_rules.parsed_version_hint" = "Parsed from filename: %@";
+"production_test_rules.hardware_version_label" = "HW Version:";
+"production_test_rules.hardware_version_placeholder" = "P02V02R00";
+"production_test_rules.serial_number_hint" = "Device serial number (SN) must be valid and not empty, will be read from device and verified.";
 "production_test_rules.procedure_title" = "Test Procedure";
 "production_test_rules.procedure_description" = "This production test follows a standardized procedure to verify device functionality. Each step must pass the specified criteria.";
 "production_test_rules.steps_title" = "Test Steps";
@@ -142,10 +169,31 @@
 "production_test_rules.step_disconnect_desc" = "Safely disconnect from the device after all tests are completed.";
 "production_test_rules.step_disconnect_criteria" = "✓ Pass: Device disconnected successfully.";
 "production_test_rules.drag_hint" = "Drag to reorder (first and last steps are locked)";
+"production_test_rules.edit_order" = "Edit Order";
+"production_test_rules.done_editing" = "Done";
 "production_test_rules.notes_title" = "Important Notes";
 "production_test_rules.note1" = "Ensure device is properly connected before starting the test.";
 "production_test_rules.note2" = "If connection fails (error code -1), the user must reconnect and retest.";
 "production_test_rules.note3" = "Firmware version is checked by substring matching against the configured version.";
+"production_test_rules.thresholds_title" = "Threshold Configuration";
+"production_test_rules.rtc_time_diff" = "RTC Time Difference Thresholds";
+"production_test_rules.rtc_pass_threshold" = "Pass Threshold";
+"production_test_rules.rtc_fail_threshold" = "Fail Threshold";
+"production_test_rules.rtc_write_enabled" = "Enable RTC Write";
+"production_test_rules.rtc_write_retry_count" = "Write Retry Count";
+"production_test_rules.timeouts" = "Timeout Configuration";
+"production_test_rules.rtc_read_timeout" = "RTC Read Timeout";
+"production_test_rules.device_info_timeout" = "Device Info Read Timeout";
+"production_test_rules.ota_start_timeout" = "OTA Start Wait Timeout";
+"production_test_rules.reconnect_timeout" = "Device Reconnect Timeout";
+"production_test_rules.valve_open_timeout" = "Valve Open Timeout";
+"production_test_rules.unit_seconds" = "seconds";
+"production_test_rules.pressure_thresholds" = "Pressure Thresholds";
+"production_test_rules.pressure_closed_min" = "Closed State Min";
+"production_test_rules.pressure_open_min" = "Open State Min";
+"production_test_rules.pressure_diff_check" = "Enable Pressure Difference Check";
+"production_test_rules.pressure_diff_threshold" = "Pressure Difference Threshold";
+"production_test_rules.unit_mbar" = "mbar";
 
 /* OTA */
 "ota.title" = "OTA";

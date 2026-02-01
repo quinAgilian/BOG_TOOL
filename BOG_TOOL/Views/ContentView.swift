@@ -68,7 +68,7 @@ struct ContentView: View {
                 .padding(.horizontal, UIDesignSystem.Padding.lg)
                 .padding(.vertical, UIDesignSystem.Padding.sm)
                 
-                DeviceListView(ble: ble)
+                DeviceListView(ble: ble, selectedMode: selectedMode)
 
                 Divider()
 
