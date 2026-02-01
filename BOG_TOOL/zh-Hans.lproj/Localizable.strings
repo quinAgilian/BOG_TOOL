@@ -21,9 +21,27 @@
 "log.auto_scroll_hint" = "开启后，新日志时自动滚动到底部。";
 "log.clear" = "清空";
 
-/* 连接/配对错误 */
-"error.pairing_removed_hint" = "设备已清除配对信息。请在「系统设置 → 蓝牙」中移除该设备后重试连接。";
+/* 连接/配对错误（对方删除配对信息时：提醒去蓝牙设置中删除该设备） */
+"error.pairing_removed_hint" = "对方已删除配对信息。请在系统「蓝牙」设置中删除该设备（忘记设备）后重试连接。";
+"error.pairing_removed_enter_pairing_mode" = "请使设备进入配对模式。";
+"error.encryption_insufficient_hint" = "加密/认证不足。请在系统弹窗中点击「允许」完成配对，然后手动再次连接。";
 "error.dismiss" = "知道了";
+
+/* 蓝牙权限/配对提示（30 秒等待） */
+"ble.permission_prompt_wait_30s" = "请同意蓝牙配对/权限（若已出现弹窗请点击允许）；若为「设备已清除配对」请在系统设置→蓝牙中移除该设备后重试。等待 30 秒…";
+"ble.permission_prompt_ended" = "等待 30 秒结束，请重试连接或当前操作。";
+"ble.permission_prompt_banner" = "请同意蓝牙配对/权限（或在系统设置→蓝牙中移除设备后重试）。";
+"ble.retrigger_pairing" = "重新弹出授权";
+
+/* 加密 GATT 读取失败：按原因分别提示 */
+"encryption_read_failed.title" = "无法读取加密特征";
+"encryption_read_failed.message" = "连接未就绪，请查看日志或重试。";
+"encryption_read_failed.pairing_removed.title" = "对方已删除配对信息";
+"encryption_read_failed.pairing_removed.message" = "请在系统「蓝牙」设置中删除该设备（忘记设备）后重新连接。";
+"encryption_read_failed.encryption_insufficient.title" = "加密/认证不足";
+"encryption_read_failed.encryption_insufficient.message" = "请在系统弹出的对话框中点击「允许」以完成配对。";
+"encryption_read_failed.open_settings" = "打开蓝牙设置";
+"encryption_read_failed.dismiss" = "知道了";
 
 "valve.warning_already_open" = "当前已是开启状态";
 "valve.warning_already_closed" = "当前已是关闭状态";
@@ -95,6 +113,7 @@
 "debug.open_pressure" = "开阀压力";
 "debug.close_pressure" = "关阀压力";
 "debug.read" = "读取";
+"debug.ota_production_test_in_progress" = "产测 OTA 进行中，请切回产测界面操作。";
 
 /* UUID 调试（按特征读写） */
 "debug.uuid_title" = "UUID 读写";
@@ -188,7 +207,10 @@
 "production_test_rules.rtc_fail_threshold" = "失败阈值";
 "production_test_rules.rtc_write_enabled" = "启用RTC写入";
 "production_test_rules.rtc_write_retry_count" = "写入重试次数";
+"production_test_rules.global_step_delay_section" = "全局延时设定";
 "production_test_rules.timeouts" = "等待超时配置";
+"production_test_rules.step_interval_ms" = "步骤间延时 (ms)";
+"production_test_rules.bluetooth_permission_wait_seconds" = "蓝牙权限等待 (s)";
 "production_test_rules.rtc_read_timeout" = "RTC读取超时";
 "production_test_rules.device_info_timeout" = "设备信息读取超时";
 "production_test_rules.ota_start_timeout" = "OTA启动等待超时";
@@ -223,6 +245,7 @@
 "ota.start" = "启动 OTA";
 "ota.cancel" = "取消 OTA";
 "ota.reboot" = "重启";
+"ota.reboot_countdown" = "重启 (%d)";
 "ota.auto_reboot_after_ota" = "OTA 完成后自动发送重启";
 "ota.progress" = "进度";
 "ota.ready" = "就绪";
@@ -241,6 +264,18 @@
 "ota.reboot_disconnected_hint" = "请重新连接设备以验证固件版本";
 "ota.title_reboot_disconnected" = "OTA (设备已重启)";
 "ota.target_from_production_rules" = "目标固件由产测规则指定：%@";
+"ota.packet_size" = "数据包大小";
+"ota.total_size" = "总大小";
+"ota.elapsed" = "已用时间";
+"ota.remaining" = "剩余时间";
+"ota.rate" = "速率";
+"ota.duration" = "总耗时";
+"ota.cancel_upgrade" = "取消升级";
+
+"production_test.ota_section_title" = "产测 OTA";
+"production_test.bluetooth_permission_confirm_title" = "蓝牙权限 / 配对";
+"production_test.bluetooth_permission_confirm_message" = "若出现系统弹窗，请点击「允许」。处理完成后，请点击「继续」或按回车键继续产测。";
+"production_test.bluetooth_permission_continue" = "继续";
 
 /* 菜单 */
 "menu.floating" = "置顶";

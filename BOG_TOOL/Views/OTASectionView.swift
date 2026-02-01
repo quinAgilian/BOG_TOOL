@@ -17,6 +17,12 @@ struct OTASectionView: View {
     var isProductionTestOTA: Bool = false
     /// 下拉当前选中的管理固件 id（仅 Debug 下拉用）
     @State private var pickerChoice: FirmwarePickerChoice = .none
+    /// Debug 下记住的固件选择（UserDefaults key）
+    private static let debugSelectedFirmwareIdKey = "debug_ota_selected_firmware_id"
+    /// 等待用户确认重启时的倒计时剩余秒数（30s 后自动执行 reboot）
+    @State private var rebootCountdownRemaining: Int = 0
+    
+    private static let rebootCountdownSeconds = 30
     
     private var firmwareDisplayName: String {
         ble.selectedFirmwareURL?.lastPathComponent ?? appLanguage.string("ota.not_selected")
@@ -202,6 +208,7 @@ struct OTASectionView: View {
                         case .managed(let id):
                             if let url = firmwareManager.url(forId: id) {
                                 ble.selectFirmware(url: url)
+                                UserDefaults.standard.set(id.uuidString, forKey: Self.debugSelectedFirmwareIdKey)
                             }
                         }
                     }
@@ -270,6 +277,7 @@ struct OTASectionView: View {
                                 case .managed(let id):
                                     if let url = firmwareManager.url(forId: id) {
                                         ble.selectFirmware(url: url)
+                                        UserDefaults.standard.set(id.uuidString, forKey: Self.debugSelectedFirmwareIdKey)
                                     }
                                 }
                             }
@@ -316,8 +324,8 @@ struct OTASectionView: View {
                         Text(appLanguage.string("ota.close"))
                             .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
                     } else if ble.isOTACompletedWaitingReboot {
-                        // 显示重启按钮（等待用户确认）
-                        Text(appLanguage.string("ota.reboot"))
+                        // 显示重启按钮与倒计时（超时后自动执行）
+                        Text(String(format: appLanguage.string("ota.reboot_countdown"), rebootCountdownRemaining))
                             .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
                     } else {
                         Text(ble.isOTAInProgress ? appLanguage.string("ota.cancel") : appLanguage.string("ota.start"))
@@ -350,6 +358,51 @@ struct OTASectionView: View {
         .background(otaSectionBackground)
         .clipShape(RoundedRectangle(cornerRadius: isModal ? UIDesignSystem.CornerRadius.xl : UIDesignSystem.CornerRadius.md, style: .continuous))
         .frame(maxWidth: isModal ? 600 : nil)
+        .onChange(of: ble.isOTACompletedWaitingReboot) { newValue in
+            if newValue {
+                rebootCountdownRemaining = Self.rebootCountdownSeconds
+            } else {
+                rebootCountdownRemaining = 0
+            }
+        }
+        .task(id: ble.isOTACompletedWaitingReboot) {
+            guard ble.isOTACompletedWaitingReboot else { return }
+            for i in (1...Self.rebootCountdownSeconds).reversed() {
+                guard ble.isOTACompletedWaitingReboot else { return }
+                rebootCountdownRemaining = i
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            if ble.isOTACompletedWaitingReboot {
+                ble.sendReboot()
+            }
+        }
+        .onAppear { syncDebugFirmwareSelection() }
+        .onChange(of: firmwareManager.entries.count) { _ in syncDebugFirmwareSelection() }
+    }
+    
+    /// Debug 模式：固件默认选第一个；若曾选择过则从 UserDefaults 恢复并维持
+    private func syncDebugFirmwareSelection() {
+        guard !isProductionTestOTA else { return }
+        let entries = firmwareManager.entries
+        if entries.isEmpty {
+            pickerChoice = .none
+            return
+        }
+        if let savedIdStr = UserDefaults.standard.string(forKey: Self.debugSelectedFirmwareIdKey),
+           let savedId = UUID(uuidString: savedIdStr),
+           entries.contains(where: { $0.id == savedId }) {
+            pickerChoice = .managed(savedId)
+            if let url = firmwareManager.url(forId: savedId) {
+                ble.selectFirmware(url: url)
+            }
+            return
+        }
+        let firstId = entries[0].id
+        pickerChoice = .managed(firstId)
+        if let url = firmwareManager.url(forId: firstId) {
+            ble.selectFirmware(url: url)
+        }
+        UserDefaults.standard.set(firstId.uuidString, forKey: Self.debugSelectedFirmwareIdKey)
     }
     
     /// 未启动：正常；失败：红；取消：橙；进行中：蓝色呼吸灯；完成：绿

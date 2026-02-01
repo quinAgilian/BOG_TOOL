@@ -72,6 +72,11 @@ struct ProductionTestView: View {
     @State private var stepLogRanges: [String: (start: Int, end: Int)] = [:]
     // 测试结果状态
     @State private var testResultStatus: TestResultStatus = .notStarted
+    /// 是否已在本次程序启动时清理过测试结果摘要（仅清理一次）
+    private static var hasClearedResultSummaryAtLaunch = false
+    /// 连接后蓝牙权限/配对确认弹窗：显示时产测暂停，用户点击「继续」或回车后继续
+    @State private var showBluetoothPermissionConfirmation = false
+    @State private var bluetoothPermissionContinuation: (() -> Void)? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
@@ -139,9 +144,9 @@ struct ProductionTestView: View {
                 .shadow(color: .blue.opacity(0.3), radius: 4, x: 0, y: 2)
             }
             
-            // 简化的OTA状态显示（仅在OTA进行中时显示）
+            // 产测独立 OTA 区域：显示数据包大小、时间统计、速率等；升级过程中可点击「取消升级」
             if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTACancelled {
-                simplifiedOTAStatusView
+                productionTestOTAArea
             }
             
             // 测试步骤功能区 - 垂直滚动布局
@@ -171,65 +176,8 @@ struct ProductionTestView: View {
             )
             .cornerRadius(UIDesignSystem.CornerRadius.sm)
 
-            // 测试日志区域
-            if !testLog.isEmpty {
-                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
-                    HStack {
-                        Image(systemName: "list.bullet.rectangle")
-                            .foregroundStyle(.blue)
-                        Text(appLanguage.string("production_test.log_title"))
-                            .font(UIDesignSystem.Typography.caption)
-                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    }
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
-                                ForEach(Array(testLog.enumerated()), id: \.offset) { i, line in
-                                    HStack(alignment: .top, spacing: 4) {
-                                        if line.contains("✓") || line.contains("验证通过") {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundStyle(.green)
-                                                .font(.caption)
-                                        } else if line.contains("警告") || line.contains("错误") || line.contains("Warning") || line.contains("Error") || line.contains("Failed") {
-                                            Image(systemName: "exclamationmark.triangle.fill")
-                                                .foregroundStyle(.orange)
-                                                .font(.caption)
-                                        } else {
-                                            Image(systemName: "circle.fill")
-                                                .foregroundStyle(.gray.opacity(0.3))
-                                                .font(.system(size: 4))
-                                                .padding(.top, 6)
-                                        }
-                                        Text(line)
-                                            .font(UIDesignSystem.Typography.monospacedCaption)
-                                    }
-                                    .id(i)
-                                }
-                            }
-                        }
-                        .frame(height: UIDesignSystem.Component.testLogHeight)
-                        .onChange(of: testLog.count) { _ in
-                            if let last = testLog.indices.last {
-                                proxy.scrollTo(last, anchor: .bottom)
-                            }
-                        }
-                    }
-                }
-                .padding(UIDesignSystem.Padding.sm)
-                .background(
-                    LinearGradient(
-                        colors: [Color.secondary.opacity(0.1), Color.secondary.opacity(0.05)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .cornerRadius(UIDesignSystem.CornerRadius.sm)
-                .overlay(
-                    RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.sm)
-                        .stroke(Color.blue.opacity(0.2), lineWidth: 1)
-                )
-            } else if !ble.isConnected {
-                // 未连接时的提示
+            // 未连接时提示；产测日志统一在主日志区查看，此处不再展示 test log
+            if !ble.isConnected {
                 HStack {
                     Spacer()
                     VStack(spacing: UIDesignSystem.Spacing.sm) {
@@ -272,6 +220,11 @@ struct ProductionTestView: View {
         .onAppear {
             updateTestRules()
             updateTestSteps()
+            // 程序启动时清理测试结果摘要与日志，仅执行一次
+            if !Self.hasClearedResultSummaryAtLaunch {
+                clearTestResultSummaryAndLog()
+                Self.hasClearedResultSummaryAtLaunch = true
+            }
             initializeStepStatuses()
             updateTestResultStatus()
         }
@@ -293,6 +246,27 @@ struct ProductionTestView: View {
                 updateTestResultStatus()
             }
         }
+        .sheet(isPresented: $showBluetoothPermissionConfirmation) {
+            BluetoothPermissionConfirmSheet(
+                onContinue: {
+                    bluetoothPermissionContinuation?()
+                    bluetoothPermissionContinuation = nil
+                    showBluetoothPermissionConfirmation = false
+                }
+            )
+            .environmentObject(appLanguage)
+        }
+    }
+    
+    /// 清理测试结果摘要与日志区（程序启动时调用一次）
+    private func clearTestResultSummaryAndLog() {
+        stepResults.removeAll()
+        stepStatuses.removeAll()
+        stepLogRanges.removeAll()
+        testLog.removeAll()
+        stepIndex = 0
+        currentStepId = nil
+        testResultStatus = .notStarted
     }
     
     /// 初始化步骤状态
@@ -680,10 +654,15 @@ struct ProductionTestView: View {
         var hardwareVersion: String = ""
     }
     
-    /// 简化的OTA状态视图（仅显示进度和状态）
-    private var simplifiedOTAStatusView: some View {
-        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+    /// 产测独立 OTA 区域：数据包大小、总大小、已用/剩余时间、速率、总耗时；升级中可取消
+    private var productionTestOTAArea: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
             HStack(spacing: UIDesignSystem.Spacing.sm) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(.blue)
+                Text(appLanguage.string("production_test.ota_section_title"))
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
                 if ble.isOTAInProgress {
                     ProgressView()
                         .scaleEffect(0.8)
@@ -697,15 +676,59 @@ struct ProductionTestView: View {
                     Image(systemName: "clock.fill")
                         .foregroundStyle(.blue)
                 }
-                
-                Text(otaStatusText)
-                    .font(UIDesignSystem.Typography.caption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            }
+            
+            Text(otaStatusText)
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            
+            // 数据包大小、总大小（始终在 OTA 相关状态时显示）
+            HStack(alignment: .top, spacing: UIDesignSystem.Spacing.lg) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                    Text("\(appLanguage.string("ota.packet_size")): \(ble.otaChunkSizeBytes) B")
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Text("\(appLanguage.string("ota.total_size")): \(otaTotalSizeDisplay)")
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
+                Spacer()
+                // 进行中：已用时间、剩余时间、速率
+                if ble.isOTAInProgress {
+                    VStack(alignment: .trailing, spacing: UIDesignSystem.Spacing.xs) {
+                        Text("\(appLanguage.string("ota.elapsed")): \(otaElapsedDisplay)")
+                            .font(UIDesignSystem.Typography.monospacedCaption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        Text("\(appLanguage.string("ota.remaining")): \(otaRemainingDisplay)")
+                            .font(UIDesignSystem.Typography.monospacedCaption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        Text("\(appLanguage.string("ota.rate")): \(otaRateDisplay)")
+                            .font(UIDesignSystem.Typography.monospacedCaption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    }
+                }
+                // 已完成（成功）：总耗时
+                else if ble.otaProgress >= 1, !ble.isOTAFailed, !ble.isOTACancelled, let dur = ble.otaCompletedDuration {
+                    Text("\(appLanguage.string("ota.duration")): \(formatOTATime(dur))")
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
             }
             
             if ble.isOTAInProgress {
                 ProgressView(value: ble.otaProgress)
                     .progressViewStyle(.linear)
+            }
+            
+            // 升级过程中临时允许一个按键用于触发取消升级
+            if ble.isOTAInProgress {
+                Button {
+                    ble.cancelOTA()
+                } label: {
+                    Text(appLanguage.string("ota.cancel_upgrade"))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
             }
         }
         .padding(UIDesignSystem.Padding.sm)
@@ -713,7 +736,53 @@ struct ProductionTestView: View {
         .cornerRadius(UIDesignSystem.CornerRadius.sm)
     }
     
-    /// OTA状态文本
+    private func formatOTATime(_ sec: TimeInterval) -> String {
+        let total = max(0, Int(sec))
+        let m = min(99, total / 60)
+        let s = total % 60
+        return String(format: "%02d:%02d", m, s)
+    }
+    
+    private var otaTotalSizeDisplay: String {
+        guard let total = ble.otaFirmwareTotalBytes, total > 0 else { return "—" }
+        if total < 1024 { return "\(total) B" }
+        if total < 1024 * 1024 { return "\(total / 1024) KB" }
+        return String(format: "%.2f MB", Double(total) / (1024 * 1024))
+    }
+    
+    private var otaElapsedDisplay: String {
+        guard ble.isOTAInProgress, let start = ble.otaStartTime else { return "—" }
+        return formatOTATime(Date().timeIntervalSince(start))
+    }
+    
+    private var otaRemainingDisplay: String {
+        guard ble.isOTAInProgress else { return "—" }
+        let progress = ble.otaProgress
+        guard progress > 0, progress < 1 else { return "00:00" }
+        guard let total = ble.otaFirmwareTotalBytes, total > 0,
+              let start = ble.otaStartTime else { return "—" }
+        let elapsed = Date().timeIntervalSince(start)
+        let bytesSent = Int(progress * Double(total))
+        guard bytesSent > 0, elapsed > 0 else { return "—" }
+        let rate = Double(bytesSent) / elapsed
+        let remainingBytes = Int((1 - progress) * Double(total))
+        let remaining = rate > 0 ? TimeInterval(remainingBytes) / rate : 0
+        return formatOTATime(remaining)
+    }
+    
+    private var otaRateDisplay: String {
+        guard ble.isOTAInProgress,
+              let total = ble.otaFirmwareTotalBytes, total > 0,
+              let start = ble.otaStartTime else { return "—" }
+        let elapsed = Date().timeIntervalSince(start)
+        guard elapsed > 0 else { return "—" }
+        let bytesSent = Int(ble.otaProgress * Double(total))
+        let rateBps = Double(bytesSent) / elapsed
+        let kbps = Int(rateBps * 8 / 1000)
+        return "\(min(999, max(0, kbps))) kbps"
+    }
+    
+    /// OTA 状态文本
     private var otaStatusText: String {
         if ble.isOTAFailed {
             return appLanguage.string("ota.failed")
@@ -778,6 +847,8 @@ struct ProductionTestView: View {
         
         // 加载阈值配置
         let thresholds = TestThresholds(
+            stepIntervalMs: UserDefaults.standard.object(forKey: "production_test_step_interval_ms") as? Int ?? 100,
+            bluetoothPermissionWaitSeconds: UserDefaults.standard.object(forKey: "production_test_bluetooth_permission_wait_seconds") as? Double ?? 0,
             rtcPassThreshold: UserDefaults.standard.object(forKey: "production_test_rtc_pass_threshold") as? Double ?? 2.0,
             rtcFailThreshold: UserDefaults.standard.object(forKey: "production_test_rtc_fail_threshold") as? Double ?? 5.0,
             rtcWriteEnabled: UserDefaults.standard.object(forKey: "production_test_rtc_write_enabled") as? Bool ?? true,
@@ -799,6 +870,8 @@ struct ProductionTestView: View {
     
     /// 测试阈值配置结构
     struct TestThresholds {
+        let stepIntervalMs: Int               // 每个测试步骤之间的等待时间（毫秒），SOP 定义
+        let bluetoothPermissionWaitSeconds: Double  // 连接设备步骤后等待秒数（供用户处理蓝牙权限/配对弹窗，0=不等待）
         let rtcPassThreshold: Double          // RTC时间差通过阈值（秒）
         let rtcFailThreshold: Double         // RTC时间差失败阈值（秒）
         let rtcWriteEnabled: Bool             // 是否启用RTC写入
@@ -947,22 +1020,31 @@ struct ProductionTestView: View {
             log("正在连接设备: \(device.name)...", level: .info)
             ble.connect(to: device)
             
-            // 等待连接完成
+            // 等待连接完成，且 GATT 特征就绪（发现服务/特征需要时间），才认为连接完成
             Task { @MainActor in
                 var waitCount = 0
                 while !ble.isConnected && waitCount < 100 { // 最多等待10秒
                     try? await Task.sleep(nanoseconds: 100_000_000) // 0.1秒
                     waitCount += 1
                 }
-                
-                if ble.isConnected {
-                    // 连接成功，继续执行产测流程
-                    await executeProductionTest()
-                } else {
-                    // 连接失败
+                if !ble.isConnected {
                     log("错误：设备连接失败", level: .error)
                     isRunning = false
+                    return
                 }
+                log("已连接，等待 GATT 特征就绪...", level: .info)
+                waitCount = 0
+                while !ble.areCharacteristicsReady && waitCount < 100 { // 最多再等10秒
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    waitCount += 1
+                }
+                if !ble.areCharacteristicsReady {
+                    log("错误：连接后 GATT 特征未就绪（10秒）", level: .error)
+                    isRunning = false
+                    return
+                }
+                log("GATT 就绪，开始产测", level: .info)
+                await executeProductionTest()
             }
         } else {
             // 已连接，直接执行产测流程
@@ -992,6 +1074,19 @@ struct ProductionTestView: View {
         let rules = loadTestRules()
         
         self.log("开始产测流程（共 \(enabledSteps.count) 个步骤）", level: .info)
+        self.log("——— 产测参数 ———", level: .info)
+        self.log("步骤顺序与启用: \(rules.steps.map { "\($0.id)(\($0.enabled ? "开" : "关"))" }.joined(separator: " → "))", level: .info)
+        self.log("版本配置: Bootloader=\(rules.bootloaderVersion.isEmpty ? "(空)" : rules.bootloaderVersion), FW=\(rules.firmwareVersion), HW=\(rules.hardwareVersion)", level: .info)
+        let t = rules.thresholds
+        self.log("步骤间延时: \(t.stepIntervalMs) ms", level: .info)
+        if t.bluetoothPermissionWaitSeconds > 0 {
+            self.log("蓝牙权限等待: \(String(format: "%.0f", t.bluetoothPermissionWaitSeconds)) s（连接后若出现弹窗请点击允许）", level: .info)
+        }
+        self.log("超时: 设备信息=\(t.deviceInfoReadTimeout)s, OTA启动=\(t.otaStartWaitTimeout)s, 重连=\(t.deviceReconnectTimeout)s, RTC读取=\(t.rtcReadTimeout)s, 阀门=\(t.valveOpenTimeout)s", level: .info)
+        self.log("RTC: 通过阈值=\(t.rtcPassThreshold)s, 失败阈值=\(t.rtcFailThreshold)s, 写入=\(t.rtcWriteEnabled), 重试=\(t.rtcWriteRetryCount)次", level: .info)
+        self.log("压力: 关阀最小值=\(t.pressureClosedMin) mbar, 开阀最小值=\(t.pressureOpenMin) mbar, 差值检查=\(t.pressureDiffCheckEnabled), 差值阈值=\(t.pressureDiffThreshold) mbar", level: .info)
+        self.log("固件升级(步骤2): \(t.firmwareUpgradeEnabled ? "启用" : "禁用")", level: .info)
+        self.log("———————————————", level: .info)
         
         for step in enabledSteps {
                 // 记录步骤开始时的日志索引
@@ -1001,10 +1096,46 @@ struct ProductionTestView: View {
                 currentStepId = step.id
                 stepStatuses[step.id] = .running
                 
+                // 产测过程中若蓝牙连接丢失，直接报错并终止（仅对需要连接的步骤检查，step1/最后一步断开除外）
+                let stepRequiresConnection = (step.id != TestStep.connectDevice.id && step.id != TestStep.disconnectDevice.id)
+                if stepRequiresConnection && !ble.isConnected {
+                    self.log("错误：蓝牙连接已丢失，产测终止", level: .error)
+                    stepResults[step.id] = "蓝牙连接丢失"
+                    stepStatuses[step.id] = .failed
+                    stepLogRanges[step.id] = (start: logStartIndex, end: testLog.count)
+                    currentStepId = nil
+                    isRunning = false
+                    updateTestResultStatus()
+                    return
+                }
+                
                 switch step.id {
-                case "step1": // 连接设备（已连接，跳过）
-                    self.log("步骤1: 连接设备 - 已连接", level: .info)
-                    stepResults[step.id] = appLanguage.string("production_test.connected")
+                case "step1": // 连接设备：已连接且 GATT 就绪才认为连接完成
+                    self.log("步骤1: 连接设备", level: .info)
+                    if !ble.isConnected {
+                        self.log("错误：未连接", level: .error)
+                        stepResults[step.id] = "连接失败：未连接"
+                        stepStatuses[step.id] = .failed
+                        break
+                    }
+                    if !ble.areCharacteristicsReady {
+                        self.log("等待 GATT 特征就绪...", level: .info)
+                        var charWaitCount = 0
+                        let charTimeoutSeconds = 10.0
+                        let maxCharWait = Int(charTimeoutSeconds * 10)
+                        while !ble.areCharacteristicsReady && charWaitCount < maxCharWait {
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            charWaitCount += 1
+                        }
+                        if !ble.areCharacteristicsReady {
+                            self.log("错误：GATT 特征未就绪（\(Int(charTimeoutSeconds))秒）", level: .error)
+                            stepResults[step.id] = "连接失败：GATT 未就绪"
+                            stepStatuses[step.id] = .failed
+                            break
+                        }
+                    }
+                    self.log("已连接，GATT 就绪", level: .info)
+                    stepResults[step.id] = appLanguage.string("production_test.connected") + "，GATT 就绪"
                     stepStatuses[step.id] = .passed
                     
                 case "step2": // 确认固件版本
@@ -1104,7 +1235,7 @@ struct ProductionTestView: View {
                     stepResults[step.id] = resultMessages.joined(separator: "\n")
                     stepStatuses[step.id] = .passed
                     
-                case "step3": // 检查 RTC - 按照新逻辑：2秒内通过，2-5秒循环写入读取，超过5秒失败
+                case "step3": // 检查 RTC - 步骤1 已保证连接且 GATT 就绪，此处直接读 RTC
                     self.log("步骤3: 检查 RTC", level: .info)
                     
                     let passThreshold = rules.thresholds.rtcPassThreshold
@@ -1114,10 +1245,10 @@ struct ProductionTestView: View {
                     let rtcTimeoutSeconds = rules.thresholds.rtcReadTimeout
                     let maxRtcWaitCount = Int(rtcTimeoutSeconds * 10) // 每0.1秒检查一次
                     
-                    // 读取RTC
+                    // 与 Debug 一致的 RTC 读取流程：先清状态、再解锁+延时+读
                     self.log("读取 RTC...", level: .info)
-                    ble.writeTestingUnlock()
-                    ble.readRTC()
+                    ble.clearRTCReadState()
+                    ble.readRTCWithUnlock()
                     
                     // 等待RTC读取完成
                     self.log("等待 RTC 读取完成（超时: \(Int(rtcTimeoutSeconds))秒）...", level: .info)
@@ -1181,11 +1312,8 @@ struct ProductionTestView: View {
                                 } else if retryCount < maxRetries {
                                     self.log("⚠️ RTC时间差 \(timeDiffString) 在±\(Int(passThreshold))-±\(Int(failThreshold))秒范围内，尝试写入RTC（第\(retryCount + 1)/\(maxRetries)次）...", level: .warning)
                                     
-                                    // 执行RTC写入（写入当前系统时间，7字节）
+                                    // 执行RTC写入（写入当前系统时间，7字节）；writeRTCTime 内部会延时后 readRTC
                                     let logCountBeforeWrite = ble.logEntries.count
-                                    // 确保Testing特征已解锁，以便写入后可以读取验证
-                                    ble.writeTestingUnlock()
-                                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
                                     ble.writeRTCTime()
                                     try? await Task.sleep(nanoseconds: 500_000_000)
                                     
@@ -1219,7 +1347,7 @@ struct ProductionTestView: View {
                                     }
                                     
                                     timeDiffString = ble.lastTimeDiffFromRTCRead
-                                    self.log("重新读取后时间差: \(timeDiffString)", level: .info)
+                                    self.log("RTC 读取: \(ble.lastRTCValue)，时间差: \(timeDiffString)", level: .info)
                                     retryCount += 1
                                 } else {
                                     // 已达到最大重试次数
@@ -1393,7 +1521,7 @@ struct ProductionTestView: View {
                     }
                     
                     self.log("使用已选固件，启动 OTA", level: .info, category: "OTA")
-                    if let reason = ble.startOTA(firmwareURL: otaURL) {
+                    if let reason = ble.startOTA(firmwareURL: otaURL, initiatedByProductionTest: true) {
                         self.log("错误：OTA 未启动（\(reason)）", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: \(reason)"
@@ -1514,10 +1642,20 @@ struct ProductionTestView: View {
                 // 清除当前步骤标记
                 currentStepId = nil
                 
-                // 步骤间延时
+                // 步骤间延时（SOP 定义，单位 ms）；步骤1 后可选：等待蓝牙权限/配对弹窗
                 if step.id != enabledSteps.last?.id {
-                    self.log("步骤完成，等待 \(String(format: "%.1f", 0.3))秒后继续下一步骤...", level: .debug)
-                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    if step.id == TestStep.connectDevice.id && rules.thresholds.bluetoothPermissionWaitSeconds > 0 {
+                        self.log("请处理蓝牙权限/配对弹窗（若出现请点击允许），完成后在弹窗中点击「继续」或按回车", level: .info)
+                        showBluetoothPermissionConfirmation = true
+                        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                            bluetoothPermissionContinuation = { cont.resume() }
+                        }
+                        showBluetoothPermissionConfirmation = false
+                        bluetoothPermissionContinuation = nil
+                    }
+                    let intervalMs = rules.thresholds.stepIntervalMs
+                    self.log("步骤完成，等待 \(intervalMs) ms 后继续下一步骤...", level: .debug)
+                    try? await Task.sleep(nanoseconds: UInt64(max(0, intervalMs)) * 1_000_000)
                 }
             }
             
@@ -1528,9 +1666,76 @@ struct ProductionTestView: View {
         
         self.log("产测流程结束", level: .info)
         self.log("测试结果统计：通过 \(passedCount)，失败 \(failedCount)，跳过 \(skippedCount)，总计 \(enabledSteps.count)", level: .info)
+        
+        // 产测成功（无失败步骤）时在日志区生成报表，统一使用 .info 便于主日志区按等级过滤查看
+        if failedCount == 0 {
+            emitProductionTestReport(enabledSteps: enabledSteps)
+        }
+        
         isRunning = false
         currentStepId = nil
         // 更新测试结果状态
         updateTestResultStatus()
+    }
+    
+    /// 产测成功结束时生成报表并写入日志区，所有行使用 .info 等级
+    private func emitProductionTestReport(enabledSteps: [TestStep]) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_POSIX")
+        let timeStr = formatter.string(from: Date())
+        
+        self.log("────────── 产测报表 ──────────", level: .info)
+        self.log("时间: \(timeStr)", level: .info)
+        let passedCount = enabledSteps.filter { stepStatuses[$0.id] == .passed }.count
+        let skippedCount = enabledSteps.filter { stepStatuses[$0.id] == .skipped }.count
+        self.log("结果: 通过 \(passedCount)，跳过 \(skippedCount)，总计 \(enabledSteps.count)", level: .info)
+        self.log("步骤:", level: .info)
+        for (index, step) in enabledSteps.enumerated() {
+            let status = stepStatuses[step.id] ?? .pending
+            let result = stepResults[step.id] ?? ""
+            let title = appLanguage.string("production_test_rules.\(step.key)_title")
+            let statusStr: String
+            switch status {
+            case .passed: statusStr = "✓"
+            case .failed: statusStr = "✗"
+            case .skipped: statusStr = "−"
+            case .pending, .running: statusStr = "?"
+            }
+            let oneLine = result.replacingOccurrences(of: "\n", with: " ")
+            if oneLine.isEmpty {
+                self.log("  \(index + 1). \(title) \(statusStr)", level: .info)
+            } else {
+                self.log("  \(index + 1). \(title) \(statusStr) \(oneLine)", level: .info)
+            }
+        }
+        self.log("──────────────────────────────", level: .info)
+    }
+}
+
+// MARK: - 连接后蓝牙权限/配对确认弹窗（用户点击「继续」或回车后产测继续）
+private struct BluetoothPermissionConfirmSheet: View {
+    @EnvironmentObject private var appLanguage: AppLanguage
+    var onContinue: () -> Void
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test.bluetooth_permission_confirm_title"))
+                .font(.headline)
+            Text(appLanguage.string("production_test.bluetooth_permission_confirm_message"))
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button(appLanguage.string("production_test.bluetooth_permission_continue")) {
+                    onContinue()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(UIDesignSystem.Padding.lg)
+        .frame(minWidth: 360)
     }
 }

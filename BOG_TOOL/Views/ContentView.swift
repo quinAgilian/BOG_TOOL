@@ -112,16 +112,8 @@ struct ContentView: View {
                 .frame(minWidth: 320)
             }
             .frame(minWidth: UIDesignSystem.Window.leftPanelMinWidth)
-            .allowsHitTesting(!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && !ble.isOTAFailed && !ble.isOTARebootDisconnected) // OTA 进行中、等待重启、失败或 reboot 断开时禁用左侧操作区域
-            .overlay {
-                // OTA 进行中、等待重启、失败或 reboot 断开时，在左侧区域显示半透明覆盖层
-                if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTARebootDisconnected {
-                    OTAExclusiveOverlay(ble: ble, firmwareManager: firmwareManager, isProductionTestMode: selectedMode == .productionTest)
-                        .allowsHitTesting(true) // OTA 覆盖层可以接收交互
-                }
-            }
 
-            // 右侧：日志（OTA 进行中时仍然可以查看和操作）
+            // 右侧：日志
             if showLogArea {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
@@ -311,56 +303,6 @@ private struct LogLevelFilterView: View {
         .padding(.horizontal, UIDesignSystem.Padding.md)
         .padding(.vertical, UIDesignSystem.Padding.xs)
         .background(UIDesignSystem.Background.window)
-    }
-}
-
-/// OTA 独占模式覆盖层：OTA 进行中或等待重启时显示，只覆盖左侧操作区域
-/// 右侧日志区域保持可操作，用户可以查看日志和切换日志等级
-private struct OTAExclusiveOverlay: View {
-    @EnvironmentObject private var appLanguage: AppLanguage
-    @ObservedObject var ble: BLEManager
-    @ObservedObject var firmwareManager: FirmwareManager
-    /// 当前是否为产测模式（产测 OTA 不显示“选固件”，只显示规则指定版本）
-    var isProductionTestMode: Bool = false
-    
-    private var overlayTitle: String {
-        if ble.isOTARebootDisconnected {
-            return appLanguage.string("ota.title_reboot_disconnected")
-        }
-        if ble.isOTAFailed {
-            return appLanguage.string("ota.exclusive_title_failed")
-        }
-        if ble.isOTACancelled {
-            return appLanguage.string("ota.exclusive_title_cancelled")
-        }
-        if ble.isOTACompletedWaitingReboot {
-            return appLanguage.string("ota.exclusive_title_reboot")
-        }
-        return appLanguage.string("ota.exclusive_title")
-    }
-    
-    var body: some View {
-        ZStack {
-            // 半透明背景，覆盖左侧操作区域，阻止所有其他交互
-            Color.black.opacity(UIDesignSystem.Opacity.overlay)
-                .ignoresSafeArea(.all)
-                .contentShape(Rectangle()) // 确保整个背景区域可接收点击事件
-                .onTapGesture {
-                    // 点击背景不执行任何操作，确保用户必须通过按钮来操作
-                    // 这样可以防止用户误操作或尝试绕过OTA独占模式
-                }
-            
-            // 中间的 OTA 视图（模态模式）
-            VStack(spacing: UIDesignSystem.Spacing.xxl) {
-                Text(overlayTitle)
-                    .font(UIDesignSystem.Typography.pageTitle)
-                    .foregroundStyle(UIDesignSystem.Foreground.primary)
-                
-                OTASectionView(ble: ble, firmwareManager: firmwareManager, isModal: true, isProductionTestOTA: isProductionTestMode)
-                    .shadow(color: .black.opacity(0.3), radius: UIDesignSystem.Spacing.xxl, x: 0, y: 10)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity) // 确保覆盖整个左侧区域
     }
 }
 

@@ -26,7 +26,12 @@ struct DebugModeView: View {
             rtcSection
             valveSection
             pressureSection
-            OTASectionView(ble: ble, firmwareManager: firmwareManager)
+            // 谁调用的 OTA 谁管理：产测 OTA 进行中时 Debug 区不随动，仅提示切回产测
+            if ble.isOTAInProgress && ble.otaInitiatedByProductionTest {
+                productionTestOTAInProgressHint
+            } else {
+                OTASectionView(ble: ble, firmwareManager: firmwareManager)
+            }
             UUIDDebugView(ble: ble)
 
             if ble.isConnected {
@@ -59,6 +64,21 @@ struct DebugModeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(UIDesignSystem.Background.subtle)
         .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+    
+    /// 产测 OTA 进行中时在 Debug 区仅显示提示，不随动、不管理（谁调用谁管理）
+    private var productionTestOTAInProgressHint: some View {
+        HStack(spacing: UIDesignSystem.Spacing.sm) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.orange)
+            Text(appLanguage.string("debug.ota_production_test_in_progress"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.1))
+        .cornerRadius(UIDesignSystem.CornerRadius.sm)
     }
     
     // MARK: - 连接区域
@@ -169,7 +189,7 @@ struct DebugModeView: View {
                 }
                 Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
-                    ble.readRTC()
+                    ble.readRTCWithUnlock()
                 } label: {
                     Text(appLanguage.string("debug.read_rtc"))
                         .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)

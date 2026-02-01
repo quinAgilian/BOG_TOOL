@@ -90,6 +90,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaProgress: Double = 0
     /// OTA 是否进行中
     @Published var isOTAInProgress: Bool = false
+    /// 当前 OTA 是否由产测触发（用于 Debug 区不随动、仅产测界面管理）
+    @Published var otaInitiatedByProductionTest: Bool = false
     /// OTA 是否在等待设备校验（进度100%但等待Status=3/4）
     @Published var isOTAWaitingValidation: Bool = false
     /// OTA 是否已完成并等待用户确认重启（Status=3确认后，等待用户点击 Reboot 按钮）
@@ -148,7 +150,10 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var errorMessage: String?
     /// 若为配对已清除等已知错误，存 key（由 UI 按当前语言显示）；否则 errorMessage 为系统原始文案
     @Published var errorMessageKey: String?
-    
+    /// 蓝牙权限/配对提示结束时间（非 nil 时 UI 显示「请同意权限…」横幅并 30 秒倒计时）
+    @Published var blePermissionPromptEndTime: Date?
+    /// 是否正在等待用户同意加密/配对（连接后读加密特征失败，每 200ms 轮询直到成功或断开）
+    @Published var bleEncryptionProbeWaiting: Bool = false
     /// 扫描过滤：各规则独立使能，无全局开关
     /// RSSI 规则使能
     @Published var scanFilterRSSIEnabled: Bool = false
@@ -224,7 +229,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// 实际测量：平均 BLE 响应时间约 42.2ms，但测试发现 5ms 延时反而变慢（3分54秒 vs 3分21秒）
     /// 说明设备需要足够的缓冲时间来处理数据，10ms 是最优值
     /// 如果包间延时太小，可能导致设备处理不过来、重传或协议栈问题
-    private static let otaChunkDelayNs: UInt64 = 10_000_000 // 10 ms（实际测试最优值，5ms 反而变慢）
+    private static let otaChunkDelayNs: UInt64 = 5_000_000 // 10 ms（实际测试最优值，5ms 反而变慢）
     /// 启动前发送 abort 后等待设备状态恢复为 0 的超时时间（秒）
     private static let otaAbortWaitTimeoutSeconds: TimeInterval = 5.0
     /// OTA 专用高优先级队列：用于 OTA 数据传输的延时和状态检查，提高 CPU 调度优先级
@@ -246,17 +251,19 @@ final class BLEManager: NSObject, ObservableObject {
         return queue
     }()
     
-    /// 在高优先级队列上执行延时，然后切换回主线程执行后续操作
-    /// 使用高优先级队列可以提高 CPU 调度优先级，减少延时抖动
+    /// 在高优先级队列上执行延时，然后切换回主线程执行后续操作。
+    /// 每次在「当前执行延时的线程」上设置 QoS 再 sleep；用 DispatchQueue.main.async 回主线程，避免 Task { @MainActor in } 与主线程上大量任务争抢导致 continuation 被推迟数秒、OTA 速率骤降。
     /// - Parameters:
     ///   - nanoseconds: 延时时间（纳秒）
     ///   - continuation: 延时后执行的闭包（在主线程上执行）
     private func performOtaDelayThenContinue(nanoseconds: UInt64, continuation: @escaping @MainActor () -> Void) {
-        // 在高优先级队列上使用 asyncAfter 获得精确延时，同时保持高优先级调度
-        let deadline = DispatchTime.now() + DispatchTimeInterval.nanoseconds(Int(nanoseconds))
-        Self.otaQueue.asyncAfter(deadline: deadline) {
-            // 切换回主线程执行后续操作
-            Task { @MainActor in
+        Self.otaQueue.async {
+            #if canImport(Darwin)
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+            pthread_setname_np("BOG-OTA-Delay")
+            #endif
+            Thread.sleep(forTimeInterval: Double(nanoseconds) / 1_000_000_000.0)
+            DispatchQueue.main.async(qos: .userInteractive) {
                 continuation()
             }
         }
@@ -405,6 +412,28 @@ final class BLEManager: NSObject, ObservableObject {
         return lower.contains("peer removed") || lower.contains("pairing") || msg.contains("配对")
     }
     
+    /// 是否为「加密或认证不足」类错误（需用户在系统弹窗中允许）
+    private static func isEncryptionOrAuthInsufficientError(_ error: Error?) -> Bool {
+        guard let msg = error?.localizedDescription else { return false }
+        let lower = msg.lowercased()
+        return lower.contains("encryption is insufficient") || lower.contains("encryption insufficient")
+            || lower.contains("authentication is insufficient") || lower.contains("authentication insufficient")
+    }
+    
+    /// 触发「请同意蓝牙权限/配对」提示并开始 30 秒倒计时（连接失败配对已清除、或读写 Encryption is insufficient 时调用）
+    private func showBlePermissionPromptAndSchedule30s() {
+        let endTime = Date().addingTimeInterval(30)
+        blePermissionPromptEndTime = endTime
+        appendLog(NSLocalizedString("ble.permission_prompt_wait_30s", value: "请同意蓝牙配对/权限（若已出现弹窗请点击允许）；若为「设备已清除配对」请在系统设置→蓝牙中移除该设备后重试。等待 30 秒…", comment: ""), level: .warning)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            if blePermissionPromptEndTime == endTime {
+                blePermissionPromptEndTime = nil
+                appendLog(NSLocalizedString("ble.permission_prompt_ended", value: "等待 30 秒结束，请重试连接或当前操作。", comment: ""), level: .info)
+            }
+        }
+    }
+    
     /// 打开系统「蓝牙」设置（配对已清除时便于用户移除设备）
     static func openBluetoothSettings() {
         // macOS 13+ System Settings 使用 extension URL；旧版为 com.apple.preferences.Bluetooth
@@ -499,15 +528,35 @@ final class BLEManager: NSObject, ObservableObject {
         return d
     }()
     
-    /// 向 Testing 特征写一次解锁魔数，之后可持续 readRTC() 读取，无需每次写
+    /// 向 Testing 特征写一次解锁魔数，之后可持续 readRTC() 读取，无需每次写。调用前需确保已连接且 GATT 特征已发现（产测/调试应先等 areCharacteristicsReady）。
     func writeTestingUnlock() {
-        writeToCharacteristic(testingCharacteristic, data: Self.testingUnlockMagic)
-        // appendLog("RTC: 已写 Testing 解锁（一次即可）")
+        guard let peripheral = connectedPeripheral, let char = testingCharacteristic else {
+            appendLog("RTC: 无法解锁 — 未连接或 Testing 特征未发现，请等待 GATT 就绪后再读 RTC", level: .error)
+            return
+        }
+        writeToCharacteristic(char, data: Self.testingUnlockMagic)
+        appendLog("RTC: 已写 Testing 解锁")
+    }
+    
+    /// 清除 RTC 读取状态（产测/调试在发起新一次读取前调用，避免误用旧值或误判超时）
+    func clearRTCReadState() {
+        lastRTCValue = "--"
+        lastSystemTimeAtRTCRead = "--"
+        lastTimeDiffFromRTCRead = "--"
     }
     
     /// 读取 RTC：从 OTA Testing 特征读 7 字节（需先调用一次 writeTestingUnlock）
     func readRTC() {
         readCharacteristic(testingCharacteristic)
+    }
+    
+    /// 与 Debug 模式一致的 RTC 读取流程：先解锁、短延时后再读，产测与 Debug 共用，避免产测超时
+    func readRTCWithUnlock() {
+        writeTestingUnlock()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000) // 0.2s，给设备处理解锁的时间
+            readRTC()
+        }
     }
     
     /// 将当前系统时间写入设备 RTC（7 字节：秒、分、时、日、星期、月、年-2000），然后触发读取验证
@@ -585,6 +634,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// 清除OTA失败/取消状态（用于关闭弹窗）
     func clearOTAStatus() {
         otaFlowState = .idle
+        otaInitiatedByProductionTest = false
         isOTAFailed = false
         isOTACancelled = false
         isOTAWaitingValidation = false
@@ -628,6 +678,9 @@ final class BLEManager: NSObject, ObservableObject {
     var isOtaAvailable: Bool {
         otaStatusCharacteristic != nil && otaDataCharacteristic != nil
     }
+    
+    /// OTA 每包字节数（供产测 OTA 区域显示数据包大小）
+    var otaChunkSizeBytes: Int { 200 }
     
     /// OTA 是否处于失败态（启动未确认、校验失败、写失败等），供 UI 显示红色背景
     @Published var isOTAFailed: Bool = false
@@ -681,6 +734,7 @@ final class BLEManager: NSObject, ObservableObject {
     
     /// 应用用户选择的固件 URL：释放旧的安全作用域、对新 URL 申请安全作用域（来自固件管理/书签的必须）、保存书签、更新 selectedFirmwareURL
     private func applySelectedFirmwareURL(_ url: URL) {
+        let isNewSelection = (selectedFirmwareURL != url)
         if let old = securityScopedFirmwareURL {
             old.stopAccessingSecurityScopedResource()
             securityScopedFirmwareURL = nil
@@ -694,9 +748,12 @@ final class BLEManager: NSObject, ObservableObject {
         }
         UserDefaults.standard.removeObject(forKey: Self.otaFirmwarePathKey)
         selectedFirmwareURL = url
-        appendLog("[OTA] 已选择固件: \(url.lastPathComponent)")
-        appendLog("[OTA] 路径: \(url.path)")
-        appendLog("[OTA] 大小: \(fileSizeString(for: url))")
+        // 仅当用户真正切换了固件时打日志，避免切 tab / onAppear 复选同一固件时刷屏
+        if isNewSelection {
+            appendLog("[OTA] 已选择固件: \(url.lastPathComponent)")
+            appendLog("[OTA] 路径: \(url.path)")
+            appendLog("[OTA] 大小: \(fileSizeString(for: url))")
+        }
     }
     
     private func fileSizeString(for url: URL) -> String {
@@ -713,10 +770,12 @@ final class BLEManager: NSObject, ObservableObject {
     }
     
     /// 启动 OTA：仅负责执行。调用方在调用前应确认固件存在，并直接传入升级包 URL；本方法内会先校验可读性，失败则立即返回。
-    /// - Parameter firmwareURL: 升级包文件 URL（产测从固件管理解析、Debug 为已选固件；书签/外部路径需安全作用域，本方法内会申请）
+    /// - Parameters:
+    ///   - firmwareURL: 升级包文件 URL（产测从固件管理解析、Debug 为已选固件；书签/外部路径需安全作用域，本方法内会申请）
+    ///   - initiatedByProductionTest: 是否由产测触发（产测传 true，Debug 传 false；用于谁调用谁管理，Debug 区不随动）
     /// - Returns: 若未启动则返回原因字符串；若已启动则返回 nil。产测/调用方请用返回值判断，避免依赖 lastOTARejectReason 时序。
     /// 执行中通过 isOTAInProgress / otaProgress / lastOTARejectReason 等实时上报状态；取消请调用 cancelOTA()。
-    func startOTA(firmwareURL: URL) -> String? {
+    func startOTA(firmwareURL: URL, initiatedByProductionTest: Bool = false) -> String? {
         lastOTARejectReason = nil
         guard isConnected else {
             let reason = "请先连接设备"
@@ -767,6 +826,7 @@ final class BLEManager: NSObject, ObservableObject {
         }
         lastOTARejectReason = nil
         otaMarkerSet = true
+        otaInitiatedByProductionTest = initiatedByProductionTest
         isOTAInProgress = true
         isOTAFailed = false // 重置失败状态
         isOTACancelled = false // 重置取消状态
@@ -820,7 +880,7 @@ final class BLEManager: NSObject, ObservableObject {
         return nil
     }
     
-    /// Debug 用：使用当前已选固件 URL 启动 OTA，等价于 startOTA(firmwareURL: selectedFirmwareURL!)
+    /// Debug 用：使用当前已选固件 URL 启动 OTA，等价于 startOTA(firmwareURL: selectedFirmwareURL!, initiatedByProductionTest: false)
     /// - Returns: 若未启动则返回原因，否则 nil。
     func startOTA() -> String? {
         guard let url = selectedFirmwareURL else {
@@ -829,7 +889,7 @@ final class BLEManager: NSObject, ObservableObject {
             appendLog("[OTA] 请先选择固件", level: .warning)
             return reason
         }
-        return startOTA(firmwareURL: url)
+        return startOTA(firmwareURL: url, initiatedByProductionTest: false)
     }
     
     /// 统一的 OTA 错误清理方法：发送 abort (Status=0) 并重置本地状态，确保设备下次可以正常进入 OTA
@@ -851,6 +911,7 @@ final class BLEManager: NSObject, ObservableObject {
         }
         
         // 重置所有 OTA 相关状态
+        otaInitiatedByProductionTest = false
         isOTAWaitingValidation = false
         isOTACompletedWaitingReboot = false
         isOTAInProgress = false
@@ -903,6 +964,7 @@ final class BLEManager: NSObject, ObservableObject {
             otaFlowState = .done
             isOTAFailed = false
             isOTACancelled = false
+            otaInitiatedByProductionTest = false
             isOTAWaitingValidation = false // 清除等待校验状态
             isOTACompletedWaitingReboot = false
             isOTAInProgress = false
@@ -915,16 +977,21 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
     
+    /// 进度条/日志刷新间隔（每 N 包更新一次），减轻主线程负载，避免每包都触发 @Published 导致 OTA 速率骤降
+    private static let otaProgressUpdateInterval = 20
+    
     /// 在 didWriteValueFor(OTA Data) 成功后调用：仅延时再发下一包或写 finished(2)，不读 OTA Status（提速约 15–30s）
     private func continueOtaAfterChunkWrite() {
         guard case .sendingChunks(let chunks, let idx) = otaFlowState else { return }
         let total = chunks.count
         let progress = Double(idx + 1) / Double(total)
-        // 实时更新 UI 进度
-        otaProgress = progress
-        // 单行刷新（\r 式），内容与 OTA 弹窗一致
-        let start = otaStartTime ?? Date()
-        otaProgressLogLine = buildOtaProgressLogLine(progress: progress, startTime: start, totalBytes: otaFirmwareTotalBytes)
+        // 每 N 包更新一次进度，减少主线程与 UI 负载，避免拖慢包间调度；首包与最后一包必更新
+        let shouldUpdateProgress = idx == 0 || (idx + 1) % Self.otaProgressUpdateInterval == 0 || idx + 1 == total
+        if shouldUpdateProgress {
+            otaProgress = progress
+            let start = otaStartTime ?? Date()
+            otaProgressLogLine = buildOtaProgressLogLine(progress: progress, startTime: start, totalBytes: otaFirmwareTotalBytes)
+        }
         if idx + 1 < total {
             otaFlowState = .sendingChunks(chunks: chunks, nextChunkIndex: idx + 1)
             // 每包发送后仅延时，不读 OTA Status（提速，避免每包增加一次BLE读取）
@@ -936,6 +1003,10 @@ final class BLEManager: NSObject, ObservableObject {
             }
         } else {
             otaProgress = 1
+            // \r 式进度行清空前先写入主日志，保留「最后一条」进度
+            if let lastProgress = otaProgressLogLine, !lastProgress.isEmpty {
+                appendLogRaw(lastProgress)
+            }
             otaProgressLogLine = nil
             appendLog("[OTA] 进度 100% 固件块已全部发送，写 Status=2 (finished)")
             if otaChunkRttCount > 0 {
@@ -1132,7 +1203,7 @@ final class BLEManager: NSObject, ObservableObject {
             let body: String
             if msg.hasPrefix("[OTA] ") {
                 tag = "[DBG][OTA]:"
-                body = String(msg.dropFirst(7))
+                body = String(msg.dropFirst(6))  // "[OTA] " 为 6 个字符，用 7 会多删掉正文首字（如「进」）
             } else if msg.hasPrefix("[OTA]") {
                 tag = "[DBG][OTA]:"
                 body = String(msg.dropFirst(5)).trimmingCharacters(in: .whitespaces)
@@ -1142,6 +1213,13 @@ final class BLEManager: NSObject, ObservableObject {
             }
             line = "\(formattedTime()) \(tag) \(body)"
         }
+        logEntries.append(LogEntry(level: level, line: line))
+        if logEntries.count > 500 { logEntries.removeFirst() }
+    }
+    
+    /// 追加一条已格式化行（不加重算时间戳），用于保留 \r 式刷新的「最后一条」进度行到主日志
+    private func appendLogRaw(_ line: String, level: LogLevel = .info) {
+        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         logEntries.append(LogEntry(level: level, line: line))
         if logEntries.count > 500 { logEntries.removeFirst() }
     }
@@ -1310,24 +1388,26 @@ final class BLEManager: NSObject, ObservableObject {
         if pressureOpenCharacteristic?.properties.contains(.notify) == true {
             connectedPeripheral?.setNotifyValue(true, for: pressureOpenCharacteristic!)
         }
-        if !areCharacteristicsReady && (pressureCharacteristic != nil || pressureOpenCharacteristic != nil) && (testingCharacteristic != nil || rtcCharacteristic != nil) {
-            areCharacteristicsReady = true
-            // 连接成功后自动读一次阀门状态与压力
-            readValveMode()
+        // 先尝试读取一个加密 GATT（valveState），成功则认为连接就绪并继续初始读，失败则提示用户（重置/忘记设备/允许连接）
+        if !areCharacteristicsReady && (pressureCharacteristic != nil || pressureOpenCharacteristic != nil) && (testingCharacteristic != nil || rtcCharacteristic != nil) && valveStateCharacteristic != nil {
             readValveState()
-            readPressure(silent: true)
-            readPressureOpen(silent: true)
-            // 连接且主 GATT 就绪后，再发现并读取 Device Information (SN/FW 等)
-            // 先检查是否已经在已发现的服务列表中（使用 CBUUID 对象比较）
-            if let deviceInfoService = connectedPeripheral?.services?.first(where: { 
-                $0.uuid == BLEManagerConstants.deviceInfoServiceCBUUID
-            }) {
-                // 服务已存在，直接发现特征
-                connectedPeripheral?.discoverCharacteristics(nil, for: deviceInfoService)
-            } else {
-                // 服务不存在，尝试发现
-                connectedPeripheral?.discoverServices([BLEManagerConstants.deviceInfoServiceCBUUID])
-            }
+        }
+    }
+    
+    /// 加密探测读成功（valveState 可读）后：设 areCharacteristicsReady = true，并执行首次阀门/压力读与 Device Information 发现
+    private func markEncryptionVerifiedAndContinueInitialReads() {
+        guard !areCharacteristicsReady else { return }
+        areCharacteristicsReady = true
+        readValveMode()
+        readValveState()
+        readPressure(silent: true)
+        readPressureOpen(silent: true)
+        if let deviceInfoService = connectedPeripheral?.services?.first(where: {
+            $0.uuid == BLEManagerConstants.deviceInfoServiceCBUUID
+        }) {
+            connectedPeripheral?.discoverCharacteristics(nil, for: deviceInfoService)
+        } else {
+            connectedPeripheral?.discoverServices([BLEManagerConstants.deviceInfoServiceCBUUID])
         }
     }
 }
@@ -1369,6 +1449,9 @@ extension BLEManager: CBCentralManagerDelegate {
     
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
+            // 连接新设备时清除 OTA 覆盖层状态，避免「在 OTA 器件还有弹窗」：上次 reboot 断开/失败/取消后未点关闭就重连时，弹窗应自动消失
+            clearOTAStatus()
+            
             connectedPeripheral = peripheral
             isConnected = true
             connectedDeviceName = peripheral.name ?? "已连接"
@@ -1396,7 +1479,7 @@ extension BLEManager: CBCentralManagerDelegate {
             if BLEManager.isPairingRemovedError(error) {
                 errorMessageKey = "error.pairing_removed_hint"
                 errorMessage = raw
-                appendLog(NSLocalizedString("error.pairing_removed_hint", value: "设备已清除配对信息。请在「系统设置 → 蓝牙」中移除该设备后重试连接。", comment: ""), level: .warning)
+                appendLog(NSLocalizedString("error.pairing_removed_hint", value: "请在系统「蓝牙」设置中删除该设备（忘记设备）后重试连接。", comment: ""), level: .error)
                 BLEManager.openBluetoothSettings()
             } else {
                 errorMessageKey = nil
@@ -1417,8 +1500,11 @@ extension BLEManager: CBCentralManagerDelegate {
                 errorMessage = err.localizedDescription
             } else {
                 appendLog("已断开")
-                errorMessage = nil
-                errorMessageKey = nil
+                // 若为加密不足主动断开，保留错误提示供用户看到「必须同意后手动再次连接」
+                if errorMessageKey != "error.encryption_insufficient_hint" {
+                    errorMessage = nil
+                    errorMessageKey = nil
+                }
             }
             if wasOTAInProgress {
                 appendLog("[OTA] 连接断开，OTA 已中断", level: .warning)
@@ -1465,6 +1551,7 @@ extension BLEManager: CBCentralManagerDelegate {
                 
                 // 清理 OTA 状态（但保留 isOTARebootDisconnected 标记）
                 otaFlowState = .idle
+                otaInitiatedByProductionTest = false
                 isOTAWaitingValidation = false
                 isOTACompletedWaitingReboot = false
                 isOTAInProgress = false
@@ -1499,6 +1586,7 @@ extension BLEManager: CBCentralManagerDelegate {
             // isOTACancelled = false
             if !isExpectingDisconnectFromReboot {
                 // 只有在非 reboot 断开时才清除这些状态（reboot 断开时已在上面的分支中清除）
+                otaInitiatedByProductionTest = false
                 isOTAWaitingValidation = false
                 isOTACompletedWaitingReboot = false
                 isOTAInProgress = false
@@ -1627,7 +1715,17 @@ extension BLEManager: CBPeripheralDelegate {
                     pendingValveSetOpen = nil
                     if !valveStateAuthErrorLogged {
                         valveStateAuthErrorLogged = true
-                        appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)（阀门状态需加密/配对，仅首次打印）", level: .warning)
+                        appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)（阀门状态需加密/配对，仅首次打印）", level: .error)
+                    }
+                    // 加密/认证不足：提醒用户必须同意系统弹窗，放弃当前操作，等待用户手动再次连接
+                    if BLEManager.isEncryptionOrAuthInsufficientError(err) {
+                        errorMessageKey = "error.encryption_insufficient_hint"
+                        errorMessage = err.localizedDescription
+                        appendLog(NSLocalizedString("error.encryption_insufficient_hint", value: "请在系统弹窗中点击「允许」完成配对，然后手动再次连接。", comment: ""), level: .error)
+                    }
+                    // 成功读到 GATT 之前的任何错误均视为连接失败：释放该次连接（加密未建立）
+                    if let peripheral = connectedPeripheral {
+                        centralManager.cancelPeripheralConnection(peripheral)
                     }
                 } else {
                     appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)", level: .error)
@@ -1642,6 +1740,10 @@ extension BLEManager: CBPeripheralDelegate {
         let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
         let isOtaStatusRead = (GattMapping.characteristicKey(for: characteristic.uuid) == GattMapping.Key.otaStatus)
         Task { @MainActor in
+            // 加密探测通过（valveState 读成功）：认为连接就绪，执行后续首次读
+            if let u = valveStateCBUUID, characteristic.uuid == u, !areCharacteristicsReady {
+                markEncryptionVerifiedAndContinueInitialReads()
+            }
             if let pending = pendingDebugReadUUID, characteristic.uuid.uuidString.lowercased() == pending.lowercased() {
                 lastDebugReadUUID = characteristic.uuid.uuidString
                 lastDebugReadHex = hex
@@ -1729,7 +1831,8 @@ extension BLEManager: CBPeripheralDelegate {
                 }
             }
         } else {
-            Task { @MainActor in
+            // 使用高优先级 Task，避免 OTA 写回调被主线程其它任务推迟导致速率骤降（如 18kbps -> 8kbps）
+            Task(priority: .high) { @MainActor in
                 if isOtaData && isOTAInProgress {
                     // writeWithResponse 模式：记录响应时间并继续发送下一包
                     if let start = otaChunkWriteStartTime {

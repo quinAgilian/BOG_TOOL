@@ -21,9 +21,27 @@
 "log.auto_scroll_hint" = "When on, log area scrolls to bottom on new entries.";
 "log.clear" = "Clear";
 
-/* Connection / pairing error */
-"error.pairing_removed_hint" = "Device cleared pairing. Remove it in System Settings → Bluetooth, then try again.";
+/* Connection / pairing error (peer removed pairing: remind to remove device in Bluetooth settings) */
+"error.pairing_removed_hint" = "Peer removed pairing. Please remove (forget) this device in System Settings → Bluetooth, then try again.";
+"error.pairing_removed_enter_pairing_mode" = "Please put the device into pairing mode.";
+"error.encryption_insufficient_hint" = "Encryption/authentication insufficient. Please tap «Allow» in the system dialog to complete pairing, then reconnect manually.";
 "error.dismiss" = "Dismiss";
+
+/* BLE permission / pairing prompt (30s wait) */
+"ble.permission_prompt_wait_30s" = "Please allow Bluetooth pairing/permission (click Allow if a dialog appeared); if device cleared pairing, remove it in System Settings → Bluetooth then retry. Waiting 30s…";
+"ble.permission_prompt_ended" = "30s wait ended. Please retry connection or the current operation.";
+"ble.permission_prompt_banner" = "Please allow Bluetooth pairing/permission (or remove device in System Settings → Bluetooth).";
+"ble.retrigger_pairing" = "Re-trigger authorization";
+
+/* Encryption GATT read failed: prompt by reason */
+"encryption_read_failed.title" = "Cannot read encrypted characteristic";
+"encryption_read_failed.message" = "Connection not ready. Check log or retry.";
+"encryption_read_failed.pairing_removed.title" = "Peer removed pairing information";
+"encryption_read_failed.pairing_removed.message" = "Please remove (forget) this device in System Bluetooth settings, then reconnect.";
+"encryption_read_failed.encryption_insufficient.title" = "Encryption / authentication insufficient";
+"encryption_read_failed.encryption_insufficient.message" = "Please tap «Allow» in the system dialog to complete pairing.";
+"encryption_read_failed.open_settings" = "Open Bluetooth Settings";
+"encryption_read_failed.dismiss" = "Dismiss";
 
 "valve.warning_already_open" = "Valve is already open.";
 "valve.warning_already_closed" = "Valve is already closed.";
@@ -95,6 +113,7 @@
 "debug.open_pressure" = "Open pressure";
 "debug.close_pressure" = "Close pressure";
 "debug.read" = "Read";
+"debug.ota_production_test_in_progress" = "Production test OTA in progress. Switch to Production Test tab to manage.";
 
 /* UUID debug (read/write by characteristic) */
 "debug.uuid_title" = "UUID Read/Write";
@@ -188,7 +207,10 @@
 "production_test_rules.rtc_fail_threshold" = "Fail Threshold";
 "production_test_rules.rtc_write_enabled" = "Enable RTC Write";
 "production_test_rules.rtc_write_retry_count" = "Write Retry Count";
+"production_test_rules.global_step_delay_section" = "Global step delay";
 "production_test_rules.timeouts" = "Timeout Configuration";
+"production_test_rules.step_interval_ms" = "Step interval (ms)";
+"production_test_rules.bluetooth_permission_wait_seconds" = "Bluetooth permission wait (s)";
 "production_test_rules.rtc_read_timeout" = "RTC Read Timeout";
 "production_test_rules.device_info_timeout" = "Device Info Read Timeout";
 "production_test_rules.ota_start_timeout" = "OTA Start Wait Timeout";
@@ -223,6 +245,7 @@
 "ota.start" = "Start OTA";
 "ota.cancel" = "Cancel OTA";
 "ota.reboot" = "Reboot";
+"ota.reboot_countdown" = "Reboot (%d)";
 "ota.auto_reboot_after_ota" = "Auto send reboot after OTA completes";
 "ota.progress" = "Progress";
 "ota.ready" = "Ready";
@@ -241,6 +264,18 @@
 "ota.reboot_disconnected_hint" = "Please reconnect to verify firmware version";
 "ota.title_reboot_disconnected" = "OTA (Device rebooted)";
 "ota.target_from_production_rules" = "Target firmware from production test rules: %@";
+"ota.packet_size" = "Packet size";
+"ota.total_size" = "Total size";
+"ota.elapsed" = "Elapsed";
+"ota.remaining" = "Remaining";
+"ota.rate" = "Rate";
+"ota.duration" = "Duration";
+"ota.cancel_upgrade" = "Cancel upgrade";
+
+"production_test.ota_section_title" = "Production OTA";
+"production_test.bluetooth_permission_confirm_title" = "Bluetooth permission / pairing";
+"production_test.bluetooth_permission_confirm_message" = "If a system dialog appeared, please click Allow. When done, click Continue or press Enter to proceed with the test.";
+"production_test.bluetooth_permission_continue" = "Continue";
 
 /* Menu */
 "menu.floating" = "Floating";

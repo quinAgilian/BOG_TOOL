@@ -77,6 +77,14 @@ struct ProductionTestRulesView: View {
     @State private var valveOpenTimeout: Double = {
         UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 3.0
     }()
+    /// 每个测试步骤之间的等待时间（SOP 定义，单位 ms）
+    @State private var stepIntervalMs: Int = {
+        UserDefaults.standard.object(forKey: "production_test_step_interval_ms") as? Int ?? 100
+    }()
+    /// 连接设备步骤完成后、下一步前等待秒数（供用户处理系统蓝牙权限/配对弹窗，0=不等待）
+    @State private var bluetoothPermissionWaitSeconds: Double = {
+        UserDefaults.standard.object(forKey: "production_test_bluetooth_permission_wait_seconds") as? Double ?? 0
+    }()
     
     // 压力阈值配置（单位：mbar）
     @State private var pressureClosedMin: Double = {
@@ -161,6 +169,9 @@ struct ProductionTestRulesView: View {
                     // 产测流程说明
                     testProcedureSection
                     
+                    // 全局延时设定（步骤间延时，适用于整个产测流程）
+                    globalStepDelaySection
+                    
                     // 测试步骤详情（包含各步骤的配置）
                     testStepsSection
                     
@@ -195,6 +206,31 @@ struct ProductionTestRulesView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    
+    /// 全局延时设定：步骤间延时（适用于所有步骤之间，非步骤2专属）
+    private var globalStepDelaySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(appLanguage.string("production_test_rules.global_step_delay_section"))
+                .font(.headline)
+                .foregroundStyle(.primary)
+            
+            thresholdIntRow(
+                label: appLanguage.string("production_test_rules.step_interval_ms"),
+                value: $stepIntervalMs,
+                key: "production_test_step_interval_ms"
+            )
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.bluetooth_permission_wait_seconds"),
+                value: $bluetoothPermissionWaitSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_bluetooth_permission_wait_seconds"
+            )
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -676,7 +712,7 @@ struct ProductionTestRulesView: View {
                 Divider()
                     .padding(.vertical, 4)
                 
-                // 超时配置（步骤2相关）
+                // 超时配置（步骤2：设备信息/OTA/重连等）
                 Text(appLanguage.string("production_test_rules.timeouts"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
