@@ -240,6 +240,7 @@
 "ota.reboot_disconnected" = "设备已重启并断开连接";
 "ota.reboot_disconnected_hint" = "请重新连接设备以验证固件版本";
 "ota.title_reboot_disconnected" = "OTA (设备已重启)";
+"ota.target_from_production_rules" = "目标固件由产测规则指定：%@";
 
 /* 菜单 */
 "menu.floating" = "置顶";

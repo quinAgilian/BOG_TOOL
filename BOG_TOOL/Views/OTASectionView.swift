@@ -13,6 +13,8 @@ struct OTASectionView: View {
     @ObservedObject var firmwareManager: FirmwareManager
     /// 是否为模态模式（用于OTA进行中的独占窗口）
     var isModal: Bool = false
+    /// 是否为产测触发的 OTA（模态下不显示“目标固件 Debug OTA”选择，只显示由产测规则指定的版本）
+    var isProductionTestOTA: Bool = false
     /// 下拉当前选中的管理固件 id（仅 Debug 下拉用）
     @State private var pickerChoice: FirmwarePickerChoice = .none
     
@@ -212,7 +214,7 @@ struct OTASectionView: View {
                     .buttonStyle(.borderedProminent)
                 }
             } else {
-                // 模态模式下显示更详细的信息
+                // 模态模式下：产测 OTA 不显示“选固件”，只显示由产测规则指定的版本；Debug OTA 显示下拉 + 浏览
                 VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                     HStack(alignment: .center, spacing: UIDesignSystem.Spacing.lg) {
                         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
@@ -238,35 +240,42 @@ struct OTASectionView: View {
                                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
                                 }
                             }
+                            if isProductionTestOTA {
+                                Text(String(format: appLanguage.string("ota.target_from_production_rules"), ble.parsedFirmwareVersion ?? "—"))
+                                    .font(UIDesignSystem.Typography.caption)
+                                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                            }
                         }
                         Spacer()
                     }
                     
-                    // 目标固件：下拉 + 浏览
-                    HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
-                        Text(appLanguage.string("firmware_manager.debug_target"))
-                            .font(UIDesignSystem.Typography.caption)
-                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                        Picker("", selection: $pickerChoice) {
-                            Text(appLanguage.string("ota.not_selected")).tag(FirmwarePickerChoice.none)
-                            ForEach(firmwareManager.entries) { e in
-                                Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
-                                    .tag(FirmwarePickerChoice.managed(e.id))
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .onChange(of: pickerChoice) { new in
-                            switch new {
-                            case .none: break
-                            case .managed(let id):
-                                if let url = firmwareManager.url(forId: id) {
-                                    ble.selectFirmware(url: url)
+                    if !isProductionTestOTA {
+                        // Debug OTA：目标固件下拉 + 浏览
+                        HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                            Text(appLanguage.string("firmware_manager.debug_target"))
+                                .font(UIDesignSystem.Typography.caption)
+                                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                            Picker("", selection: $pickerChoice) {
+                                Text(appLanguage.string("ota.not_selected")).tag(FirmwarePickerChoice.none)
+                                ForEach(firmwareManager.entries) { e in
+                                    Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
+                                        .tag(FirmwarePickerChoice.managed(e.id))
                                 }
                             }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .onChange(of: pickerChoice) { new in
+                                switch new {
+                                case .none: break
+                                case .managed(let id):
+                                    if let url = firmwareManager.url(forId: id) {
+                                        ble.selectFirmware(url: url)
+                                    }
+                                }
+                            }
+                            Button(appLanguage.string("ota.browse")) { ble.browseAndSaveFirmware() }
+                                .buttonStyle(.borderedProminent)
                         }
-                        Button(appLanguage.string("ota.browse")) { ble.browseAndSaveFirmware() }
-                            .buttonStyle(.borderedProminent)
                     }
                 }
             }

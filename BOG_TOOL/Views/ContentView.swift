@@ -116,7 +116,7 @@ struct ContentView: View {
             .overlay {
                 // OTA 进行中、等待重启、失败或 reboot 断开时，在左侧区域显示半透明覆盖层
                 if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTARebootDisconnected {
-                    OTAExclusiveOverlay(ble: ble, firmwareManager: firmwareManager)
+                    OTAExclusiveOverlay(ble: ble, firmwareManager: firmwareManager, isProductionTestMode: selectedMode == .productionTest)
                         .allowsHitTesting(true) // OTA 覆盖层可以接收交互
                 }
             }
@@ -320,6 +320,8 @@ private struct OTAExclusiveOverlay: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
+    /// 当前是否为产测模式（产测 OTA 不显示“选固件”，只显示规则指定版本）
+    var isProductionTestMode: Bool = false
     
     private var overlayTitle: String {
         if ble.isOTARebootDisconnected {
@@ -354,7 +356,7 @@ private struct OTAExclusiveOverlay: View {
                     .font(UIDesignSystem.Typography.pageTitle)
                     .foregroundStyle(UIDesignSystem.Foreground.primary)
                 
-                OTASectionView(ble: ble, firmwareManager: firmwareManager, isModal: true)
+                OTASectionView(ble: ble, firmwareManager: firmwareManager, isModal: true, isProductionTestOTA: isProductionTestMode)
                     .shadow(color: .black.opacity(0.3), radius: UIDesignSystem.Spacing.xxl, x: 0, y: 10)
             }
         }

@@ -240,6 +240,7 @@
 "ota.reboot_disconnected" = "Device rebooted and disconnected";
 "ota.reboot_disconnected_hint" = "Please reconnect to verify firmware version";
 "ota.title_reboot_disconnected" = "OTA (Device rebooted)";
+"ota.target_from_production_rules" = "Target firmware from production test rules: %@";
 
 /* Menu */
 "menu.floating" = "Floating";
