@@ -2,12 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>用于通过 BLE 连接 ESP32-C2 设备，控制电磁阀并读取压力与 RTC。</string>
-	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>用于通过 BLE 连接 ESP32-C2 设备。</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh-Hans</string>
 	<key>CFBundleExecutable</key>
@@ -22,6 +16,12 @@
 	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>BOG CO2_controller 项目工具</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>用于通过 BLE 连接 ESP32-C2 设备。</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>
