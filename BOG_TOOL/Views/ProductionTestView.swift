@@ -728,8 +728,8 @@ struct ProductionTestView: View {
 
     /// 加载测试规则配置
     private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds) {
-        // 加载步骤顺序和启用状态
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .disconnectDevice]
+        // 加载步骤顺序和启用状态（含断开前 OTA 步骤）
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         var steps: [TestStep] = []
@@ -740,7 +740,7 @@ struct ProductionTestView: View {
                 }
             }
         } else {
-            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .disconnectDevice]
+            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .otaBeforeDisconnect, .disconnectDevice]
         }
         
         // 确保第一步和最后一步在正确位置
@@ -751,6 +751,10 @@ struct ProductionTestView: View {
         if steps.last?.id != TestStep.disconnectDevice.id {
             steps.removeAll { $0.id == TestStep.disconnectDevice.id }
             steps.append(TestStep.disconnectDevice)
+        }
+        // 迁移：若旧配置中无「断开前 OTA」步骤，则插入在断开连接之前，默认启用
+        if !steps.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
+            steps.insert(TestStep.otaBeforeDisconnect, at: steps.count - 1)
         }
         
         // 加载每个步骤的启用状态
@@ -1433,6 +1437,101 @@ struct ProductionTestView: View {
                     
                     stepResults[step.id] = pressureMessages.joined(separator: "\n")
                     stepStatuses[step.id] = pressurePassed ? .passed : .failed
+                    
+                case "step_ota": // 断开连接前 OTA（默认启用，使用已选固件执行一次 OTA）
+                    self.log("步骤: 断开前 OTA", level: .info)
+                    
+                    if ble.selectedFirmwareURL == nil {
+                        self.log("错误：未在 Debug 模式选择固件。请先在 Debug 模式选择固件后重试", level: .error)
+                        stepStatuses[step.id] = .failed
+                        stepResults[step.id] = "OTA: 未选择固件（请在 Debug 模式选择）"
+                        isRunning = false
+                        currentStepId = nil
+                        return
+                    }
+                    
+                    let valveOpened = await ensureValveOpen()
+                    if !valveOpened {
+                        self.log("警告：OTA 前阀门打开失败，继续执行 OTA...", level: .warning)
+                    }
+                    
+                    self.log("使用已选择固件，启动 OTA", level: .info)
+                    ble.startOTA()
+                    
+                    let otaTimeoutSeconds = rules.thresholds.otaStartWaitTimeout
+                    let maxOtaWaitCount = Int(otaTimeoutSeconds * 2)
+                    var otaWaitCount = 0
+                    while !ble.isOTAInProgress && otaWaitCount < maxOtaWaitCount {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        otaWaitCount += 1
+                        if otaWaitCount % 4 == 0 {
+                            let elapsed = Double(otaWaitCount) / 2.0
+                            self.log("等待 OTA 启动中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug)
+                        }
+                    }
+                    
+                    if otaWaitCount >= maxOtaWaitCount {
+                        self.log("错误：OTA 启动超时（\(Int(otaTimeoutSeconds))秒）", level: .error)
+                        stepStatuses[step.id] = .failed
+                        stepResults[step.id] = "OTA: 启动超时"
+                        isRunning = false
+                        currentStepId = nil
+                        return
+                    }
+                    
+                    self.log("OTA 已启动，传输进行中...", level: .info)
+                    while ble.isOTAInProgress {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                    }
+                    
+                    if ble.isOTAFailed || ble.isOTACancelled {
+                        self.log("错误：OTA 失败或已取消", level: .error)
+                        stepStatuses[step.id] = .failed
+                        stepResults[step.id] = "OTA: 失败或已取消"
+                        isRunning = false
+                        currentStepId = nil
+                        return
+                    }
+                    
+                    if ble.otaProgress >= 1.0 && !ble.isOTAFailed {
+                        self.log("OTA 传输完成，等待设备重启...", level: .info)
+                        try? await Task.sleep(nanoseconds: 5000_000_000)
+                        self.log("等待设备重新连接（超时: \(Int(rules.thresholds.deviceReconnectTimeout))秒）...", level: .info)
+                        let reconnectTimeoutSeconds = rules.thresholds.deviceReconnectTimeout
+                        let maxReconnectWaitCount = Int(reconnectTimeoutSeconds * 2)
+                        var reconnectWaitCount = 0
+                        while !ble.isConnected && reconnectWaitCount < maxReconnectWaitCount {
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            reconnectWaitCount += 1
+                            if reconnectWaitCount % 4 == 0 {
+                                let elapsed = Double(reconnectWaitCount) / 2.0
+                                self.log("等待设备重新连接中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug)
+                            }
+                        }
+                        if ble.isConnected {
+                            self.log("设备已重新连接，OTA 步骤完成", level: .info)
+                            if let newFw = ble.currentFirmwareVersion {
+                                stepResults[step.id] = "OTA: \(newFw) ✓"
+                            } else {
+                                stepResults[step.id] = "OTA: 完成 ✓"
+                            }
+                            stepStatuses[step.id] = .passed
+                        } else {
+                            self.log("错误：设备重新连接超时", level: .error)
+                            stepStatuses[step.id] = .failed
+                            stepResults[step.id] = "OTA: 设备未重新连接"
+                            isRunning = false
+                            currentStepId = nil
+                            return
+                        }
+                    } else {
+                        self.log("错误：OTA 未完成", level: .error)
+                        stepStatuses[step.id] = .failed
+                        stepResults[step.id] = "OTA: 未完成"
+                        isRunning = false
+                        currentStepId = nil
+                        return
+                    }
                     
                 case "step5": // 待定
                     self.log("步骤5: 待定步骤（跳过）", level: .info)

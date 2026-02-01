@@ -165,6 +165,9 @@
 "production_test_rules.step5_title" = "待定";
 "production_test_rules.step5_desc" = "待定义的额外测试步骤。";
 "production_test_rules.step5_criteria" = "";
+"production_test_rules.step_ota_title" = "断开前 OTA";
+"production_test_rules.step_ota_desc" = "在断开连接前使用已选固件执行一次固件升级。默认启用。";
+"production_test_rules.step_ota_criteria" = "✓ 通过：OTA 完成且设备已重新连接。";
 "production_test_rules.step_disconnect_title" = "安全断开连接";
 "production_test_rules.step_disconnect_desc" = "所有测试完成后安全断开设备连接。";
 "production_test_rules.step_disconnect_criteria" = "✓ 通过：设备成功断开连接。";

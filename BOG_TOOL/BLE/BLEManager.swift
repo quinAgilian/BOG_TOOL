@@ -74,6 +74,10 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaFirmwareTotalBytes: Int?
     /// 单次 OTA 开始时间（用于显示已用/剩余时间），结束时置 nil
     @Published var otaStartTime: Date?
+    /// 是否允许固件版本升级（勾选后才在「当前≠目标」时执行 OTA；产测可传参覆盖）
+    @Published var enableFwVersionUpdate: Bool = false
+    /// OTA 标记位：仅当「当前固件≠目标」且勾选 enable 时置 true；正式进入发送固件前检查，未置位则不执行
+    private var otaMarkerSet: Bool = false
     /// OTA 成功完成时的耗时（秒），用于完成后在状态/标题显示
     @Published var otaCompletedDuration: TimeInterval?
     /// 当前设备固件版本（连接后从 Device Information 读取）
@@ -102,6 +106,8 @@ final class BLEManager: NSObject, ObservableObject {
         let line: String
     }
     @Published var logEntries: [LogEntry] = []
+    /// OTA 进度单行刷新（\r 式）：进行中只显示这一行并原地更新，内容与 OTA 弹窗关键信息一致（进度% 已用 速率 剩余）
+    @Published var otaProgressLogLine: String?
     /// 是否在日志区域显示对应等级（勾选则显示）
     @Published var showLogLevelDebug = true
     @Published var showLogLevelInfo = true
@@ -181,10 +187,6 @@ final class BLEManager: NSObject, ObservableObject {
         case cancelled // 用户手动取消
     }
     private var otaFlowState: OTAFlowState = .idle
-    /// OTA 进度日志节流：只打 0%、5%、…、100%，避免刷屏
-    private var lastLoggedOtaProgressStep: Int = -1
-    /// OTA 进度日志节流：仅当整数百分比变化时打印日志（避免刷屏），但 UI 进度实时更新
-    private var lastPublishedOtaProgressPercent: Int = -1
     private static let otaChunkSize = 200
     /// 每包写成功后、发下一包前的延时（纳秒）；10ms 给设备留处理时间，确保设备有足够时间处理上一包
     /// 实际测量：平均 BLE 响应时间约 42.2ms，但测试发现 5ms 延时反而变慢（3分54秒 vs 3分21秒）
@@ -669,9 +671,14 @@ final class BLEManager: NSObject, ObservableObject {
         return fileSizeString(for: url)
     }
     
-    /// 启动 OTA（产测与 Debug 共用，按 GATT 协议：start(1) → 写块 → finished(2) → 轮询 Status → reboot(3) 或 abort(0)）
-    func startOTA() {
+    /// 启动 OTA（产测与 Debug 共用）。仅当「当前固件≠目标」且勾选 Enable FW version update（或传参为 true）时置 OTA 标记并执行；正式进入发送固件前再检查标记。
+    /// - Parameter enableFwVersionUpdateOverride: 产测传入 true 时以之为准，否则用 BLEManager.enableFwVersionUpdate
+    func startOTA(enableFwVersionUpdateOverride: Bool? = nil) {
         guard let url = selectedFirmwareURL else {
+            appendLog("[OTA] 请先选择固件", level: .warning)
+            return
+        }
+        guard let targetVersion = parsedFirmwareVersion else {
             appendLog("[OTA] 请先选择固件", level: .warning)
             return
         }
@@ -687,6 +694,18 @@ final class BLEManager: NSObject, ObservableObject {
             appendLog("[OTA] 设备不支持 OTA 或特征未就绪", level: .warning)
             return
         }
+        // 当前固件与目标一致则不升级
+        let currentVersion = currentFirmwareVersion ?? ""
+        if currentVersion == targetVersion {
+            appendLog("[OTA] 当前已是目标版本（\(targetVersion)），无需升级", level: .info)
+            return
+        }
+        // 未勾选「Enable FW version update」且未传参覆盖则不执行
+        let allowFwUpdate = enableFwVersionUpdateOverride ?? enableFwVersionUpdate
+        if !allowFwUpdate {
+            appendLog("[OTA] 请勾选「Enable FW version update」以允许升级（当前: \(currentVersion), 目标: \(targetVersion)）", level: .warning)
+            return
+        }
         guard let data = try? Data(contentsOf: url) else {
             appendLog("[OTA] 无法读取固件文件", level: .error)
             return
@@ -699,6 +718,7 @@ final class BLEManager: NSObject, ObservableObject {
             appendLog("[OTA] 固件为空", level: .error)
             return
         }
+        otaMarkerSet = true
         isOTAInProgress = true
         isOTAFailed = false // 重置失败状态
         isOTACancelled = false // 重置取消状态
@@ -708,11 +728,10 @@ final class BLEManager: NSObject, ObservableObject {
         isExpectingDisconnectFromReboot = false
         rebootSentTime = nil
         otaProgress = 0
+        otaProgressLogLine = nil
         otaCompletedDuration = nil
         otaStartTime = Date()
         otaFirmwareTotalBytes = data.count
-        lastLoggedOtaProgressStep = -1
-        lastPublishedOtaProgressPercent = -1
         otaChunkWriteStartTime = nil
         otaChunkRttSum = 0
         otaChunkRttCount = 0
@@ -778,6 +797,8 @@ final class BLEManager: NSObject, ObservableObject {
         isExpectingDisconnectFromReboot = false
         rebootSentTime = nil
         otaValidationStartTime = nil
+        otaProgressLogLine = nil
+        otaMarkerSet = false
         
         // 失败时清除时间和进度，取消时保留以便UI显示
         if reason != nil {
@@ -838,18 +859,11 @@ final class BLEManager: NSObject, ObservableObject {
         guard case .sendingChunks(let chunks, let idx) = otaFlowState else { return }
         let total = chunks.count
         let progress = Double(idx + 1) / Double(total)
-        let percent = min(100, Int(progress * 100))
         // 实时更新 UI 进度
         otaProgress = progress
-        // 仅当整数百分比变化时打印日志（避免刷屏）
-        if percent != lastPublishedOtaProgressPercent {
-            lastPublishedOtaProgressPercent = percent
-        }
-        let step = Int(progress * 20)
-        if step > lastLoggedOtaProgressStep {
-            lastLoggedOtaProgressStep = step
-            appendLog("[OTA] 进度 \(min(step * 5, 100))%")
-        }
+        // 单行刷新（\r 式），内容与 OTA 弹窗一致
+        let start = otaStartTime ?? Date()
+        otaProgressLogLine = buildOtaProgressLogLine(progress: progress, startTime: start, totalBytes: otaFirmwareTotalBytes)
         if idx + 1 < total {
             otaFlowState = .sendingChunks(chunks: chunks, nextChunkIndex: idx + 1)
             // 每包发送后仅延时，不读 OTA Status（提速，避免每包增加一次BLE读取）
@@ -860,17 +874,13 @@ final class BLEManager: NSObject, ObservableObject {
                 self.writeNextOtaChunkIfNeeded()
             }
         } else {
-            lastPublishedOtaProgressPercent = 100
             otaProgress = 1
-            if lastLoggedOtaProgressStep < 20 {
-                lastLoggedOtaProgressStep = 20
-                appendLog("[OTA] 进度 100%")
-            }
+            otaProgressLogLine = nil
+            appendLog("[OTA] 进度 100% 固件块已全部发送，写 Status=2 (finished)")
             if otaChunkRttCount > 0 {
                 let avgMs = (otaChunkRttSum / Double(otaChunkRttCount)) * 1000
                 appendLog("[OTA] 共 \(otaChunkRttCount) 包，平均 BLE 响应 \(String(format: "%.1f", avgMs)) ms（耗时主要在 BLE 往返）")
             }
-            appendLog("[OTA] 固件块已全部发送，写 Status=2 (finished)")
             otaFlowState = .sentFinishedPolling
             isOTAWaitingValidation = true // 标记为等待校验状态
             otaValidationStartTime = Date() // 记录开始等待校验的时间
@@ -949,8 +959,14 @@ final class BLEManager: NSObject, ObservableObject {
             }
         case .waitingStartAck(let chunks, let retryCount, let status2PollStartTime):
             if value == 1 {
+                // 正式进入 OTA 执行：仅当标记位已置定才真正发送固件
+                guard otaMarkerSet else {
+                    appendLog("[OTA] OTA 标记未设置，不执行升级", level: .warning)
+                    abortOtaAndCleanup(reason: "OTA 标记未设置")
+                    return
+                }
                 // 设备已确认 Status=1，可以开始发送数据包
-                appendLog("[OTA] 设备已确认 Status=1（等待数据包），开始发送固件块")
+                otaProgressLogLine = buildOtaProgressLogLine(progress: 0, startTime: otaStartTime ?? Date(), totalBytes: otaFirmwareTotalBytes)
                 otaFlowState = .sendingChunks(chunks: chunks, nextChunkIndex: 0)
                 writeNextOtaChunkIfNeeded()
             } else if value == 2 {
@@ -1038,6 +1054,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// 清空日志
     func clearLog() {
         logEntries.removeAll()
+        otaProgressLogLine = nil
     }
     
     // MARK: - Private Helpers
@@ -1052,6 +1069,43 @@ final class BLEManager: NSObject, ObservableObject {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss.SSS"
         return f.string(from: Date())
+    }
+    
+    /// OTA 时间格式 MM:SS（与 OTASectionView 一致）
+    private static func formatOTATime(_ sec: TimeInterval) -> String {
+        let total = max(0, Int(sec))
+        let m = min(99, total / 60)
+        let s = total % 60
+        return String(format: "%02d:%02d", m, s)
+    }
+    
+    /// OTA 速率格式 XXX kbps（与 OTASectionView 一致）
+    private static func formatOTARate(bytesPerSecond: Double) -> String {
+        let kbps = Int(bytesPerSecond * 8 / 1000)
+        return String(format: "%3d kbps", min(999, max(0, kbps)))
+    }
+    
+    /// 生成与 OTA 弹窗一致的单行进度文案：进度% 已用 速率 剩余
+    private func buildOtaProgressLogLine(progress: Double, startTime: Date, totalBytes: Int?) -> String {
+        let now = Date()
+        let elapsed = now.timeIntervalSince(startTime)
+        var rateStr = "  — kbps"
+        var remainingStr = "00:00"
+        if let total = totalBytes, total > 0, elapsed > 0 {
+            let bytesSent = Int(progress * Double(total))
+            let rate = Double(bytesSent) / elapsed
+            rateStr = Self.formatOTARate(bytesPerSecond: rate)
+            if progress > 0, progress < 1, rate > 0 {
+                let remainingBytes = Int((1 - progress) * Double(total))
+                let remaining = TimeInterval(remainingBytes) / rate
+                remainingStr = Self.formatOTATime(remaining)
+            }
+        } else if progress > 0, progress < 1, elapsed > 0 {
+            let remaining = elapsed / progress * (1 - progress)
+            remainingStr = Self.formatOTATime(remaining)
+        }
+        let percentStr = String(format: "%.2f", min(100, progress * 100))
+        return "\(formattedTime()) [OTA] 进度 \(percentStr)% 已用 \(Self.formatOTATime(elapsed)) 速率 \(rateStr) 剩余 \(remainingStr)"
     }
     
     private func writeToCharacteristic(_ char: CBCharacteristic?, data: Data) {
@@ -1336,6 +1390,7 @@ extension BLEManager: CBCentralManagerDelegate {
                 otaStartTime = nil
                 otaFirmwareTotalBytes = nil
                 otaProgress = 0
+                otaProgressLogLine = nil
                 otaValidationStartTime = nil
                 
                 // 清除期待断开标记
@@ -1604,23 +1659,6 @@ extension BLEManager: CBPeripheralDelegate {
                         // 监控连接参数变化：记录前N个包的响应时间
                         if initialRttSamples.count < Self.initialRttSampleCount {
                             initialRttSamples.append(elapsed)
-                            if initialRttSamples.count == Self.initialRttSampleCount {
-                                let avgInitialMs = (initialRttSamples.reduce(0, +) / Double(initialRttSamples.count)) * 1000
-                                appendLog("[OTA] 初始平均 BLE 响应: \(String(format: "%.1f", avgInitialMs)) ms（用于监控连接间隔变化）", level: .debug)
-                            }
-                        } else if otaChunkRttCount == Self.initialRttSampleCount * 2 {
-                            // 对比后续响应时间，检测是否有改善
-                            let recentRtt = (otaChunkRttSum - initialRttSamples.reduce(0, +)) / Double(otaChunkRttCount - initialRttSamples.count)
-                            let initialAvgRtt = initialRttSamples.reduce(0, +) / Double(initialRttSamples.count)
-                            let improvement = ((initialAvgRtt - recentRtt) / initialAvgRtt) * 100
-                            if abs(improvement) > 10 {
-                                appendLog("[OTA] 连接参数变化检测: 初始 \(String(format: "%.1f", initialAvgRtt * 1000))ms → 当前 \(String(format: "%.1f", recentRtt * 1000))ms (\(improvement > 0 ? "+" : "")\(String(format: "%.1f", improvement))%)", level: .info)
-                            }
-                        }
-                        
-                        if otaChunkRttCount % 200 == 0 {
-                            let avgMs = (otaChunkRttSum / Double(otaChunkRttCount)) * 1000
-                            appendLog("[OTA] 已发 \(otaChunkRttCount) 包，平均 BLE 响应 \(String(format: "%.1f", avgMs)) ms", level: .info)
                         }
                     }
                     continueOtaAfterChunkWrite()

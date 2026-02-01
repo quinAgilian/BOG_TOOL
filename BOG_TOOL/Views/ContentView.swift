@@ -45,6 +45,22 @@ struct ContentView: View {
     /// 上次执行自动滚动的时刻，用于节流（避免刷屏时无法控制）
     @State private var lastAutoScrollDate: Date = .distantPast
 
+    /// 日志区富文本（按等级着色：INFO 蓝、WARN 黄、ERROR 红，支持全选与自由拖选）
+    private var logAreaAttributedContent: AttributedString {
+        var result = AttributedString()
+        for entry in ble.displayedLogEntries {
+            var segment = AttributedString(entry.line + "\n")
+            segment.foregroundColor = LogLevelColor.color(entry.level)
+            result.append(segment)
+        }
+        if let progress = ble.otaProgressLogLine {
+            var segment = AttributedString(progress)
+            segment.foregroundColor = .blue
+            result.append(segment)
+        }
+        return result
+    }
+
     var body: some View {
         HSplitView {
             // 左侧：设备与模式
@@ -136,28 +152,26 @@ struct ContentView: View {
                     
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 0) {
-                                ForEach(ble.displayedLogEntries) { entry in
-                                    Text(entry.line)
-                                        .font(UIDesignSystem.Typography.monospacedCaption)
-                                        .foregroundStyle(LogLevelColor.color(entry.level))
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(UIDesignSystem.Padding.sm)
-                            .id(0)
+                            // 整块富文本显示，按等级着色，支持全选（Cmd+A）和自由拖选
+                            Text(logAreaAttributedContent)
+                                .font(UIDesignSystem.Typography.monospacedCaption)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .padding(UIDesignSystem.Padding.sm)
+                                .id("logContent")
                         }
                         .onChange(of: ble.logEntries.count, perform: { _ in
                             guard logAutoScrollEnabled else { return }
                             let now = Date()
                             if now.timeIntervalSince(lastAutoScrollDate) >= 0.4 {
-                                proxy.scrollTo(0, anchor: .bottom)
+                                proxy.scrollTo("logContent", anchor: .bottom)
                                 lastAutoScrollDate = now
                             }
                         })
+                        .onChange(of: ble.otaProgressLogLine) { _ in
+                            guard logAutoScrollEnabled else { return }
+                            proxy.scrollTo("logContent", anchor: .bottom)
+                        }
                     }
                     .background(UIDesignSystem.Background.text)
                 }
@@ -243,13 +257,13 @@ private struct DeviceInfoStrip: View {
     }
 }
 
-/// 日志等级对应颜色（DEBUG 用 secondary 避免白字在浅色背景下不可见）
+/// 日志等级对应颜色：INFO 蓝、WARN 黄、ERROR 红、DEBUG 灰
 private enum LogLevelColor {
     static func color(_ level: BLEManager.LogLevel) -> Color {
         switch level {
         case .debug: return .secondary
-        case .info: return .primary
-        case .warning: return .orange
+        case .info: return .blue
+        case .warning: return .yellow
         case .error: return .red
         }
     }

@@ -17,6 +17,8 @@ struct TestStep: Identifiable, Equatable {
     static let readRTC = TestStep(id: "step3", key: "step3", isLocked: false, enabled: true)
     static let readPressure = TestStep(id: "step4", key: "step4", isLocked: false, enabled: true)
     static let tbd = TestStep(id: "step5", key: "step5", isLocked: false, enabled: false)
+    /// 断开连接前的 OTA 步骤（默认启用）
+    static let otaBeforeDisconnect = TestStep(id: "step_ota", key: "step_ota", isLocked: false, enabled: true)
     static let disconnectDevice = TestStep(id: "step_disconnect", key: "step_disconnect", isLocked: false, enabled: true)
 }
 
@@ -88,19 +90,20 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.object(forKey: "production_test_pressure_diff_threshold") as? Double ?? 0.1
     }()
     
-    // 默认步骤顺序：第一步锁定，最后一步断开连接
+    // 默认步骤顺序：第一步连接，断开连接前一步 OTA（默认启用），最后一步断开连接
     private static let defaultSteps: [TestStep] = [
         .connectDevice,
         .verifyFirmware,
         .readRTC,
         .readPressure,
         .tbd,
+        .otaBeforeDisconnect,
         .disconnectDevice
     ]
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         // 加载步骤顺序
@@ -123,6 +126,10 @@ struct ProductionTestRulesView: View {
         if steps.last?.id != TestStep.disconnectDevice.id {
             steps.removeAll { $0.id == TestStep.disconnectDevice.id }
             steps.append(TestStep.disconnectDevice)
+        }
+        // 迁移：若旧配置中无「断开前 OTA」步骤，则插入在断开连接之前，默认启用
+        if !steps.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
+            steps.insert(TestStep.otaBeforeDisconnect, at: steps.count - 1)
         }
         
         // 加载每个步骤的启用状态

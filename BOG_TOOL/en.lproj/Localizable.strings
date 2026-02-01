@@ -165,6 +165,9 @@
 "production_test_rules.step5_title" = "TBD";
 "production_test_rules.step5_desc" = "Additional test steps to be defined.";
 "production_test_rules.step5_criteria" = "";
+"production_test_rules.step_ota_title" = "OTA Before Disconnect";
+"production_test_rules.step_ota_desc" = "Perform firmware OTA using the selected firmware file before disconnecting. Enabled by default.";
+"production_test_rules.step_ota_criteria" = "✓ Pass: OTA completed and device reconnected.";
 "production_test_rules.step_disconnect_title" = "Safely Disconnect Device";
 "production_test_rules.step_disconnect_desc" = "Safely disconnect from the device after all tests are completed.";
 "production_test_rules.step_disconnect_criteria" = "✓ Pass: Device disconnected successfully.";
