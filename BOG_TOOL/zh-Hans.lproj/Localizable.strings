@@ -139,7 +139,8 @@
 "production_test_rules.bootloader_version_placeholder" = "例如：2";
 "production_test_rules.firmware_version_label" = "FW 版本：";
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
-"production_test_rules.firmware_version_hint" = "将检查设备固件版本是否与此值一致，不一致则触发OTA。自动保存。";
+"production_test_rules.firmware_version_hint" = "从下拉选择目标固件版本，产测 OTA 步骤将直接使用此版本，无需再选。";
+"production_test_rules.firmware_version_no_entries" = "请在「固件」菜单中添加固件后再选择目标版本。";
 "production_test_rules.firmware_upgrade_enabled" = "启用固件版本升级";
 "production_test_rules.use_parsed_version" = "使用 %@";
 "production_test_rules.use_parsed_version_hint" = "使用从固件文件名解析的版本号";
@@ -165,6 +166,9 @@
 "production_test_rules.step5_title" = "待定";
 "production_test_rules.step5_desc" = "待定义的额外测试步骤。";
 "production_test_rules.step5_criteria" = "";
+"production_test_rules.step_valve_title" = "确保电磁阀是开启的";
+"production_test_rules.step_valve_desc" = "检查并确保设备电磁阀处于开启状态。";
+"production_test_rules.step_valve_criteria" = "✓ 通过：电磁阀已开启。";
 "production_test_rules.step_ota_title" = "断开前 OTA";
 "production_test_rules.step_ota_desc" = "在断开连接前使用已选固件执行一次固件升级。默认启用。";
 "production_test_rules.step_ota_criteria" = "✓ 通过：OTA 完成且设备已重新连接。";
@@ -239,3 +243,16 @@
 
 /* 菜单 */
 "menu.floating" = "置顶";
+"menu.firmware" = "固件";
+"menu.firmware_manage" = "固件管理...";
+
+/* 固件管理 */
+"firmware_manager.title" = "固件管理";
+"firmware_manager.add" = "新增固件";
+"firmware_manager.close" = "关闭";
+"firmware_manager.empty" = "暂无固件，请点击「新增固件」添加。";
+"firmware_manager.version" = "版本";
+"firmware_manager.path" = "路径";
+"firmware_manager.select_file" = "选择固件文件";
+"firmware_manager.debug_target" = "目标固件（Debug OTA）";
+"firmware_manager.sop_version" = "产测按 SOP 期望版本自动选择";

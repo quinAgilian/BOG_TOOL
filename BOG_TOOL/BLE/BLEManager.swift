@@ -48,11 +48,43 @@ final class BLEManager: NSObject, ObservableObject {
     /// 从当前选择的固件文件名解析出的版本号（如 1.0.5），供 OTA 区域显示
     var parsedFirmwareVersion: String? {
         guard let url = selectedFirmwareURL else { return nil }
+        return BLEManager.parseFirmwareVersion(from: url)
+    }
+    
+    /// 从固件 URL 解析出版本号（供固件管理等复用）；nonisolated 以便在非 MainActor 上下文同步调用
+    nonisolated static func parseFirmwareVersion(from url: URL) -> String? {
         let name = url.deletingPathExtension().lastPathComponent
         let parts = name.components(separatedBy: "_").filter { Int($0) != nil }
         if parts.count >= 3 { return parts.suffix(3).joined(separator: ".") }
-        let (_, fw) = extractFirmwareVersions(from: name)
+        let (_, fw) = BLEManager.extractFirmwareVersionsStatic(from: name)
         return fw.isEmpty ? nil : fw
+    }
+    
+    /// 静态版本：从版本字符串提取固件号（供 parseFirmwareVersion 等复用）；nonisolated 供 parseFirmwareVersion 调用
+    private nonisolated static func extractFirmwareVersionsStatic(from versionString: String) -> (bootloader: String, firmware: String) {
+        let nsString = versionString as NSString
+        let range = NSRange(location: 0, length: nsString.length)
+        let pattern1 = #"(\d+)_(\d+\.\d+\.\d+)"#
+        if let regex1 = try? NSRegularExpression(pattern: pattern1, options: []),
+           let match = regex1.firstMatch(in: versionString, options: [], range: range),
+           match.numberOfRanges >= 3 {
+            let bootloaderRange = match.range(at: 1)
+            let firmwareRange = match.range(at: 2)
+            if bootloaderRange.location != NSNotFound, firmwareRange.location != NSNotFound {
+                return (nsString.substring(with: bootloaderRange), nsString.substring(with: firmwareRange))
+            }
+        }
+        let pattern2 = #"(\d+)_(\d+)_(\d+)_(\d+)"#
+        if let regex2 = try? NSRegularExpression(pattern: pattern2, options: []),
+           let match = regex2.firstMatch(in: versionString, options: [], range: range),
+           match.numberOfRanges >= 5 {
+            let bootloader = match.range(at: 1).location != NSNotFound ? nsString.substring(with: match.range(at: 1)) : versionString
+            let fw1 = nsString.substring(with: match.range(at: 2))
+            let fw2 = nsString.substring(with: match.range(at: 3))
+            let fw3 = nsString.substring(with: match.range(at: 4))
+            return (bootloader, "\(fw1).\(fw2).\(fw3)")
+        }
+        return (versionString, versionString)
     }
     /// OTA 进度 0...1
     @Published var otaProgress: Double = 0
@@ -74,9 +106,9 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaFirmwareTotalBytes: Int?
     /// 单次 OTA 开始时间（用于显示已用/剩余时间），结束时置 nil
     @Published var otaStartTime: Date?
-    /// 是否允许固件版本升级（勾选后才在「当前≠目标」时执行 OTA；产测可传参覆盖）
-    @Published var enableFwVersionUpdate: Bool = false
-    /// OTA 标记位：仅当「当前固件≠目标」且勾选 enable 时置 true；正式进入发送固件前检查，未置位则不执行
+    /// OTA 未启动原因（startOTA 提前返回时设置，产测可读取并写入产测日志；成功启动后清空）
+    @Published var lastOTARejectReason: String?
+    /// OTA 流程内部标记：进入发送固件前置位，用于状态机校验
     private var otaMarkerSet: Bool = false
     /// OTA 成功完成时的耗时（秒），用于完成后在状态/标题显示
     @Published var otaCompletedDuration: TimeInterval?
@@ -642,11 +674,20 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
 
-    /// 应用用户选择的固件 URL：释放旧的安全作用域、保存书签、更新 selectedFirmwareURL
+    /// 设置当前目标固件（固件管理下拉选择或产测按版本解析后调用）；释放旧的安全作用域、保存书签、更新 selectedFirmwareURL
+    func selectFirmware(url: URL) {
+        applySelectedFirmwareURL(url)
+    }
+    
+    /// 应用用户选择的固件 URL：释放旧的安全作用域、对新 URL 申请安全作用域（来自固件管理/书签的必须）、保存书签、更新 selectedFirmwareURL
     private func applySelectedFirmwareURL(_ url: URL) {
         if let old = securityScopedFirmwareURL {
             old.stopAccessingSecurityScopedResource()
             securityScopedFirmwareURL = nil
+        }
+        // 来自固件管理或 NSOpenPanel 的 URL 需申请安全作用域，否则 Data(contentsOf:) 会失败
+        if url.startAccessingSecurityScopedResource() {
+            securityScopedFirmwareURL = url
         }
         if let data = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
             UserDefaults.standard.set(data, forKey: Self.otaFirmwareBookmarkKey)
@@ -671,53 +712,60 @@ final class BLEManager: NSObject, ObservableObject {
         return fileSizeString(for: url)
     }
     
-    /// 启动 OTA（产测与 Debug 共用）。仅当「当前固件≠目标」且勾选 Enable FW version update（或传参为 true）时置 OTA 标记并执行；正式进入发送固件前再检查标记。
-    /// - Parameter enableFwVersionUpdateOverride: 产测传入 true 时以之为准，否则用 BLEManager.enableFwVersionUpdate
-    func startOTA(enableFwVersionUpdateOverride: Bool? = nil) {
-        guard let url = selectedFirmwareURL else {
-            appendLog("[OTA] 请先选择固件", level: .warning)
-            return
-        }
-        guard let targetVersion = parsedFirmwareVersion else {
-            appendLog("[OTA] 请先选择固件", level: .warning)
-            return
-        }
+    /// 启动 OTA：仅负责执行。调用方在调用前应确认固件存在，并直接传入升级包 URL；本方法内会先校验可读性，失败则立即返回。
+    /// - Parameter firmwareURL: 升级包文件 URL（产测从固件管理解析、Debug 为已选固件；书签/外部路径需安全作用域，本方法内会申请）
+    /// - Returns: 若未启动则返回原因字符串；若已启动则返回 nil。产测/调用方请用返回值判断，避免依赖 lastOTARejectReason 时序。
+    /// 执行中通过 isOTAInProgress / otaProgress / lastOTARejectReason 等实时上报状态；取消请调用 cancelOTA()。
+    func startOTA(firmwareURL: URL) -> String? {
+        lastOTARejectReason = nil
         guard isConnected else {
+            let reason = "请先连接设备"
+            lastOTARejectReason = reason
             appendLog("[OTA] 请先连接设备", level: .warning)
-            return
+            return reason
         }
         guard !isOTAInProgress else {
+            let reason = "OTA 正在进行中"
+            lastOTARejectReason = reason
             appendLog("[OTA] 正在进行中", level: .warning)
-            return
+            return reason
         }
         guard isOtaAvailable else {
+            let reason = "设备不支持 OTA 或特征未就绪"
+            lastOTARejectReason = reason
             appendLog("[OTA] 设备不支持 OTA 或特征未就绪", level: .warning)
-            return
+            return reason
         }
-        // 当前固件与目标一致则不升级
-        let currentVersion = currentFirmwareVersion ?? ""
-        if currentVersion == targetVersion {
-            appendLog("[OTA] 当前已是目标版本（\(targetVersion)），无需升级", level: .info)
-            return
+        // 先校验固件可读：申请安全作用域后读取，失败则立即返回
+        if securityScopedFirmwareURL != firmwareURL {
+            if firmwareURL.startAccessingSecurityScopedResource() {
+                if let old = securityScopedFirmwareURL {
+                    old.stopAccessingSecurityScopedResource()
+                }
+                securityScopedFirmwareURL = firmwareURL
+            }
         }
-        // 未勾选「Enable FW version update」且未传参覆盖则不执行
-        let allowFwUpdate = enableFwVersionUpdateOverride ?? enableFwVersionUpdate
-        if !allowFwUpdate {
-            appendLog("[OTA] 请勾选「Enable FW version update」以允许升级（当前: \(currentVersion), 目标: \(targetVersion)）", level: .warning)
-            return
+        let data: Data
+        do {
+            data = try Data(contentsOf: firmwareURL)
+        } catch {
+            let reason = "无法读取固件文件: \(error.localizedDescription)"
+            lastOTARejectReason = reason
+            appendLog("[OTA] 无法读取固件文件: \(firmwareURL.path) — \(error.localizedDescription)", level: .error)
+            return reason
         }
-        guard let data = try? Data(contentsOf: url) else {
-            appendLog("[OTA] 无法读取固件文件", level: .error)
-            return
-        }
+        selectedFirmwareURL = firmwareURL
         let chunks = stride(from: 0, to: data.count, by: Self.otaChunkSize).map { start in
             let end = min(start + Self.otaChunkSize, data.count)
             return Data(data[start..<end])
         }
         guard !chunks.isEmpty else {
+            let reason = "固件为空"
+            lastOTARejectReason = reason
             appendLog("[OTA] 固件为空", level: .error)
-            return
+            return reason
         }
+        lastOTARejectReason = nil
         otaMarkerSet = true
         isOTAInProgress = true
         isOTAFailed = false // 重置失败状态
@@ -758,9 +806,9 @@ final class BLEManager: NSObject, ObservableObject {
         let estimatedMinutes = Int(estimatedTimeSeconds) / 60
         let estimatedSeconds = Int(estimatedTimeSeconds) % 60
         
-        appendLog("[OTA] 启动: \(url.lastPathComponent)，共 \(chunks.count) 包", level: .info)
+        appendLog("[OTA] 启动: \(firmwareURL.lastPathComponent)，共 \(chunks.count) 包", level: .info)
         appendLog("[OTA] 参数详情:", level: .debug)
-        appendLog("  - 固件文件: \(url.lastPathComponent)", level: .debug)
+        appendLog("  - 固件文件: \(firmwareURL.lastPathComponent)", level: .debug)
         appendLog("  - 固件大小: \(firmwareSizeBytes) bytes (\(String(format: "%.2f", firmwareSizeKB)) KB)", level: .debug)
         appendLog("  - 总包数: \(totalChunks)", level: .debug)
         appendLog("  - 每包大小: \(chunkSizeBytes) bytes", level: .debug)
@@ -769,6 +817,19 @@ final class BLEManager: NSObject, ObservableObject {
         appendLog("  - 预计时间: 约 \(estimatedMinutes)分\(estimatedSeconds)秒（理论估算）", level: .debug)
         appendLog("[OTA] 先检查设备状态，确保为 0（OTA not started）…")
         readOtaStatus()
+        return nil
+    }
+    
+    /// Debug 用：使用当前已选固件 URL 启动 OTA，等价于 startOTA(firmwareURL: selectedFirmwareURL!)
+    /// - Returns: 若未启动则返回原因，否则 nil。
+    func startOTA() -> String? {
+        guard let url = selectedFirmwareURL else {
+            let reason = "请先选择固件"
+            lastOTARejectReason = reason
+            appendLog("[OTA] 请先选择固件", level: .warning)
+            return reason
+        }
+        return startOTA(firmwareURL: url)
     }
     
     /// 统一的 OTA 错误清理方法：发送 abort (Status=0) 并重置本地状态，确保设备下次可以正常进入 OTA
@@ -1059,8 +1120,28 @@ final class BLEManager: NSObject, ObservableObject {
     
     // MARK: - Private Helpers
     
-    private func appendLog(_ msg: String, level: LogLevel = .info) {
-        let line = "\(formattedTime()) \(msg)"
+    /// 向主日志区追加一条日志（含时间戳）。产测传入 [FQC]/[FQC][OTA]: 时原样保留；本模块日志加 [DBG]/[DBG][OTA]:，遵循日志等级过滤
+    func appendLog(_ msg: String, level: LogLevel = .info) {
+        let line: String
+        if msg.hasPrefix("[FQC]") {
+            // 产测同步来的日志，已带 [FQC] 或 [FQC][OTA]:，只加时间戳
+            line = "\(formattedTime()) \(msg)"
+        } else {
+            // 调试/本模块日志：加 [DBG] 或 [DBG][OTA]:
+            let tag: String
+            let body: String
+            if msg.hasPrefix("[OTA] ") {
+                tag = "[DBG][OTA]:"
+                body = String(msg.dropFirst(7))
+            } else if msg.hasPrefix("[OTA]") {
+                tag = "[DBG][OTA]:"
+                body = String(msg.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            } else {
+                tag = "[DBG]"
+                body = msg
+            }
+            line = "\(formattedTime()) \(tag) \(body)"
+        }
         logEntries.append(LogEntry(level: level, line: line))
         if logEntries.count > 500 { logEntries.removeFirst() }
     }

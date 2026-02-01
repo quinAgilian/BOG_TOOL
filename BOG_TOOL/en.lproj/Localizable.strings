@@ -139,7 +139,8 @@
 "production_test_rules.bootloader_version_placeholder" = "e.g., 2";
 "production_test_rules.firmware_version_label" = "FW Version:";
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
-"production_test_rules.firmware_version_hint" = "Will check if device firmware version matches this value, otherwise trigger OTA. Auto-saved.";
+"production_test_rules.firmware_version_hint" = "Select target firmware version from dropdown; production test OTA step will use it directly.";
+"production_test_rules.firmware_version_no_entries" = "Add firmware in Firmware menu first, then select target version.";
 "production_test_rules.firmware_upgrade_enabled" = "Enable Firmware Version Upgrade";
 "production_test_rules.use_parsed_version" = "Use %@";
 "production_test_rules.use_parsed_version_hint" = "Use version parsed from firmware filename";
@@ -165,6 +166,9 @@
 "production_test_rules.step5_title" = "TBD";
 "production_test_rules.step5_desc" = "Additional test steps to be defined.";
 "production_test_rules.step5_criteria" = "";
+"production_test_rules.step_valve_title" = "Ensure Solenoid Valve Is Open";
+"production_test_rules.step_valve_desc" = "Check and ensure the device solenoid valve is in the open state.";
+"production_test_rules.step_valve_criteria" = "✓ Pass: Solenoid valve is open.";
 "production_test_rules.step_ota_title" = "OTA Before Disconnect";
 "production_test_rules.step_ota_desc" = "Perform firmware OTA using the selected firmware file before disconnecting. Enabled by default.";
 "production_test_rules.step_ota_criteria" = "✓ Pass: OTA completed and device reconnected.";
@@ -239,3 +243,16 @@
 
 /* Menu */
 "menu.floating" = "Floating";
+"menu.firmware" = "Firmware";
+"menu.firmware_manage" = "Manage Firmware...";
+
+/* 固件管理 */
+"firmware_manager.title" = "Firmware Manager";
+"firmware_manager.add" = "Add Firmware";
+"firmware_manager.close" = "Close";
+"firmware_manager.empty" = "No firmware yet. Click \"Add Firmware\" to add.";
+"firmware_manager.version" = "Version";
+"firmware_manager.path" = "Path";
+"firmware_manager.select_file" = "Select firmware file";
+"firmware_manager.debug_target" = "Target firmware (Debug OTA)";
+"firmware_manager.sop_version" = "Production test selects by SOP expected version";

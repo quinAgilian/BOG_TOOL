@@ -37,7 +37,9 @@ struct ContentView: View {
     @EnvironmentObject private var appSettings: AppSettings
     @EnvironmentObject private var appLanguage: AppLanguage
     @StateObject private var ble = BLEManager()
+    @StateObject private var firmwareManager = FirmwareManager.shared
     @State private var selectedMode: AppMode = .productionTest
+    @State private var showFirmwareManager = false
     /// 是否显示日志区域，默认开启
     @State private var showLogArea = true
     /// 是否开启日志自动滚动到底部，默认开启
@@ -65,17 +67,11 @@ struct ContentView: View {
         HSplitView {
             // 左侧：设备与模式
             VStack(alignment: .leading, spacing: 0) {
-                // 顶部工具栏：中英文切换、置顶按钮和日志区域开关
+                // 顶部工具栏：中英文切换、日志区域开关（置顶开关在菜单栏）
                 HStack {
                     Spacer()
                     Button(appLanguage.switchButtonTitle, action: { appLanguage.toggle() })
                         .buttonStyle(.bordered)
-                    Button(appLanguage.string("log.pin_top")) {
-                        appSettings.windowFloating = !appSettings.windowFloating
-                        applyWindowFloating(appSettings.windowFloating)
-                    }
-                    .buttonStyle(PinTopButtonStyle(isFloating: appSettings.windowFloating))
-                    .keyboardShortcut(.space, modifiers: [])
                     Button(showLogArea ? appLanguage.string("log.hide_area") : appLanguage.string("log.show_area")) {
                         showLogArea.toggle()
                     }
@@ -84,7 +80,7 @@ struct ContentView: View {
                 .padding(.horizontal, UIDesignSystem.Padding.lg)
                 .padding(.vertical, UIDesignSystem.Padding.sm)
                 
-                DeviceListView(ble: ble, selectedMode: selectedMode)
+                DeviceListView(ble: ble, selectedMode: selectedMode, firmwareManager: firmwareManager)
 
                 Divider()
 
@@ -106,9 +102,9 @@ struct ContentView: View {
                     Group {
                         switch selectedMode {
                         case .productionTest:
-                            ProductionTestView(ble: ble)
+                            ProductionTestView(ble: ble, firmwareManager: firmwareManager)
                         case .debug:
-                            DebugModeView(ble: ble)
+                            DebugModeView(ble: ble, firmwareManager: firmwareManager)
                         }
                     }
                     .padding(UIDesignSystem.Padding.sm)
@@ -120,7 +116,7 @@ struct ContentView: View {
             .overlay {
                 // OTA 进行中、等待重启、失败或 reboot 断开时，在左侧区域显示半透明覆盖层
                 if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTARebootDisconnected {
-                    OTAExclusiveOverlay(ble: ble)
+                    OTAExclusiveOverlay(ble: ble, firmwareManager: firmwareManager)
                         .allowsHitTesting(true) // OTA 覆盖层可以接收交互
                 }
             }
@@ -184,6 +180,13 @@ struct ContentView: View {
             // 启动时先激活窗口，再设置置顶，否则未激活时 level 可能不生效
             NSApp.activate(ignoringOtherApps: true)
             applyWindowFloating(appSettings.windowFloating)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openFirmwareManager)) { _ in
+            showFirmwareManager = true
+        }
+        .sheet(isPresented: $showFirmwareManager) {
+            FirmwareManagerView(manager: firmwareManager)
+                .environmentObject(appLanguage)
         }
     }
     
@@ -316,6 +319,7 @@ private struct LogLevelFilterView: View {
 private struct OTAExclusiveOverlay: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    @ObservedObject var firmwareManager: FirmwareManager
     
     private var overlayTitle: String {
         if ble.isOTARebootDisconnected {
@@ -350,25 +354,11 @@ private struct OTAExclusiveOverlay: View {
                     .font(UIDesignSystem.Typography.pageTitle)
                     .foregroundStyle(UIDesignSystem.Foreground.primary)
                 
-                OTASectionView(ble: ble, isModal: true)
+                OTASectionView(ble: ble, firmwareManager: firmwareManager, isModal: true)
                     .shadow(color: .black.opacity(0.3), radius: UIDesignSystem.Spacing.xxl, x: 0, y: 10)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity) // 确保覆盖整个左侧区域
-    }
-}
-
-/// 置顶按钮样式：根据是否置顶返回 .borderedProminent 或 .bordered，避免三元运算符类型推断问题
-private struct PinTopButtonStyle: ButtonStyle {
-    var isFloating: Bool
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .padding(.horizontal, UIDesignSystem.Padding.lg)
-            .padding(.vertical, UIDesignSystem.Padding.sm)
-            .background(isFloating ? UIDesignSystem.Foreground.accent : Color.clear)
-            .foregroundStyle(isFloating ? Color.white : UIDesignSystem.Foreground.primary)
-            .clipShape(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.sm, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.sm, style: .continuous).strokeBorder(UIDesignSystem.Foreground.accent.opacity(isFloating ? 0 : 0.5), lineWidth: 1))
     }
 }
 

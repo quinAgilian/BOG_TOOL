@@ -17,6 +17,8 @@ struct TestStep: Identifiable, Equatable {
     static let readRTC = TestStep(id: "step3", key: "step3", isLocked: false, enabled: true)
     static let readPressure = TestStep(id: "step4", key: "step4", isLocked: false, enabled: true)
     static let tbd = TestStep(id: "step5", key: "step5", isLocked: false, enabled: false)
+    /// 确保电磁阀是开启的（可调顺序、有使能开关）
+    static let ensureValveOpen = TestStep(id: "step_valve", key: "step_valve", isLocked: false, enabled: true)
     /// 断开连接前的 OTA 步骤（默认启用）
     static let otaBeforeDisconnect = TestStep(id: "step_ota", key: "step_ota", isLocked: false, enabled: true)
     static let disconnectDevice = TestStep(id: "step_disconnect", key: "step_disconnect", isLocked: false, enabled: true)
@@ -26,6 +28,7 @@ struct TestStep: Identifiable, Equatable {
 struct ProductionTestRulesView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    @ObservedObject var firmwareManager: FirmwareManager
     @State private var bootloaderVersion: String = {
         UserDefaults.standard.string(forKey: "production_test_bootloader_version") ?? ""
     }()
@@ -90,12 +93,13 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.object(forKey: "production_test_pressure_diff_threshold") as? Double ?? 0.1
     }()
     
-    // 默认步骤顺序：第一步连接，断开连接前一步 OTA（默认启用），最后一步断开连接
+    // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「确保电磁阀开启」等可调顺序步骤
     private static let defaultSteps: [TestStep] = [
         .connectDevice,
         .verifyFirmware,
         .readRTC,
         .readPressure,
+        .ensureValveOpen,
         .tbd,
         .otaBeforeDisconnect,
         .disconnectDevice
@@ -103,7 +107,7 @@ struct ProductionTestRulesView: View {
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .ensureValveOpen, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         // 加载步骤顺序
@@ -130,6 +134,10 @@ struct ProductionTestRulesView: View {
         // 迁移：若旧配置中无「断开前 OTA」步骤，则插入在断开连接之前，默认启用
         if !steps.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
             steps.insert(TestStep.otaBeforeDisconnect, at: steps.count - 1)
+        }
+        // 迁移：若旧配置中无「确保电磁阀开启」步骤，则插入在断开连接之前
+        if !steps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
+            steps.insert(TestStep.ensureValveOpen, at: steps.count - 1)
         }
         
         // 加载每个步骤的启用状态
@@ -572,7 +580,7 @@ struct ProductionTestRulesView: View {
                     }
                 }
                 
-                // FW 版本
+                // FW 版本：从固件管理下拉选择，产测 OTA 步骤直接使用此版本，无需再选
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 12) {
                         Text(appLanguage.string("production_test_rules.firmware_version_label"))
@@ -580,47 +588,34 @@ struct ProductionTestRulesView: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 100, alignment: .leading)
                         
-                        TextField(
-                            appLanguage.string("production_test_rules.firmware_version_placeholder"),
-                            text: $firmwareVersion
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 120)
+                        Picker("", selection: $firmwareVersion) {
+                            Text(appLanguage.string("ota.not_selected")).tag("")
+                            ForEach(firmwareManager.entries) { e in
+                                Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
+                                    .tag(e.parsedVersion)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(minWidth: 200, alignment: .leading)
                         .onChange(of: firmwareVersion) { newValue in
                             UserDefaults.standard.set(newValue, forKey: "production_test_firmware_version")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                         }
                         
-                        // 如果从文件名解析出了版本号，显示使用按钮
-                        if let parsedVersion = ble.parsedFirmwareVersion, parsedVersion != firmwareVersion {
-                            Button {
-                                firmwareVersion = parsedVersion
-                                UserDefaults.standard.set(parsedVersion, forKey: "production_test_firmware_version")
-                                NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
-                            } label: {
-                                Text(appLanguage.string("production_test_rules.use_parsed_version").replacingOccurrences(of: "%@", with: parsedVersion))
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.bordered)
-                            .help(appLanguage.string("production_test_rules.use_parsed_version_hint"))
-                        }
-                        
                         Spacer()
                     }
                     
-                    // 备注文字另起一行，小字体
                     Text(appLanguage.string("production_test_rules.firmware_version_hint"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .padding(.leading, 112) // 对齐到输入框位置
+                        .padding(.leading, 112)
                     
-                    // 如果解析出了版本号，显示提示
-                    if let parsedVersion = ble.parsedFirmwareVersion {
+                    if firmwareManager.entries.isEmpty {
                         HStack(spacing: 4) {
                             Image(systemName: "info.circle.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.blue)
-                            Text(appLanguage.string("production_test_rules.parsed_version_hint").replacingOccurrences(of: "%@", with: parsedVersion))
+                                .foregroundStyle(.orange)
+                            Text(appLanguage.string("production_test_rules.firmware_version_no_entries"))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -871,7 +866,7 @@ struct ProductionTestRulesView: View {
 }
 
 #Preview {
-    ProductionTestRulesView(ble: BLEManager())
+    ProductionTestRulesView(ble: BLEManager(), firmwareManager: FirmwareManager.shared)
         .environmentObject(AppLanguage())
         .frame(width: 720, height: 500)
 }

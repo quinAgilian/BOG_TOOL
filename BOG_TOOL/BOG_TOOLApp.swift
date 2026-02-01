@@ -46,8 +46,18 @@ struct BOG_TOOLApp: App {
             CommandGroup(after: .windowList) {
                 Toggle(appLanguage.string("menu.floating"), isOn: $appSettings.windowFloating)
             }
+            CommandMenu(appLanguage.string("menu.firmware")) {
+                Button(appLanguage.string("menu.firmware_manage")) {
+                    NotificationCenter.default.post(name: .openFirmwareManager, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: [.command])
+            }
         }
     }
+}
+
+extension Notification.Name {
+    static let openFirmwareManager = Notification.Name("OpenFirmwareManager")
 }
 
 #if DEBUG

@@ -25,6 +25,8 @@
 		A1000020 /* UUIDDebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020 /* UUIDDebugView.swift */; };
 		A1000021 /* ProductionTestRulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000021 /* ProductionTestRulesView.swift */; };
 		A1000022 /* UIDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000022 /* UIDesignSystem.swift */; };
+		A1000023 /* FirmwareManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000023 /* FirmwareManager.swift */; };
+		A1000024 /* FirmwareManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024 /* FirmwareManagerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -49,6 +51,8 @@
 		A2000020 /* UUIDDebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UUIDDebugView.swift; sourceTree = "<group>"; };
 		A2000021 /* ProductionTestRulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionTestRulesView.swift; sourceTree = "<group>"; };
 		A2000022 /* UIDesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIDesignSystem.swift; sourceTree = "<group>"; };
+		A2000023 /* FirmwareManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareManager.swift; sourceTree = "<group>"; };
+		A2000024 /* FirmwareManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareManagerView.swift; sourceTree = "<group>"; };
 		A3000001 /* BOG Tool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BOG Tool.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -97,6 +101,7 @@
 				A2000018 /* GattProtocolView.swift */,
 				A2000019 /* OTASectionView.swift */,
 				A2000020 /* UUIDDebugView.swift */,
+				A2000024 /* FirmwareManagerView.swift */,
 				A2000005 /* ProductionTestView.swift */,
 				A2000021 /* ProductionTestRulesView.swift */,
 			);
@@ -115,6 +120,7 @@
 		A5000008 /* Config */ = {
 			isa = PBXGroup;
 			children = (
+				A2000023 /* FirmwareManager.swift */,
 				A2000009 /* UUIDConfig.swift */,
 				A2000013 /* GattMapping.swift */,
 				A2000014 /* GattServices.json */,
@@ -217,6 +223,8 @@
 				A1000013 /* GattMapping.swift in Sources */,
 				A1000016 /* AppLanguage.swift in Sources */,
 				A1000022 /* UIDesignSystem.swift in Sources */,
+				A1000023 /* FirmwareManager.swift in Sources */,
+				A1000024 /* FirmwareManagerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -362,19 +370,20 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = BOG_TOOL/BOG_TOOL.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = AZSML8GL89;
+				DEVELOPMENT_TEAM = 38V6W364PW;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_BLUETOOTH = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BOG_TOOL/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "BOG Tool";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -400,13 +409,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = BOG_TOOL/BOG_TOOL.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = AZSML8GL89;
+				DEVELOPMENT_TEAM = 38V6W364PW;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -414,6 +422,8 @@
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BOG_TOOL/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "BOG Tool";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

@@ -9,6 +9,7 @@ private let actionButtonWidth: CGFloat = UIDesignSystem.Component.actionButtonWi
 struct DebugModeView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    @ObservedObject var firmwareManager: FirmwareManager
     /// 手动模式复选框状态（false=auto, true=manual）
     @State private var isManualMode: Bool = false
     /// 是否正在设置阀门（用于阻塞UI）
@@ -25,7 +26,7 @@ struct DebugModeView: View {
             rtcSection
             valveSection
             pressureSection
-            OTASectionView(ble: ble)
+            OTASectionView(ble: ble, firmwareManager: firmwareManager)
             UUIDDebugView(ble: ble)
 
             if ble.isConnected {

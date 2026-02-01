@@ -53,6 +53,7 @@ enum TestResultStatus {
 struct ProductionTestView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    @ObservedObject var firmwareManager: FirmwareManager
     @State private var isRunning = false
     @State private var testLog: [String] = []
     @State private var stepIndex = 0
@@ -728,8 +729,8 @@ struct ProductionTestView: View {
 
     /// 加载测试规则配置
     private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds) {
-        // 加载步骤顺序和启用状态（含断开前 OTA 步骤）
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .otaBeforeDisconnect, .disconnectDevice]
+        // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启等步骤）
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .ensureValveOpen, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         var steps: [TestStep] = []
@@ -740,7 +741,7 @@ struct ProductionTestView: View {
                 }
             }
         } else {
-            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .otaBeforeDisconnect, .disconnectDevice]
+            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .ensureValveOpen, .tbd, .otaBeforeDisconnect, .disconnectDevice]
         }
         
         // 确保第一步和最后一步在正确位置
@@ -755,6 +756,10 @@ struct ProductionTestView: View {
         // 迁移：若旧配置中无「断开前 OTA」步骤，则插入在断开连接之前，默认启用
         if !steps.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
             steps.insert(TestStep.otaBeforeDisconnect, at: steps.count - 1)
+        }
+        // 迁移：若旧配置中无「确保电磁阀开启」步骤，则插入在断开连接之前
+        if !steps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
+            steps.insert(TestStep.ensureValveOpen, at: steps.count - 1)
         }
         
         // 加载每个步骤的启用状态
@@ -810,8 +815,12 @@ struct ProductionTestView: View {
         let firmwareUpgradeEnabled: Bool     // 是否启用固件版本升级
     }
     
-    /// 日志函数（类级别，供所有方法使用）
-    private func log(_ msg: String, level: LogLevel = .info) {
+    /// 日志函数（类级别，供所有方法使用）：写入产测日志区，并同步到主日志区（格式 [FQC] 或 [FQC][OTA]:，遵循日志等级配置）
+    /// - Parameters:
+    ///   - msg: 日志内容
+    ///   - level: 日志等级（影响主日志区过滤）
+    ///   - category: 可选分类，如 "OTA" 时主日志区输出为 [FQC][OTA]: ...
+    private func log(_ msg: String, level: LogLevel = .info, category: String? = nil) {
         let prefix: String
         switch level {
         case .error:
@@ -823,8 +832,24 @@ struct ProductionTestView: View {
         case .debug:
             prefix = "🔍"
         }
-        testLog.append("\(stepIndex): \(prefix) \(msg)")
+        let line = "\(stepIndex): \(prefix) \(msg)"
+        testLog.append(line)
         stepIndex += 1
+        // 同步到主日志区：产测前缀 [FQC]，OTA 相关用 [FQC][OTA]:，并遵循日志等级过滤
+        let fqcLine: String
+        if let cat = category, !cat.isEmpty {
+            fqcLine = "[FQC][\(cat)]: \(line)"
+        } else {
+            fqcLine = "[FQC] \(line)"
+        }
+        let bleLevel: BLEManager.LogLevel
+        switch level {
+        case .debug: bleLevel = .debug
+        case .info: bleLevel = .info
+        case .warning: bleLevel = .warning
+        case .error: bleLevel = .error
+        }
+        ble.appendLog(fqcLine, level: bleLevel)
     }
     
     /// 日志级别枚举（与BLEManager保持一致）
@@ -1032,135 +1057,27 @@ struct ProductionTestView: View {
                         }
                     }
                     
-                    // 验证 FW 版本
+                    // 验证 FW 版本（仅检查是否需要升级，不在此步执行 OTA；OTA 在「断开前 OTA」步骤执行）
                     if let fwVersion = ble.currentFirmwareVersion {
                         self.log("当前 FW 版本: \(fwVersion)", level: .info)
                         if fwVersion != rules.firmwareVersion {
                             if rules.thresholds.firmwareUpgradeEnabled {
-                                self.log("FW 版本不匹配，需要 OTA（期望: \(rules.firmwareVersion), 实际: \(fwVersion)）", level: .warning)
-                                resultMessages.append("FW: \(fwVersion) → OTA")
-                                
-                                // OTA 前确保阀门打开（复用debug mode的逻辑）
-                                let valveOpened = await ensureValveOpen()
-                                if !valveOpened {
-                                    self.log("警告：OTA前阀门打开失败，继续执行OTA...", level: .warning)
-                                }
-                                
-                                // 产测只能使用 Debug 模式已选择的固件
-                                if ble.selectedFirmwareURL == nil {
-                                    self.log("错误：未在 Debug 模式选择固件。请先在 Debug 模式选择固件后重试", level: .error)
+                                self.log("FW 版本不匹配，需要 OTA（期望: \(rules.firmwareVersion), 实际: \(fwVersion)），将在「断开前 OTA」步骤执行", level: .warning, category: "OTA")
+                                resultMessages.append("FW: \(fwVersion) → 待OTA")
+                                // 提前校验固件管理中是否有目标版本，避免到 OTA 步骤才报错
+                                if firmwareManager.url(forVersion: rules.firmwareVersion) == nil {
+                                    self.log("错误：未在固件管理中找到版本 \(rules.firmwareVersion) 的固件，请先在「固件」菜单中添加", level: .error, category: "OTA")
                                     stepStatuses[step.id] = .failed
-                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：未选择固件（请在 Debug 模式选择）"
-                                    isRunning = false
-                                    currentStepId = nil
-                                    return
-                                }
-
-                                // 使用已选择的固件并自动启动 OTA；产测无 OTA UI，状态仅打 log
-                                self.log("使用已选择固件，启动 OTA（状态仅显示在日志区）", level: .info)
-                                ble.startOTA()
-                                
-                                // 等待 OTA 开始（使用配置的超时时间）
-                                self.log("等待 OTA 启动...", level: .info)
-                                let otaTimeoutSeconds = rules.thresholds.otaStartWaitTimeout
-                                let maxOtaWaitCount = Int(otaTimeoutSeconds * 2) // 每0.5秒检查一次
-                                var otaWaitCount = 0
-                                while !ble.isOTAInProgress && otaWaitCount < maxOtaWaitCount {
-                                    try? await Task.sleep(nanoseconds: 500_000_000)
-                                    otaWaitCount += 1
-                                    // 每2秒输出一次等待状态
-                                    if otaWaitCount % 4 == 0 {
-                                        let elapsed = Double(otaWaitCount) / 2.0
-                                        self.log("等待 OTA 启动中...（已等待 \(String(format: "%.1f", elapsed))秒，超时: \(Int(otaTimeoutSeconds))秒）", level: .debug)
-                                    }
-                                }
-                                
-                                if otaWaitCount >= maxOtaWaitCount {
-                                    self.log("警告：OTA 启动超时（\(Int(otaTimeoutSeconds))秒）", level: .warning)
-                                }
-                            
-                            if ble.isOTAInProgress {
-                                self.log("OTA 已启动，传输进行中...", level: .info)
-                                // 等待 OTA 完成（进度和状态会在UI中显示）
-                                while ble.isOTAInProgress {
-                                    try? await Task.sleep(nanoseconds: 500_000_000)
-                                }
-                                
-                                if ble.otaProgress >= 1.0 && !ble.isOTAFailed {
-                                    self.log("OTA 传输完成，等待设备重启...", level: .info)
-                                    try? await Task.sleep(nanoseconds: 5000_000_000) // 等待5秒
-                                    
-                                    // 等待设备重新连接并读取固件版本（使用配置的超时时间）
-                                    self.log("等待设备重新连接（超时: \(Int(rules.thresholds.deviceReconnectTimeout))秒）...", level: .info)
-                                    let reconnectTimeoutSeconds = rules.thresholds.deviceReconnectTimeout
-                                    let maxReconnectWaitCount = Int(reconnectTimeoutSeconds * 2) // 每0.5秒检查一次
-                                    var reconnectWaitCount = 0
-                                    while !ble.isConnected && reconnectWaitCount < maxReconnectWaitCount {
-                                        try? await Task.sleep(nanoseconds: 500_000_000)
-                                        reconnectWaitCount += 1
-                                        // 每2秒输出一次等待状态
-                                        if reconnectWaitCount % 4 == 0 {
-                                            let elapsed = Double(reconnectWaitCount) / 2.0
-                                            self.log("等待设备重新连接中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug)
-                                        }
-                                    }
-                                    
-                                    if reconnectWaitCount >= maxReconnectWaitCount {
-                                        self.log("错误：设备重新连接超时（\(Int(reconnectTimeoutSeconds))秒）", level: .error)
-                                    } else {
-                                        self.log("设备已重新连接", level: .info)
-                                    }
-                                    
-                                    if ble.isConnected {
-                                        // 等待设备信息读取（使用配置的超时时间）
-                                        self.log("等待读取 OTA 后的固件版本...", level: .info)
-                                        let deviceInfoTimeout = rules.thresholds.deviceInfoReadTimeout
-                                        let maxDeviceInfoWaitCount = Int(deviceInfoTimeout * 10) // 每0.1秒检查一次
-                                        waitCount = 0
-                                        while ble.currentFirmwareVersion == nil && waitCount < maxDeviceInfoWaitCount {
-                                            try? await Task.sleep(nanoseconds: 100_000_000)
-                                            waitCount += 1
-                                        }
-                                        
-                                        if waitCount >= maxDeviceInfoWaitCount {
-                                            self.log("警告：OTA 后固件版本读取超时", level: .warning)
-                                        }
-                                        
-                                        if let newFwVersion = ble.currentFirmwareVersion {
-                                            self.log("OTA 后 FW 版本: \(newFwVersion)", level: .info)
-                                            if newFwVersion == rules.firmwareVersion {
-                                                self.log("✓ FW 版本验证通过", level: .info)
-                                                resultMessages.append("FW: \(newFwVersion) ✓ (OTA)")
-                                            } else {
-                                                self.log("警告：OTA 后版本仍不匹配", level: .warning)
-                                                resultMessages.append("FW: \(newFwVersion) ⚠️")
-                                            }
-                                        }
-                                    } else {
-                                        self.log("错误：设备未重新连接", level: .error)
-                                        stepStatuses[step.id] = .failed
-                                        stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：设备未重新连接"
-                                        isRunning = false
-                                        currentStepId = nil
-                                        return
-                                    }
-                                } else {
-                                    self.log("错误：OTA 失败", level: .error)
-                                    stepStatuses[step.id] = .failed
-                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：OTA 失败"
+                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：未找到 \(rules.firmwareVersion) 固件（请在固件管理中添加）"
                                     isRunning = false
                                     currentStepId = nil
                                     return
                                 }
                             } else {
-                                self.log("警告：OTA 未启动，跳过", level: .warning)
-                                resultMessages.append("FW: OTA未启动")
+                                // 固件升级已禁用，仅记录警告
+                                self.log("警告：FW 版本不匹配，但固件升级已禁用（期望: \(rules.firmwareVersion), 实际: \(fwVersion)）", level: .warning)
+                                resultMessages.append("FW: \(fwVersion) ⚠️ (升级已禁用)")
                             }
-                        } else {
-                            // 固件升级已禁用，仅记录警告
-                            self.log("警告：FW 版本不匹配，但固件升级已禁用（期望: \(rules.firmwareVersion), 实际: \(fwVersion)）", level: .warning)
-                            resultMessages.append("FW: \(fwVersion) ⚠️ (升级已禁用)")
-                        }
                         } else {
                             self.log("✓ FW 版本验证通过: \(fwVersion)", level: .info)
                             resultMessages.append("FW: \(fwVersion) ✓")
@@ -1438,21 +1355,33 @@ struct ProductionTestView: View {
                     stepResults[step.id] = pressureMessages.joined(separator: "\n")
                     stepStatuses[step.id] = pressurePassed ? .passed : .failed
                     
-                case "step_ota": // 断开连接前 OTA（默认启用，仅当固件版本与期望不一致时才执行 OTA）
-                    self.log("步骤: 断开前 OTA", level: .info)
-                    
-                    if ble.selectedFirmwareURL == nil {
-                        self.log("错误：未在 Debug 模式选择固件。请先在 Debug 模式选择固件后重试", level: .error)
+                case "step_valve": // 确保电磁阀是开启的
+                    self.log("步骤: 确保电磁阀是开启的", level: .info)
+                    let valveOpened = await ensureValveOpen()
+                    if valveOpened {
+                        stepResults[step.id] = appLanguage.string("production_test_rules.step_valve_criteria")
+                        stepStatuses[step.id] = .passed
+                    } else {
+                        self.log("电磁阀打开失败或超时", level: .warning)
+                        stepResults[step.id] = "电磁阀: 打开失败或超时"
                         stepStatuses[step.id] = .failed
-                        stepResults[step.id] = "OTA: 未选择固件（请在 Debug 模式选择）"
+                    }
+                    
+                case "step_ota": // 断开连接前 OTA（默认启用，仅当固件版本与期望不一致时才执行 OTA）
+                    self.log("步骤: 断开前 OTA", level: .info, category: "OTA")
+                    
+                    // 产测按 SOP 期望版本从固件管理中选择目标固件
+                    guard let otaURL = firmwareManager.url(forVersion: rules.firmwareVersion) else {
+                        self.log("错误：未在固件管理中找到版本 \(rules.firmwareVersion) 的固件，请先在「固件」菜单中添加", level: .error, category: "OTA")
+                        stepStatuses[step.id] = .failed
+                        stepResults[step.id] = "OTA: 未找到 \(rules.firmwareVersion) 固件（请在固件管理中添加）"
                         isRunning = false
                         currentStepId = nil
                         return
                     }
-                    
-                    // 固件版本已与期望一致则跳过 OTA，无需升级
+                    // 产测：由规则决定是否跳过（当前已是目标版本则跳过）；OTA 只接收 URL 执行，不做版本比对
                     if let currentFw = ble.currentFirmwareVersion, currentFw == rules.firmwareVersion {
-                        self.log("固件版本已与期望一致（\(currentFw)），跳过 OTA", level: .info)
+                        self.log("固件版本已与期望一致（\(currentFw)），跳过 OTA", level: .info, category: "OTA")
                         stepResults[step.id] = "OTA: 已跳过（FW \(currentFw) ✓）"
                         stepStatuses[step.id] = .passed
                         break
@@ -1460,11 +1389,18 @@ struct ProductionTestView: View {
                     
                     let valveOpened = await ensureValveOpen()
                     if !valveOpened {
-                        self.log("警告：OTA 前阀门打开失败，继续执行 OTA...", level: .warning)
+                        self.log("警告：OTA 前阀门打开失败，继续执行 OTA...", level: .warning, category: "OTA")
                     }
                     
-                    self.log("使用已选择固件，启动 OTA", level: .info)
-                    ble.startOTA()
+                    self.log("使用已选固件，启动 OTA", level: .info, category: "OTA")
+                    if let reason = ble.startOTA(firmwareURL: otaURL) {
+                        self.log("错误：OTA 未启动（\(reason)）", level: .error, category: "OTA")
+                        stepStatuses[step.id] = .failed
+                        stepResults[step.id] = "OTA: \(reason)"
+                        isRunning = false
+                        currentStepId = nil
+                        return
+                    }
                     
                     let otaTimeoutSeconds = rules.thresholds.otaStartWaitTimeout
                     let maxOtaWaitCount = Int(otaTimeoutSeconds * 2)
@@ -1474,26 +1410,31 @@ struct ProductionTestView: View {
                         otaWaitCount += 1
                         if otaWaitCount % 4 == 0 {
                             let elapsed = Double(otaWaitCount) / 2.0
-                            self.log("等待 OTA 启动中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug)
+                            self.log("等待 OTA 启动中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug, category: "OTA")
                         }
                     }
                     
                     if otaWaitCount >= maxOtaWaitCount {
-                        self.log("错误：OTA 启动超时（\(Int(otaTimeoutSeconds))秒）", level: .error)
+                        self.log("错误：OTA 启动超时（\(Int(otaTimeoutSeconds))秒）", level: .error, category: "OTA")
+                        if let reason = ble.lastOTARejectReason {
+                            self.log("OTA 未启动原因: \(reason)", level: .error, category: "OTA")
+                            stepResults[step.id] = "OTA: 启动超时（\(reason)）"
+                        } else {
+                            stepResults[step.id] = "OTA: 启动超时"
+                        }
                         stepStatuses[step.id] = .failed
-                        stepResults[step.id] = "OTA: 启动超时"
                         isRunning = false
                         currentStepId = nil
                         return
                     }
                     
-                    self.log("OTA 已启动，传输进行中...", level: .info)
+                    self.log("OTA 已启动，传输进行中...", level: .info, category: "OTA")
                     while ble.isOTAInProgress {
                         try? await Task.sleep(nanoseconds: 500_000_000)
                     }
                     
                     if ble.isOTAFailed || ble.isOTACancelled {
-                        self.log("错误：OTA 失败或已取消", level: .error)
+                        self.log("错误：OTA 失败或已取消", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 失败或已取消"
                         isRunning = false
@@ -1502,9 +1443,9 @@ struct ProductionTestView: View {
                     }
                     
                     if ble.otaProgress >= 1.0 && !ble.isOTAFailed {
-                        self.log("OTA 传输完成，等待设备重启...", level: .info)
+                        self.log("OTA 传输完成，等待设备重启...", level: .info, category: "OTA")
                         try? await Task.sleep(nanoseconds: 5000_000_000)
-                        self.log("等待设备重新连接（超时: \(Int(rules.thresholds.deviceReconnectTimeout))秒）...", level: .info)
+                        self.log("等待设备重新连接（超时: \(Int(rules.thresholds.deviceReconnectTimeout))秒）...", level: .info, category: "OTA")
                         let reconnectTimeoutSeconds = rules.thresholds.deviceReconnectTimeout
                         let maxReconnectWaitCount = Int(reconnectTimeoutSeconds * 2)
                         var reconnectWaitCount = 0
@@ -1513,11 +1454,11 @@ struct ProductionTestView: View {
                             reconnectWaitCount += 1
                             if reconnectWaitCount % 4 == 0 {
                                 let elapsed = Double(reconnectWaitCount) / 2.0
-                                self.log("等待设备重新连接中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug)
+                                self.log("等待设备重新连接中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug, category: "OTA")
                             }
                         }
                         if ble.isConnected {
-                            self.log("设备已重新连接，OTA 步骤完成", level: .info)
+                            self.log("设备已重新连接，OTA 步骤完成", level: .info, category: "OTA")
                             if let newFw = ble.currentFirmwareVersion {
                                 stepResults[step.id] = "OTA: \(newFw) ✓"
                             } else {
@@ -1533,7 +1474,7 @@ struct ProductionTestView: View {
                             return
                         }
                     } else {
-                        self.log("错误：OTA 未完成", level: .error)
+                        self.log("错误：OTA 未完成", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 未完成"
                         isRunning = false

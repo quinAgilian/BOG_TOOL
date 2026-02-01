@@ -1,11 +1,20 @@
 import SwiftUI
 
-/// OTA 区域：产测与 Debug 共用，逻辑统一在 BLEManager 中
+/// 下拉选项：未选择或某条固件 id（用于 Picker）
+private enum FirmwarePickerChoice: Hashable {
+    case none
+    case managed(UUID)
+}
+
+/// OTA 区域：产测与 Debug 共用，逻辑统一在 BLEManager 中；Debug 时下拉选择目标固件，产测按 SOP 版本解析
 struct OTASectionView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    @ObservedObject var firmwareManager: FirmwareManager
     /// 是否为模态模式（用于OTA进行中的独占窗口）
     var isModal: Bool = false
+    /// 下拉当前选中的管理固件 id（仅 Debug 下拉用）
+    @State private var pickerChoice: FirmwarePickerChoice = .none
     
     private var firmwareDisplayName: String {
         ble.selectedFirmwareURL?.lastPathComponent ?? appLanguage.string("ota.not_selected")
@@ -171,21 +180,29 @@ struct OTASectionView: View {
                     }
                 }
                 
-                // 固件选择
+                // 目标固件：下拉从管理列表选择（Debug OTA）+ 浏览添加
                 HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
-                    Text(appLanguage.string("ota.browse"))
+                    Text(appLanguage.string("firmware_manager.debug_target"))
                         .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    Text(firmwareDisplayName)
-                        .font(UIDesignSystem.Typography.monospacedCaption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, UIDesignSystem.Padding.md)
-                        .padding(.vertical, UIDesignSystem.Padding.xs)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.secondary.opacity(0.12))
-                        .cornerRadius(UIDesignSystem.CornerRadius.sm)
-                    Spacer(minLength: UIDesignSystem.Spacing.lg)
+                    Picker("", selection: $pickerChoice) {
+                        Text(appLanguage.string("ota.not_selected")).tag(FirmwarePickerChoice.none)
+                        ForEach(firmwareManager.entries) { e in
+                            Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
+                                .tag(FirmwarePickerChoice.managed(e.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onChange(of: pickerChoice) { new in
+                        switch new {
+                        case .none: break
+                        case .managed(let id):
+                            if let url = firmwareManager.url(forId: id) {
+                                ble.selectFirmware(url: url)
+                            }
+                        }
+                    }
                     Button {
                         ble.browseAndSaveFirmware()
                     } label: {
@@ -225,20 +242,31 @@ struct OTASectionView: View {
                         Spacer()
                     }
                     
-                    // 显示固件文件名
+                    // 目标固件：下拉 + 浏览
                     HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
-                        Text(appLanguage.string("ota.browse"))
+                        Text(appLanguage.string("firmware_manager.debug_target"))
                             .font(UIDesignSystem.Typography.caption)
                             .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                        Text(firmwareDisplayName)
-                            .font(UIDesignSystem.Typography.monospaced)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                            .padding(.horizontal, UIDesignSystem.Padding.lg)
-                            .padding(.vertical, UIDesignSystem.Padding.sm)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.secondary.opacity(0.12))
-                            .cornerRadius(UIDesignSystem.CornerRadius.md)
+                        Picker("", selection: $pickerChoice) {
+                            Text(appLanguage.string("ota.not_selected")).tag(FirmwarePickerChoice.none)
+                            ForEach(firmwareManager.entries) { e in
+                                Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
+                                    .tag(FirmwarePickerChoice.managed(e.id))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onChange(of: pickerChoice) { new in
+                            switch new {
+                            case .none: break
+                            case .managed(let id):
+                                if let url = firmwareManager.url(forId: id) {
+                                    ble.selectFirmware(url: url)
+                                }
+                            }
+                        }
+                        Button(appLanguage.string("ota.browse")) { ble.browseAndSaveFirmware() }
+                            .buttonStyle(.borderedProminent)
                     }
                 }
             }

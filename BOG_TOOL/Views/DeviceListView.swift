@@ -5,6 +5,7 @@ struct DeviceListView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
     var selectedMode: AppMode  // 当前模式：产测或Debug
+    @ObservedObject var firmwareManager: FirmwareManager
     @State private var showFilterPopover = false
     @State private var showProductionTestRules = false
     @State private var showGattProtocol = false
@@ -82,7 +83,7 @@ struct DeviceListView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .sheet(isPresented: $showProductionTestRules) {
-            ProductionTestRulesView(ble: ble)
+            ProductionTestRulesView(ble: ble, firmwareManager: firmwareManager)
         }
         .sheet(isPresented: $showGattProtocol) {
             GattProtocolView()
