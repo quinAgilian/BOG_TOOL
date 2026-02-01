@@ -83,13 +83,13 @@
 "debug.time_diff" = "与系统时间差:";
 "debug.valve" = "阀门";
 "debug.valve_control_auto" = "自动";
-"debug.valve_control_manual" = "手动";
+"debug.valve_control_manual" = "启用手动控制电磁阀模式";
 "debug.valve_mode" = "模式";
 "debug.valve_mode_auto" = "自动";
 "debug.valve_state" = "状态";
 "debug.valve_close" = "关";
 "debug.valve_open" = "开";
-"debug.valve_switch" = "电磁阀";
+"debug.valve_switch" = "保持电磁阀打开";
 "debug.pressure" = "压力";
 "debug.open_pressure" = "开阀压力";
 "debug.close_pressure" = "关阀压力";

@@ -24,6 +24,7 @@
 		A1000019 /* OTASectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000019 /* OTASectionView.swift */; };
 		A1000020 /* UUIDDebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020 /* UUIDDebugView.swift */; };
 		A1000021 /* ProductionTestRulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000021 /* ProductionTestRulesView.swift */; };
+		A1000022 /* UIDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000022 /* UIDesignSystem.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +48,7 @@
 		A2000019 /* OTASectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTASectionView.swift; sourceTree = "<group>"; };
 		A2000020 /* UUIDDebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UUIDDebugView.swift; sourceTree = "<group>"; };
 		A2000021 /* ProductionTestRulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionTestRulesView.swift; sourceTree = "<group>"; };
+		A2000022 /* UIDesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIDesignSystem.swift; sourceTree = "<group>"; };
 		A3000001 /* BOG Tool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BOG Tool.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -74,6 +76,7 @@
 			children = (
 				A2000001 /* BOG_TOOLApp.swift */,
 				A2000017 /* AppLanguage.swift */,
+				A2000022 /* UIDesignSystem.swift */,
 				A5000003 /* Views */,
 				A5000006 /* BLE */,
 				A5000008 /* Config */,
@@ -236,6 +239,7 @@
 				A1000009 /* UUIDConfig.swift in Sources */,
 				A1000013 /* GattMapping.swift in Sources */,
 				A1000016 /* AppLanguage.swift in Sources */,
+				A1000022 /* UIDesignSystem.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

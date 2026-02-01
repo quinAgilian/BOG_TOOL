@@ -65,8 +65,8 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
+                .padding(.horizontal, UIDesignSystem.Padding.lg)
+                .padding(.vertical, UIDesignSystem.Padding.sm)
                 
                 DeviceListView(ble: ble)
 
@@ -78,8 +78,8 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
+                .padding(.horizontal, UIDesignSystem.Padding.lg)
+                .padding(.vertical, UIDesignSystem.Padding.sm)
 
                 // 设备基础信息：连接后显示在模式选择下方、模式内容上方，保证可见
                 if ble.isConnected {
@@ -95,11 +95,11 @@ struct ContentView: View {
                             DebugModeView(ble: ble)
                         }
                     }
-                    .padding(6)
+                    .padding(UIDesignSystem.Padding.sm)
                 }
                 .frame(minWidth: 320)
             }
-            .frame(minWidth: 360)
+            .frame(minWidth: UIDesignSystem.Window.leftPanelMinWidth)
             .allowsHitTesting(!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && !ble.isOTAFailed && !ble.isOTARebootDisconnected) // OTA 进行中、等待重启、失败或 reboot 断开时禁用左侧操作区域
             .overlay {
                 // OTA 进行中、等待重启、失败或 reboot 断开时，在左侧区域显示半透明覆盖层
@@ -114,11 +114,11 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
                         Text(appLanguage.string("log.title"))
-                            .font(.headline)
+                            .font(UIDesignSystem.Typography.sectionTitle)
                         Spacer()
                         Toggle(isOn: $logAutoScrollEnabled) {
                             Text(appLanguage.string("log.auto_scroll"))
-                                .font(.caption)
+                                .font(UIDesignSystem.Typography.caption)
                         }
                         .toggleStyle(.checkbox)
                         .help(appLanguage.string("log.auto_scroll_hint"))
@@ -127,9 +127,9 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color(nsColor: .windowBackgroundColor))
+                    .padding(.horizontal, UIDesignSystem.Padding.md)
+                    .padding(.vertical, UIDesignSystem.Padding.xs)
+                    .background(UIDesignSystem.Background.window)
                     
                     // 日志等级过滤
                     LogLevelFilterView(ble: ble)
@@ -139,7 +139,7 @@ struct ContentView: View {
                             LazyVStack(alignment: .leading, spacing: 0) {
                                 ForEach(ble.displayedLogEntries) { entry in
                                     Text(entry.line)
-                                        .font(.system(.caption, design: .monospaced))
+                                        .font(UIDesignSystem.Typography.monospacedCaption)
                                         .foregroundStyle(LogLevelColor.color(entry.level))
                                         .lineLimit(1)
                                         .truncationMode(.tail)
@@ -147,7 +147,7 @@ struct ContentView: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(5)
+                            .padding(UIDesignSystem.Padding.sm)
                             .id(0)
                         }
                         .onChange(of: ble.logEntries.count, perform: { _ in
@@ -159,12 +159,12 @@ struct ContentView: View {
                             }
                         })
                     }
-                    .background(Color(nsColor: .textBackgroundColor))
+                    .background(UIDesignSystem.Background.text)
                 }
-                .frame(minWidth: 380)
+                .frame(minWidth: UIDesignSystem.Window.rightPanelMinWidth)
             }
         }
-        .frame(minWidth: 760, minHeight: 520)
+        .frame(minWidth: UIDesignSystem.Window.minWidth, minHeight: UIDesignSystem.Window.minHeight)
         .background(WindowLevelSetter(floating: appSettings.windowFloating))
         .onAppear {
             // 启动时先激活窗口，再设置置顶，否则未激活时 level 可能不生效
@@ -190,13 +190,12 @@ private struct DeviceInfoStrip: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
             Text(appLanguage.string("device_info.title"))
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
             if hasAnyInfo {
-                HStack(alignment: .top, spacing: 12) {
+                HStack(alignment: .top, spacing: UIDesignSystem.Spacing.lg) {
                     if let v = ble.deviceSerialNumber {
                         item(appLanguage.string("device_info.sn"), v)
                     }
@@ -216,29 +215,29 @@ private struct DeviceInfoStrip: View {
                         item(appLanguage.string("device_info.hw"), v)
                     }
                 }
-                .font(.system(.caption, design: .monospaced))
+                .font(UIDesignSystem.Typography.monospacedCaption)
             } else if ble.isConnected && ble.areCharacteristicsReady {
                 Text(appLanguage.string("device_info.not_available"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             } else {
                 Text(appLanguage.string("device_info.loading"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.04))
-        .cornerRadius(8)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+        .padding(.horizontal, UIDesignSystem.Padding.lg)
+        .padding(.vertical, UIDesignSystem.Padding.xs)
     }
 
     private func item(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: UIDesignSystem.Spacing.xs) {
             Text("\(label):")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
             Text(value)
         }
     }
@@ -262,39 +261,39 @@ private struct LogLevelFilterView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("log.level"))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
             Toggle(isOn: $ble.showLogLevelDebug) {
                 Text(appLanguage.string("log.level_debug"))
-                    .font(.caption)
-                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.debug))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.debug))
             }
             .toggleStyle(.checkbox)
             Toggle(isOn: $ble.showLogLevelInfo) {
                 Text(appLanguage.string("log.level_info"))
-                    .font(.caption)
-                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.info))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.info))
             }
             .toggleStyle(.checkbox)
             Toggle(isOn: $ble.showLogLevelWarning) {
                 Text(appLanguage.string("log.level_warning"))
-                    .font(.caption)
-                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.warning))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.warning))
             }
             .toggleStyle(.checkbox)
             Toggle(isOn: $ble.showLogLevelError) {
                 Text(appLanguage.string("log.level_error"))
-                    .font(.caption)
-                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.error))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.error))
             }
             .toggleStyle(.checkbox)
             Spacer()
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, UIDesignSystem.Padding.md)
+        .padding(.vertical, UIDesignSystem.Padding.xs)
+        .background(UIDesignSystem.Background.window)
     }
 }
 
@@ -323,7 +322,7 @@ private struct OTAExclusiveOverlay: View {
     var body: some View {
         ZStack {
             // 半透明背景，覆盖左侧操作区域，阻止所有其他交互
-            Color.black.opacity(0.6)
+            Color.black.opacity(UIDesignSystem.Opacity.overlay)
                 .ignoresSafeArea(.all)
                 .contentShape(Rectangle()) // 确保整个背景区域可接收点击事件
                 .onTapGesture {
@@ -332,14 +331,13 @@ private struct OTAExclusiveOverlay: View {
                 }
             
             // 中间的 OTA 视图（模态模式）
-            VStack(spacing: 20) {
+            VStack(spacing: UIDesignSystem.Spacing.xxl) {
                 Text(overlayTitle)
-                    .font(.title)
-                    .fontWeight(.bold)
-                    .foregroundStyle(.primary)
+                    .font(UIDesignSystem.Typography.pageTitle)
+                    .foregroundStyle(UIDesignSystem.Foreground.primary)
                 
                 OTASectionView(ble: ble, isModal: true)
-                    .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+                    .shadow(color: .black.opacity(0.3), radius: UIDesignSystem.Spacing.xxl, x: 0, y: 10)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity) // 确保覆盖整个左侧区域
@@ -351,12 +349,12 @@ private struct PinTopButtonStyle: ButtonStyle {
     var isFloating: Bool
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(isFloating ? Color.accentColor : Color.clear)
-            .foregroundStyle(isFloating ? Color.white : Color.primary)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.accentColor.opacity(isFloating ? 0 : 0.5), lineWidth: 1))
+            .padding(.horizontal, UIDesignSystem.Padding.lg)
+            .padding(.vertical, UIDesignSystem.Padding.sm)
+            .background(isFloating ? UIDesignSystem.Foreground.accent : Color.clear)
+            .foregroundStyle(isFloating ? Color.white : UIDesignSystem.Foreground.primary)
+            .clipShape(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.sm, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.sm, style: .continuous).strokeBorder(UIDesignSystem.Foreground.accent.opacity(isFloating ? 0 : 0.5), lineWidth: 1))
     }
 }
 

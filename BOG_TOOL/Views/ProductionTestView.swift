@@ -9,44 +9,43 @@ struct ProductionTestView: View {
     @State private var stepIndex = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
             Text(appLanguage.string("production_test.title"))
-                .font(.headline)
+                .font(UIDesignSystem.Typography.sectionTitle)
 
             if ble.isConnected {
-                HStack(alignment: .center, spacing: 8) {
-                    Spacer(minLength: 8)
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                    Spacer(minLength: UIDesignSystem.Spacing.lg)
                     Button(action: runProductionTest) {
-                        HStack(spacing: 6) {
+                        HStack(spacing: UIDesignSystem.Spacing.sm) {
                             if isRunning {
                                 ProgressView()
                                     .scaleEffect(0.8)
                             }
                             Text(isRunning ? appLanguage.string("production_test.running") : appLanguage.string("production_test.start"))
                         }
-                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
-                        .padding(.vertical, 5)
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isRunning || ble.isOTAInProgress)
                 }
 
                 if !testLog.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                         Text(appLanguage.string("production_test.log_title"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
                         ScrollViewReader { proxy in
                             ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 2) {
+                                LazyVStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                                     ForEach(Array(testLog.enumerated()), id: \.offset) { i, line in
                                         Text(line)
-                                            .font(.system(.caption, design: .monospaced))
+                                            .font(UIDesignSystem.Typography.monospacedCaption)
                                             .id(i)
                                     }
                                 }
                             }
-                            .frame(height: 88)
+                            .frame(height: UIDesignSystem.Component.testLogHeight)
                             .onChange(of: testLog.count) { _ in
                                 if let last = testLog.indices.last {
                                     proxy.scrollTo(last, anchor: .bottom)
@@ -54,21 +53,21 @@ struct ProductionTestView: View {
                             }
                         }
                     }
-                    .padding(6)
+                    .padding(UIDesignSystem.Padding.sm)
                     .background(Color.secondary.opacity(0.1))
-                    .cornerRadius(6)
+                    .cornerRadius(UIDesignSystem.CornerRadius.sm)
                 }
             } else {
                 Text(appLanguage.string("production_test.connect_first"))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
             
             OTASectionView(ble: ble)
         }
-        .padding(6)
+        .padding(UIDesignSystem.Padding.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.03))
-        .cornerRadius(8)
+        .background(UIDesignSystem.Background.subtle)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
     }
 
     private func runProductionTest() {

@@ -1,25 +1,23 @@
 import SwiftUI
 
 /// 产测 / Debug 区域内操作按钮统一宽度，并右对齐
-let actionButtonWidth: CGFloat = 96
-
-/// 阀门控制：自动（固件决定开/关） / 手动（用户点开/关）
-private enum ValveControlMode: String, CaseIterable {
-    case auto
-    case manual
-}
+/// 已迁移到 UIDesignSystem.Component.actionButtonWidth
+/// 注意：此文件中的 actionButtonWidth 仅用于向后兼容，新代码应直接使用 UIDesignSystem.Component.actionButtonWidth
+private let actionButtonWidth: CGFloat = UIDesignSystem.Component.actionButtonWidth
 
 /// Debug 模式：RTC / 阀门 / 压力 区域 + 原有电磁阀与设备 RTC
 struct DebugModeView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
-    /// 阀门控制：Auto 不显示开/关键，Manual 显示
-    @State private var valveControlMode: ValveControlMode = .manual
+    /// 手动模式复选框状态（false=auto, true=manual）
+    @State private var isManualMode: Bool = false
+    /// 是否正在设置阀门（用于阻塞UI）
+    @State private var isSettingValve: Bool = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
             Text(appLanguage.string("debug.title"))
-                .font(.headline)
+                .font(UIDesignSystem.Typography.sectionTitle)
 
             rtcSection
             valveSection
@@ -28,108 +26,107 @@ struct DebugModeView: View {
             UUIDDebugView(ble: ble)
 
             if ble.isConnected {
-                HStack(spacing: 8) {
+                HStack(spacing: UIDesignSystem.Spacing.md) {
                     Text(appLanguage.string("debug.current_pressure"))
                     Text(ble.lastPressureValue)
                     Text("|")
                     Text(ble.lastPressureOpenValue)
-                        .font(.system(.caption, design: .monospaced))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .padding(.horizontal, UIDesignSystem.Padding.sm)
+                        .padding(.vertical, UIDesignSystem.Padding.xs)
                         .background(Color.secondary.opacity(0.2))
-                        .cornerRadius(5)
+                        .cornerRadius(UIDesignSystem.CornerRadius.sm)
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                     Text(appLanguage.string("debug.device_rtc"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Text(ble.lastRTCValue)
-                        .font(.system(.caption, design: .monospaced))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .padding(.horizontal, UIDesignSystem.Padding.sm)
+                        .padding(.vertical, UIDesignSystem.Padding.xs)
                         .background(Color.secondary.opacity(0.2))
-                        .cornerRadius(5)
+                        .cornerRadius(UIDesignSystem.CornerRadius.sm)
                 }
             } else {
                 Text(appLanguage.string("debug.connect_first"))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
         }
-        .padding(6)
+        .padding(UIDesignSystem.Padding.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.03))
-        .cornerRadius(8)
+        .background(UIDesignSystem.Background.subtle)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
     }
     
     // MARK: - RTC 区域（仅 UI）
     
     private var rtcSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
             Text(appLanguage.string("debug.rtc"))
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
 
-            HStack(alignment: .center, spacing: 8) {
-                HStack(spacing: 5) {
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Text(appLanguage.string("debug.system_time"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Text(ble.lastSystemTimeAtRTCRead)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(UIDesignSystem.Typography.monospacedCaption)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+                .padding(.horizontal, UIDesignSystem.Padding.md)
+                .padding(.vertical, UIDesignSystem.Padding.xs)
                 .background(Color.secondary.opacity(0.15))
-                .cornerRadius(6)
-                Spacer(minLength: 8)
+                .cornerRadius(UIDesignSystem.CornerRadius.sm)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
                     ble.writeRTCTrigger(hexString: "01")
                 } label: {
                     Text(appLanguage.string("debug.write_rtc"))
-                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!ble.isConnected || ble.isOTAInProgress)
             }
 
-            HStack(alignment: .center, spacing: 8) {
-                HStack(spacing: 5) {
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Text(appLanguage.string("debug.device_time"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Text(ble.lastRTCValue)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(UIDesignSystem.Typography.monospacedCaption)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+                .padding(.horizontal, UIDesignSystem.Padding.md)
+                .padding(.vertical, UIDesignSystem.Padding.xs)
                 .background(Color.secondary.opacity(0.15))
-                .cornerRadius(6)
+                .cornerRadius(UIDesignSystem.CornerRadius.sm)
 
-                HStack(spacing: 5) {
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Text(appLanguage.string("debug.time_diff"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Text(ble.lastTimeDiffFromRTCRead)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
                     ble.writeTestingUnlock()
                     ble.readRTC()
                 } label: {
                     Text(appLanguage.string("debug.read_rtc"))
-                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
             }
         }
-        .padding(6)
-        .background(Color.primary.opacity(0.04))
-        .cornerRadius(8)
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
     }
     
     // MARK: - 阀门区域
@@ -151,158 +148,244 @@ struct DebugModeView: View {
         }
     }
     
-    /// 电磁阀开关：显示当前状态，操作时先读再设；若已是目标状态则警告一次
+    /// 电磁阀开关：仅在手动模式下使能，操作时阻塞UI直到确认成功
     private var valveSwitchBinding: Binding<Bool> {
         Binding(
             get: { ble.lastValveStateValue == "open" },
-            set: { newValue in ble.setValveAfterReadingState(open: newValue) }
+            set: { newValue in
+                guard isManualMode && !isSettingValve else { return }
+                setValveWithBlocking(open: newValue) { _ in }
+            }
         )
     }
     
-    /// Binding 用于 Picker：Auto/Manual 互斥；选 Auto 写 0，选 Manual 按当前阀门状态写开/关
-    private var valveControlModeBinding: Binding<ValveControlMode> {
+    /// 手动模式复选框绑定：选中时进入手动模式，失败则维持自动
+    private var manualModeBinding: Binding<Bool> {
         Binding(
-            get: { valveControlMode },
+            get: { isManualMode },
             set: { newValue in
-                valveControlMode = newValue
-                if newValue == .auto {
-                    ble.setValveModeAuto()
-                } else if newValue == .manual {
-                    // 从 Auto 切到 Manual：按当前阀门状态写入开或关，使设备进入手动并保持当前状态
+                guard !isSettingValve else { return }
+                isManualMode = newValue
+                if newValue {
+                    // 进入手动模式：按当前阀门状态写入开或关，使设备进入手动并保持当前状态
                     let open = (ble.lastValveStateValue != "closed")
-                    ble.setValve(open: open)
+                    setValveWithBlocking(open: open) { success in
+                        if !success {
+                            // 失败则维持自动模式
+                            isManualMode = false
+                            ble.setValveModeAuto()
+                        }
+                    }
+                } else {
+                    // 退出手动模式，设为自动
+                    ble.setValveModeAuto()
                 }
             }
         )
     }
     
-    private var valveSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(appLanguage.string("debug.valve"))
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
-
-            HStack(alignment: .center, spacing: 8) {
-                HStack(spacing: 8) {
-                    HStack(spacing: 5) {
-                        Text(appLanguage.string("debug.valve_mode"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(valveModeDisplay)
-                            .font(.system(.caption, design: .monospaced))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.15))
-                    .cornerRadius(6)
-                    HStack(spacing: 5) {
-                        Text(appLanguage.string("debug.valve_state"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(valveStateDisplay)
-                            .font(.system(.caption, design: .monospaced))
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.15))
-                    .cornerRadius(6)
+    /// 设置阀门并阻塞UI，直到确认成功或超时3s
+    private func setValveWithBlocking(open: Bool, completion: @escaping (Bool) -> Void) {
+        guard !isSettingValve else { return }
+        isSettingValve = true
+        
+        // 记录目标状态
+        let targetState = open ? "open" : "closed"
+        let startTime = Date()
+        
+        // 设置阀门
+        ble.setValve(open: open)
+        
+        // 使用 Task 监听状态变化，最多等待3秒
+        Task { @MainActor in
+            var checkCount = 0
+            let maxChecks = 30 // 3秒 / 0.1秒 = 30次检查
+            
+            while checkCount < maxChecks {
+                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1秒
+                checkCount += 1
+                
+                // 检查是否达到目标状态
+                if ble.lastValveStateValue == targetState {
+                    isSettingValve = false
+                    completion(true) // 成功
+                    return
                 }
-                Spacer(minLength: 8)
+                
+                // 检查超时
+                if Date().timeIntervalSince(startTime) >= 3.0 {
+                    isSettingValve = false
+                    completion(false) // 超时失败
+                    return
+                }
+            }
+            
+            // 超时
+            isSettingValve = false
+            completion(false)
+        }
+    }
+    
+    private var valveSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            Text(appLanguage.string("debug.valve"))
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                HStack(spacing: UIDesignSystem.Spacing.md) {
+                    HStack(spacing: UIDesignSystem.Spacing.sm) {
+                        Text(appLanguage.string("debug.valve_mode"))
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        Text(valveModeDisplay)
+                            .font(UIDesignSystem.Typography.monospacedCaption)
+                    }
+                    .padding(.horizontal, UIDesignSystem.Padding.md)
+                    .padding(.vertical, UIDesignSystem.Padding.xs)
+                    .background(Color.secondary.opacity(0.15))
+                    .cornerRadius(UIDesignSystem.CornerRadius.sm)
+                    HStack(spacing: UIDesignSystem.Spacing.sm) {
+                        Text(appLanguage.string("debug.valve_state"))
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        Text(valveStateDisplay)
+                            .font(UIDesignSystem.Typography.monospacedCaption)
+                    }
+                    .padding(.horizontal, UIDesignSystem.Padding.md)
+                    .padding(.vertical, UIDesignSystem.Padding.xs)
+                    .background(Color.secondary.opacity(0.15))
+                    .cornerRadius(UIDesignSystem.CornerRadius.sm)
+                }
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
                     ble.readValveMode()
                     ble.readValveState()
                 } label: {
                     Text(appLanguage.string("debug.read"))
-                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
-                Picker("", selection: valveControlModeBinding) {
-                    Text(appLanguage.string("debug.valve_control_auto")).tag(ValveControlMode.auto)
-                    Text(appLanguage.string("debug.valve_control_manual")).tag(ValveControlMode.manual)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 160)
             }
-            if valveControlMode == .manual {
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        Text(appLanguage.string("debug.valve_switch"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Toggle("", isOn: valveSwitchBinding)
-                            .toggleStyle(.switch)
-                            .labelsHidden()
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Text(appLanguage.string("debug.valve_control_manual"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
+                    Toggle("", isOn: manualModeBinding)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                    if isSettingValve {
+                        ProgressView()
+                            .scaleEffect(0.8)
                     }
-                    .disabled(!ble.isConnected || ble.isOTAInProgress)
-                    if let key = ble.valveOperationWarning, !key.isEmpty {
-                        Text(appLanguage.string(key))
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                }
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress || isSettingValve)
+            }
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Text(appLanguage.string("debug.valve_switch"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
+                    Toggle("", isOn: valveSwitchBinding)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                    if isSettingValve {
+                        ProgressView()
+                            .scaleEffect(0.8)
                     }
-                    Spacer(minLength: 8)
+                }
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress || isSettingValve || !isManualMode)
+                if let key = ble.valveOperationWarning, !key.isEmpty {
+                    Text(appLanguage.string(key))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(.orange)
                 }
             }
         }
-        .padding(6)
-        .background(Color.primary.opacity(0.04))
-        .cornerRadius(8)
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+        .onAppear {
+            // 连接设备后获取电磁阀状态
+            if ble.isConnected && ble.areCharacteristicsReady {
+                ble.readValveMode()
+                ble.readValveState()
+            }
+        }
+        .onChange(of: ble.isConnected) { connected in
+            if connected && ble.areCharacteristicsReady {
+                ble.readValveMode()
+                ble.readValveState()
+            }
+        }
+        .onChange(of: ble.areCharacteristicsReady) { ready in
+            if ready && ble.isConnected {
+                ble.readValveMode()
+                ble.readValveState()
+            }
+        }
         .onReceive(ble.$lastValveModeValue) { newValue in
-            if newValue == "auto" { valveControlMode = .auto }
-            else if newValue == "open" || newValue == "closed" { valveControlMode = .manual }
+            // 根据设备返回的模式值更新复选框状态
+            if newValue == "auto" {
+                isManualMode = false
+            } else if newValue == "open" || newValue == "closed" {
+                isManualMode = true
+            }
         }
     }
     
     // MARK: - 压力区域（仅 UI）
     
     private var pressureSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
             Text(appLanguage.string("debug.pressure"))
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
 
-            HStack(alignment: .center, spacing: 8) {
-                HStack(spacing: 8) {
-                    HStack(spacing: 5) {
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                HStack(spacing: UIDesignSystem.Spacing.md) {
+                    HStack(spacing: UIDesignSystem.Spacing.sm) {
                         Text(appLanguage.string("debug.open_pressure"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
                         Text(ble.lastPressureOpenValue)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(UIDesignSystem.Typography.monospacedCaption)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, UIDesignSystem.Padding.md)
+                    .padding(.vertical, UIDesignSystem.Padding.xs)
                     .background(Color.secondary.opacity(0.15))
-                    .cornerRadius(6)
+                    .cornerRadius(UIDesignSystem.CornerRadius.sm)
 
-                    HStack(spacing: 5) {
+                    HStack(spacing: UIDesignSystem.Spacing.sm) {
                         Text(appLanguage.string("debug.close_pressure"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
                         Text(ble.lastPressureValue)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(UIDesignSystem.Typography.monospacedCaption)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, UIDesignSystem.Padding.md)
+                    .padding(.vertical, UIDesignSystem.Padding.xs)
                     .background(Color.secondary.opacity(0.15))
-                    .cornerRadius(6)
+                    .cornerRadius(UIDesignSystem.CornerRadius.sm)
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
                     ble.readPressure()
                     ble.readPressureOpen()
                 } label: {
                     Text(appLanguage.string("debug.read"))
-                        .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!ble.isConnected || ble.isOTAInProgress)
             }
         }
-        .padding(6)
-        .background(Color.primary.opacity(0.04))
-        .cornerRadius(8)
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
     }
 }

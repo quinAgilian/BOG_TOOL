@@ -83,13 +83,13 @@
 "debug.time_diff" = "Time diff from system:";
 "debug.valve" = "Valve";
 "debug.valve_control_auto" = "Auto";
-"debug.valve_control_manual" = "Manual";
+"debug.valve_control_manual" = "Enable manual valve control mode";
 "debug.valve_mode" = "Mode";
 "debug.valve_mode_auto" = "auto";
 "debug.valve_state" = "State";
 "debug.valve_close" = "Close";
 "debug.valve_open" = "Open";
-"debug.valve_switch" = "Valve";
+"debug.valve_switch" = "Keep valve open";
 "debug.pressure" = "Pressure";
 "debug.open_pressure" = "Open pressure";
 "debug.close_pressure" = "Close pressure";

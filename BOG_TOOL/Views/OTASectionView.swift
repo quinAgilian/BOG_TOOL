@@ -125,127 +125,126 @@ struct OTASectionView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: isModal ? 10 : 6) {
+        VStack(alignment: .leading, spacing: isModal ? UIDesignSystem.Spacing.lg : UIDesignSystem.Spacing.sm) {
             Text(otaTitleText)
-                .font(isModal ? .system(.title2, design: .monospaced) : .system(.subheadline, design: .monospaced))
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
+                .font(isModal ? UIDesignSystem.Typography.pageTitle : UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
             
             // 状态行（进行中时每秒刷新已用/剩余时间，等待重启时每秒刷新倒计时）
             Group {
                 if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot {
                     TimelineView(.periodic(from: .now, by: 1.0)) { context in
                         Text(statusText(now: context.date))
-                            .font(isModal ? .system(.body, design: .monospaced) : .system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .font(isModal ? UIDesignSystem.Typography.body : UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     }
                 } else {
                     Text(statusText())
-                        .font(isModal ? .system(.body, design: .monospaced) : .system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(isModal ? UIDesignSystem.Typography.body : UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 }
             }
             
             // 模态模式下隐藏固件选择和浏览按钮，只显示关键信息
             if !isModal {
                 // 当前固件版本
-                HStack(alignment: .center, spacing: 6) {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
                     Text(appLanguage.string("ota.firmware_version"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Text(ble.currentFirmwareVersion ?? appLanguage.string("ota.unknown"))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(ble.currentFirmwareVersion != nil ? .primary : .secondary)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(ble.currentFirmwareVersion != nil ? UIDesignSystem.Foreground.primary : UIDesignSystem.Foreground.secondary)
                 }
                 
                 // 目标固件大小（当前选择的 .bin 文件）
-                HStack(alignment: .center, spacing: 6) {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
                     Text(appLanguage.string("ota.firmware_size"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Text(ble.selectedFirmwareSizeDisplay)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 }
                 
                 // 固件选择
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                     Text(appLanguage.string("ota.browse"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Text(firmwareDisplayName)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(UIDesignSystem.Typography.monospacedCaption)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, UIDesignSystem.Padding.md)
+                        .padding(.vertical, UIDesignSystem.Padding.xs)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.secondary.opacity(0.12))
-                        .cornerRadius(6)
-                    Spacer(minLength: 8)
+                        .cornerRadius(UIDesignSystem.CornerRadius.sm)
+                    Spacer(minLength: UIDesignSystem.Spacing.lg)
                     Button {
                         ble.browseAndSaveFirmware()
                     } label: {
                         Text(appLanguage.string("ota.browse"))
-                            .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                     }
                     .buttonStyle(.borderedProminent)
                 }
             } else {
                 // 模态模式下显示更详细的信息
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .center, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+                    HStack(alignment: .center, spacing: UIDesignSystem.Spacing.lg) {
+                        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                             Text(appLanguage.string("ota.firmware_version"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(UIDesignSystem.Typography.caption)
+                                .foregroundStyle(UIDesignSystem.Foreground.secondary)
                             Text(ble.currentFirmwareVersion ?? appLanguage.string("ota.unknown"))
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(ble.currentFirmwareVersion != nil ? .primary : .secondary)
+                                .font(UIDesignSystem.Typography.monospaced)
+                                .foregroundStyle(ble.currentFirmwareVersion != nil ? UIDesignSystem.Foreground.primary : UIDesignSystem.Foreground.secondary)
                         }
                         Spacer()
-                        VStack(alignment: .trailing, spacing: 4) {
+                        VStack(alignment: .trailing, spacing: UIDesignSystem.Spacing.xs) {
                             Text(appLanguage.string("ota.firmware_size"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(UIDesignSystem.Typography.caption)
+                                .foregroundStyle(UIDesignSystem.Foreground.secondary)
                             Text(ble.selectedFirmwareSizeDisplay)
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                                .font(UIDesignSystem.Typography.monospaced)
+                                .foregroundStyle(UIDesignSystem.Foreground.secondary)
                         }
                     }
                     
                     // 显示固件文件名
-                    HStack(alignment: .center, spacing: 8) {
+                    HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                         Text(appLanguage.string("ota.browse"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
                         Text(firmwareDisplayName)
-                            .font(.system(.body, design: .monospaced))
+                            .font(UIDesignSystem.Typography.monospaced)
                             .lineLimit(2)
                             .truncationMode(.middle)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, UIDesignSystem.Padding.lg)
+                            .padding(.vertical, UIDesignSystem.Padding.sm)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Color.secondary.opacity(0.12))
-                            .cornerRadius(8)
+                            .cornerRadius(UIDesignSystem.CornerRadius.md)
                     }
                 }
             }
             
             // 进度条（靠左）+ Start/Cancel OTA 按键（靠右）同一行
-            HStack(alignment: .center, spacing: 12) {
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.lg) {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: isModal ? 4 : 3, style: .continuous)
+                        RoundedRectangle(cornerRadius: isModal ? UIDesignSystem.CornerRadius.xs : UIDesignSystem.CornerRadius.xs, style: .continuous)
                             .fill(Color.secondary.opacity(0.2))
-                            .frame(height: isModal ? 12 : 6)
-                        RoundedRectangle(cornerRadius: isModal ? 4 : 3, style: .continuous)
+                            .frame(height: isModal ? UIDesignSystem.Component.modalProgressBarHeight : UIDesignSystem.Component.progressBarHeight)
+                        RoundedRectangle(cornerRadius: isModal ? UIDesignSystem.CornerRadius.xs : UIDesignSystem.CornerRadius.xs, style: .continuous)
                             .fill(Color.accentColor)
-                            .frame(width: max(0, geo.size.width * ble.otaProgress), height: isModal ? 12 : 6)
+                            .frame(width: max(0, geo.size.width * ble.otaProgress), height: isModal ? UIDesignSystem.Component.modalProgressBarHeight : UIDesignSystem.Component.progressBarHeight)
                     }
                 }
-                .frame(height: isModal ? 12 : 6)
-                Spacer(minLength: 12)
+                .frame(height: isModal ? UIDesignSystem.Component.modalProgressBarHeight : UIDesignSystem.Component.progressBarHeight)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
                     if ble.isOTAFailed || ble.isOTACancelled || ble.isOTARebootDisconnected {
                         // 失败、取消或 reboot 断开：关闭弹窗（清除状态）
@@ -263,17 +262,17 @@ struct OTASectionView: View {
                 } label: {
                     if ble.isOTAFailed || ble.isOTARebootDisconnected {
                         Text(appLanguage.string("ota.close"))
-                            .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                            .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
                     } else if ble.isOTACancelled {
                         Text(appLanguage.string("ota.close"))
-                            .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                            .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
                     } else if ble.isOTACompletedWaitingReboot {
                         // 显示重启按钮（等待用户确认）
                         Text(appLanguage.string("ota.reboot"))
-                            .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                            .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
                     } else {
                         Text(ble.isOTAInProgress ? appLanguage.string("ota.cancel") : appLanguage.string("ota.start"))
-                            .frame(minWidth: isModal ? 120 : actionButtonWidth, maxWidth: isModal ? 120 : actionButtonWidth)
+                            .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -291,16 +290,16 @@ struct OTASectionView: View {
             if !isModal {
                 Toggle(isOn: .constant(true)) {
                     Text(appLanguage.string("ota.auto_reboot_after_ota"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 }
                 .toggleStyle(.checkbox)
                 .disabled(true)
             }
         }
-        .padding(isModal ? 20 : 6)
+        .padding(isModal ? UIDesignSystem.Padding.xl : UIDesignSystem.Padding.sm)
         .background(otaSectionBackground)
-        .clipShape(RoundedRectangle(cornerRadius: isModal ? 16 : 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: isModal ? UIDesignSystem.CornerRadius.xl : UIDesignSystem.CornerRadius.md, style: .continuous))
         .frame(maxWidth: isModal ? 600 : nil)
     }
     

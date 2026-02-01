@@ -103,28 +103,27 @@ struct UUIDDebugView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("debug.uuid_title"))
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
             
             // MARK: - Write
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
                 Text(appLanguage.string("debug.uuid_write"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(alignment: .center, spacing: 8) {
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                     Picker("", selection: $selectedWriteUUID) {
                         Text(appLanguage.string("debug.uuid_select")).tag("")
                         ForEach(writableCharacteristicOptions) { opt in
                             Text(opt.displayName)
-                                .font(.system(.body, design: .monospaced))
+                                .font(UIDesignSystem.Typography.monospaced)
                                 .tag(opt.uuid)
                         }
                     }
                     .labelsHidden()
-                    .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
+                    .frame(minWidth: 200, maxWidth: .infinity)
                     .onChange(of: selectedWriteUUID, perform: { _ in
                         selectedWritePresetValue = nil
                         if isTimeWriteSelected {
@@ -140,7 +139,7 @@ struct UUIDDebugView: View {
                             Text(appLanguage.string("debug.uuid_time_custom")).tag(TimeWriteMode.custom)
                         }
                         .labelsHidden()
-                        .frame(minWidth: 80)
+                        .frame(minWidth: 100)
                         .onChange(of: timeWriteMode, perform: { mode in
                             switch mode {
                             case .auto: writeHexInput = rtcHexFromDate(Date())
@@ -155,7 +154,7 @@ struct UUIDDebugView: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(minWidth: 100)
+                        .frame(minWidth: 120)
                         .onChange(of: selectedWritePresetValue, perform: { newValue in
                             if let v = newValue {
                                 writeHexInput = String(format: "%02X", v)
@@ -163,24 +162,27 @@ struct UUIDDebugView: View {
                         })
                     }
                 }
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                     TextField(appLanguage.string("debug.uuid_hex_placeholder"), text: $writeHexInput)
-                        .font(.system(.body, design: .monospaced))
+                        .font(UIDesignSystem.Typography.monospaced)
                         .frame(minWidth: 120, maxWidth: .infinity)
                         .onChange(of: writeHexInput, perform: { _ in
                             selectedWritePresetValue = nil
                         })
-                    Button(appLanguage.string("debug.uuid_send")) {
+                    Spacer(minLength: UIDesignSystem.Spacing.lg)
+                    Button {
                         ble.writeToCharacteristic(uuidString: selectedWriteUUID, hex: writeHexInput)
+                    } label: {
+                        Text(appLanguage.string("debug.uuid_send"))
+                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                     }
                     .buttonStyle(.borderedProminent)
-                    .frame(minWidth: actionButtonWidth, maxWidth: actionButtonWidth)
                     .disabled(!ble.isConnected || selectedWriteUUID.isEmpty || writeHexInput.isEmpty)
                 }
             }
-            .padding(8)
-            .background(Color.primary.opacity(0.04))
-            .cornerRadius(8)
+            .padding(UIDesignSystem.Padding.md)
+            .background(UIDesignSystem.Background.light)
+            .cornerRadius(UIDesignSystem.CornerRadius.md)
             .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
                 if isTimeWriteSelected, timeWriteMode == .auto {
                     writeHexInput = rtcHexFromDate(Date())
@@ -188,42 +190,45 @@ struct UUIDDebugView: View {
             }
             
             // MARK: - Read
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
                 Text(appLanguage.string("debug.uuid_read"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(alignment: .center, spacing: 8) {
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                     Picker("", selection: $selectedReadUUID) {
                         Text(appLanguage.string("debug.uuid_select")).tag("")
                         ForEach(characteristicOptions) { opt in
                             Text(opt.displayName)
-                                .font(.system(.body, design: .monospaced))
+                                .font(UIDesignSystem.Typography.monospaced)
                                 .tag(opt.uuid)
                         }
                     }
                     .labelsHidden()
                     .frame(minWidth: 200, maxWidth: .infinity)
-                    Button(appLanguage.string("debug.uuid_read_btn")) {
+                    Spacer(minLength: UIDesignSystem.Spacing.lg)
+                    Button {
                         ble.readCharacteristic(uuidString: selectedReadUUID)
+                    } label: {
+                        Text(appLanguage.string("debug.uuid_read_btn"))
+                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                     }
                     .buttonStyle(.borderedProminent)
-                    .frame(width: 130)
                     .disabled(!ble.isConnected || selectedReadUUID.isEmpty)
                 }
                 Text(readResultText)
-                    .font(.system(.caption, design: .monospaced))
-                    .padding(8)
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .padding(UIDesignSystem.Padding.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.secondary.opacity(0.15))
-                    .cornerRadius(6)
+                    .cornerRadius(UIDesignSystem.CornerRadius.sm)
             }
-            .padding(8)
-            .background(Color.primary.opacity(0.04))
-            .cornerRadius(8)
+            .padding(UIDesignSystem.Padding.md)
+            .background(UIDesignSystem.Background.light)
+            .cornerRadius(UIDesignSystem.CornerRadius.md)
         }
-        .padding(8)
-        .background(Color.primary.opacity(0.03))
-        .cornerRadius(8)
+        .padding(UIDesignSystem.Padding.md)
+        .background(UIDesignSystem.Background.subtle)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
         .onAppear {
             if selectedWriteUUID.isEmpty || !writableCharacteristicOptions.contains(where: { $0.uuid == selectedWriteUUID }),
                let first = writableCharacteristicOptions.first {
