@@ -44,6 +44,7 @@
 
 "device_info.title" = "设备基础信息";
 "device_info.sn" = "SN";
+"device_info.bootloader" = "Bootloader";
 "device_info.fw" = "FW";
 "device_info.manufacturer" = "制造商";
 "device_info.model" = "型号";
@@ -152,7 +153,7 @@
 "ota.title_completed" = "OTA (完成)";
 "ota.title_completed_with_duration" = "OTA (完成, %@)";
 "ota.title_in_progress_format" = "OTA (进行中, %.2f%%)";
-"ota.title_waiting_reboot" = "OTA (等待重启, %d秒)";
+"ota.title_waiting_reboot" = "OTA (等待重启)";
 "ota.title_failed" = "OTA (失败)";
 "ota.title_cancelled" = "OTA (已取消)";
 "ota.failed" = "OTA 失败";
@@ -173,15 +174,17 @@
 "ota.completed" = "完成";
 "ota.completed_with_duration" = "完成, %@";
 "ota.waiting_validation" = "等待设备校验中... (已用 %@)";
-"ota.waiting_reboot_countdown" = "等待重启确认... (%d秒后自动重启)";
-"ota.completed_waiting_reboot" = "OTA完成 (%@)，等待重启确认... (%d秒后自动重启)";
+"ota.waiting_reboot" = "等待用户确认重启";
+"ota.completed_waiting_reboot" = "OTA完成 (%@)，等待用户确认重启";
 "ota.reboot" = "重启设备";
-"ota.reboot_with_countdown" = "重启设备 (%d)";
 "ota.exclusive_title" = "OTA 进行中";
 "ota.exclusive_title_failed" = "OTA 失败";
 "ota.exclusive_title_cancelled" = "OTA 已取消";
 "ota.close" = "关闭";
 "ota.exclusive_title_reboot" = "OTA 完成，等待重启";
+"ota.reboot_disconnected" = "设备已重启并断开连接";
+"ota.reboot_disconnected_hint" = "请重新连接设备以验证固件版本";
+"ota.title_reboot_disconnected" = "OTA (设备已重启)";
 
 /* 菜单 */
 "menu.floating" = "置顶";

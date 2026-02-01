@@ -29,7 +29,7 @@
 "valve.warning_already_closed" = "Valve is already closed.";
 
 /* Device list */
-"device_list.title" = "BLE Devices";
+"device_list.title" = "CO2_controller Devices";
 "device_list.connected" = "Connected";
 "device_list.disconnect" = "Disconnect";
 "device_list.filter_rules" = "Filter Rules";
@@ -44,6 +44,7 @@
 
 "device_info.title" = "Device info";
 "device_info.sn" = "SN";
+"device_info.bootloader" = "Bootloader";
 "device_info.fw" = "FW";
 "device_info.manufacturer" = "Manufacturer";
 "device_info.model" = "Model";
@@ -152,7 +153,7 @@
 "ota.title_completed" = "OTA (completed)";
 "ota.title_completed_with_duration" = "OTA (completed, %@)";
 "ota.title_in_progress_format" = "OTA (in progress, %.2f%%)";
-"ota.title_waiting_reboot" = "OTA (waiting reboot, %d sec)";
+"ota.title_waiting_reboot" = "OTA (Waiting for Reboot)";
 "ota.title_failed" = "OTA (Failed)";
 "ota.title_cancelled" = "OTA (Cancelled)";
 "ota.failed" = "OTA Failed";
@@ -173,15 +174,17 @@
 "ota.completed" = "Completed";
 "ota.completed_with_duration" = "Completed, %@";
 "ota.waiting_validation" = "Waiting for device validation... (elapsed %@)";
-"ota.waiting_reboot_countdown" = "Waiting for reboot confirmation... (auto reboot in %d seconds)";
-"ota.completed_waiting_reboot" = "OTA completed (%@), waiting for reboot confirmation... (auto reboot in %d seconds)";
+"ota.waiting_reboot" = "Waiting for user confirmation to reboot";
+"ota.completed_waiting_reboot" = "OTA completed (%@), waiting for user confirmation to reboot";
 "ota.reboot" = "Reboot Device";
-"ota.reboot_with_countdown" = "Reboot Device (%d)";
 "ota.exclusive_title" = "OTA in Progress";
 "ota.exclusive_title_failed" = "OTA Failed";
 "ota.exclusive_title_cancelled" = "OTA Cancelled";
 "ota.close" = "Close";
 "ota.exclusive_title_reboot" = "OTA Completed, Waiting for Reboot";
+"ota.reboot_disconnected" = "Device rebooted and disconnected";
+"ota.reboot_disconnected_hint" = "Please reconnect to verify firmware version";
+"ota.title_reboot_disconnected" = "OTA (Device rebooted)";
 
 /* Menu */
 "menu.floating" = "Floating";

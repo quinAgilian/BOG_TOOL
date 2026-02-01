@@ -100,10 +100,10 @@ struct ContentView: View {
                 .frame(minWidth: 320)
             }
             .frame(minWidth: 360)
-            .allowsHitTesting(!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && !ble.isOTAFailed) // OTA 进行中、等待重启或失败时禁用左侧操作区域
+            .allowsHitTesting(!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && !ble.isOTAFailed && !ble.isOTARebootDisconnected) // OTA 进行中、等待重启、失败或 reboot 断开时禁用左侧操作区域
             .overlay {
-                // OTA 进行中、等待重启或失败时，在左侧区域显示半透明覆盖层
-                if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed {
+                // OTA 进行中、等待重启、失败或 reboot 断开时，在左侧区域显示半透明覆盖层
+                if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTARebootDisconnected {
                     OTAExclusiveOverlay(ble: ble)
                         .allowsHitTesting(true) // OTA 覆盖层可以接收交互
                 }
@@ -185,7 +185,7 @@ private struct DeviceInfoStrip: View {
     @ObservedObject var ble: BLEManager
 
     private var hasAnyInfo: Bool {
-        ble.deviceSerialNumber != nil || ble.currentFirmwareVersion != nil
+        ble.deviceSerialNumber != nil || ble.currentFirmwareVersion != nil || ble.bootloaderVersion != nil
             || ble.deviceManufacturer != nil || ble.deviceModelNumber != nil || ble.deviceHardwareRevision != nil
     }
 
@@ -199,6 +199,9 @@ private struct DeviceInfoStrip: View {
                 HStack(alignment: .top, spacing: 12) {
                     if let v = ble.deviceSerialNumber {
                         item(appLanguage.string("device_info.sn"), v)
+                    }
+                    if let v = ble.bootloaderVersion {
+                        item(appLanguage.string("device_info.bootloader"), v)
                     }
                     if let v = ble.currentFirmwareVersion {
                         item(appLanguage.string("device_info.fw"), v)
@@ -302,6 +305,9 @@ private struct OTAExclusiveOverlay: View {
     @ObservedObject var ble: BLEManager
     
     private var overlayTitle: String {
+        if ble.isOTARebootDisconnected {
+            return appLanguage.string("ota.title_reboot_disconnected")
+        }
         if ble.isOTAFailed {
             return appLanguage.string("ota.exclusive_title_failed")
         }
