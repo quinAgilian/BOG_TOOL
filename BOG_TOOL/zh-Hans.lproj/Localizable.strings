@@ -7,6 +7,10 @@
 "mode.production_test" = "产测模式";
 "mode.debug" = "Debug 模式";
 
+/* 底部版本（App / 产测 SOP） */
+"version.app_label" = "App";
+"version.sop_label" = "SOP";
+
 /* 日志 */
 "log.title" = "日志";
 "log.level" = "等级:";

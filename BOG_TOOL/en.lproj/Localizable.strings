@@ -7,6 +7,10 @@
 "mode.production_test" = "Production Test";
 "mode.debug" = "Debug";
 
+/* Footer version (App / SOP) */
+"version.app_label" = "App";
+"version.sop_label" = "SOP";
+
 /* Log */
 "log.title" = "Log";
 "log.level" = "Level:";

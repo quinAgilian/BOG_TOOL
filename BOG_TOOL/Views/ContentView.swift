@@ -51,6 +51,19 @@ struct ContentView: View {
             && ble.otaInitiatedByProductionTest
             && (ble.otaStatus1ReceivedFromDevice || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTACancelled || ble.isOTARebootDisconnected)
     }
+    
+    /// 应用版本号（来自 Info.plist），格式：1.0.0 或 1.0.0 (Build)
+    private var appVersionString: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+        return build != "1" ? "\(short) (\(build))" : short
+    }
+    
+    /// 产测 SOP 版本（UserDefaults，未设置时为 N.A）
+    private static let sopVersionKey = "production_test_sop_version"
+    private var sopVersionString: String {
+        UserDefaults.standard.string(forKey: Self.sopVersionKey) ?? "N.A"
+    }
 
     var body: some View {
         HSplitView {
@@ -87,19 +100,37 @@ struct ContentView: View {
                     DeviceInfoStrip(ble: ble)
                 }
 
-                ScrollView {
-                    Group {
-                        switch selectedMode {
-                        case .productionTest:
-                            ProductionTestView(ble: ble, firmwareManager: firmwareManager)
-                        case .debug:
-                            DebugModeView(ble: ble, firmwareManager: firmwareManager)
+                GeometryReader { geo in
+                    ScrollView {
+                        Group {
+                            switch selectedMode {
+                            case .productionTest:
+                                ProductionTestView(ble: ble, firmwareManager: firmwareManager)
+                            case .debug:
+                                DebugModeView(ble: ble, firmwareManager: firmwareManager)
+                            }
                         }
+                        .padding(UIDesignSystem.Padding.sm)
+                        .frame(minWidth: 320, minHeight: max(500, geo.size.height))
                     }
-                    .padding(UIDesignSystem.Padding.sm)
-                    .frame(minWidth: 320, minHeight: 700)
+                    .frame(minWidth: 320, maxHeight: .infinity)
                 }
-                .frame(minWidth: 320, maxHeight: .infinity)
+                .frame(maxHeight: .infinity)
+                
+                // App 版本与 SOP 版本（左下角，不抢眼）
+                HStack(spacing: UIDesignSystem.Spacing.md) {
+                    Text("\(appLanguage.string("version.app_label")) v\(appVersionString)")
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Text("·")
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Text("\(appLanguage.string("version.sop_label")) \(sopVersionString)")
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, UIDesignSystem.Padding.lg)
+                .padding(.vertical, UIDesignSystem.Padding.xs)
             }
             .frame(minWidth: UIDesignSystem.Window.leftPanelMinWidth)
             .overlay {

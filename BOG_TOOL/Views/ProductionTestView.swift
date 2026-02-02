@@ -160,7 +160,7 @@ struct ProductionTestView: View {
                 productionTestOTAArea
             }
             
-            // 测试步骤功能区 - 垂直滚动布局，尽量占满下方空间
+            // 测试步骤功能区 - 垂直滚动布局，占满下方空间
             VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                 HStack {
                     Image(systemName: "list.number")
@@ -174,10 +174,12 @@ struct ProductionTestView: View {
                 ScrollView {
                     testStepsSection
                         .padding(.horizontal, UIDesignSystem.Padding.xs)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(minHeight: 320, maxHeight: .infinity)
             }
             .frame(maxHeight: .infinity)
+            .layoutPriority(1)
             .padding(UIDesignSystem.Padding.sm)
             .background(
                 LinearGradient(
