@@ -2,6 +2,30 @@
 
 ---
 
+## 只导出到别的 Mac、不上传 App Store（推荐）
+
+若在 Xcode 里选「Distribute App → App Store Connect」时出现 **companyName / ENTITY_ERROR.ATTRIBUTE.REQUIRED** 等报错，是因为 App Store Connect 后台信息未填完整。**只在本机导出 app、拷贝到别的 Mac 运行**不需要上传，可忽略该报错，用下面方式即可。
+
+**本机（有 Xcode 的 Mac）执行：**
+
+```bash
+cd /path/to/BOG_TOOL
+./deploy_to_other_mac.sh
+```
+
+脚本会：Archive（Release、通用架构）→ 签名（有 Developer ID 则用，无则 ad-hoc）→ 输出到 **`Deploy/BOG Tool.app`**。把该 app 拷到另一台 Mac（U 盘 / AirDrop / 网盘）即可。
+
+- **有 Developer ID 证书**：对方 Mac 可直接双击打开。
+- **无 Developer ID（ad-hoc 签名）**：对方 Mac 首次需在终端执行 `xattr -cr "/Applications/BOG Tool.app"`（路径按实际），再**右键 BOG Tool.app → 打开**。
+
+若另一台 Mac 已通过 USB-C 目标磁盘模式挂载到本机，可直接拷贝到其「应用程序」：
+
+```bash
+./deploy_to_other_mac.sh /Volumes/另一台Mac的卷名
+```
+
+---
+
 ## 还是无法运行时必做：拿到具体报错
 
 **在打不开的那台 Mac 上**打开「终端」，执行下面这一行（若 app 在「应用程序」里；在桌面则把路径改成 `~/Desktop/BOG\ Tool.app/Contents/MacOS/BOG\ Tool`）：

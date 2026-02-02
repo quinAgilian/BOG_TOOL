@@ -40,6 +40,7 @@
    - **只需维护一个文件**：仓库根目录的 **`VERSION`**（一行，如 `1.0.0`）。发布新版本时改这一处即可。
    - Build 号自动取当前仓库的 Git 提交数，无需手动改。
    - 若没有 `VERSION` 文件或不在 Git 仓库中构建，则回退为版本 `1.0.0`、Build `1`。
+   - **构建后**：Run Script 会改写 `BOG_TOOL/Info.plist` 的版本与 Build 号，所以 `git status` 可能显示 Info.plist 已修改。这是预期行为，可忽略或执行 `git restore BOG_TOOL/Info.plist` 丢弃该修改，无需提交。
    - 如需手动改（不推荐）：可改 `BOG_TOOL/Info.plist` 与 `project.pbxproj` 中的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`，但下次构建会被脚本再次覆盖 Info.plist。
 
 ### 3. 首次创建 main 分支（可选）
