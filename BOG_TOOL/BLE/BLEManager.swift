@@ -145,7 +145,15 @@ final class BLEManager: NSObject, ObservableObject {
         let level: LogLevel
         let line: String
     }
-    @Published var logEntries: [LogEntry] = []
+    /// 日志后台缓冲（仅内部写入）；UI 通过 displayedLogEntries 节流更新
+    private var logEntriesBacking: [LogEntry] = []
+    /// 只读访问，供产测等读取最近条目
+    var logEntries: [LogEntry] { logEntriesBacking }
+    /// 供 UI 显示的日志（按节流间隔从 backing 刷新，避免每条 append 都触发重绘）
+    @Published var displayedLogEntries: [LogEntry] = []
+    private var logDisplayThrottleCancellable: AnyCancellable?
+    /// 是否已安排「下一帧刷新」；append 时若未安排则 main.async 刷一次，避免单次点击后要等 0.1s 才看到日志
+    private var logDisplayFlushScheduled = false
     /// OTA 进度单行刷新（\r 式）：进行中只显示这一行并原地更新，内容与 OTA 弹窗关键信息一致（进度% 已用 速率 剩余）
     @Published var otaProgressLogLine: String?
     /// 是否在日志区域显示对应等级（勾选则显示）
@@ -319,6 +327,10 @@ final class BLEManager: NSObject, ObservableObject {
         centralManager = CBCentralManager(delegate: nil, queue: nil)
         centralManager.delegate = self
         loadSavedFirmwareURL()
+        // 节流刷新显示缓冲：每 0.1s 检查是否有新日志，有则更新 displayedLogEntries，避免每条 append 都触发 UI 重算
+        logDisplayThrottleCancellable = Timer.publish(every: 0.1, on: RunLoop.main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in self?.flushDisplayedLogIfNeeded() }
     }
     
     private func loadSavedFirmwareURL() {
@@ -1199,10 +1211,12 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
     
-    /// 按当前等级过滤后的日志（供 UI 显示）；仅保留最后若干条，避免条目过多时主线程重算/重绘整块日志导致卡顿、点击延迟
+    /// 显示区最大条数（节流刷新时取 backing 的 suffix）
     private static let displayedLogMaxCount = 250
-    var displayedLogEntries: [LogEntry] {
-        let filtered = logEntries.filter { entry in
+    
+    /// 节流：定时将 backing 按当前等级过滤并取最后 N 条写入 displayedLogEntries，减少 UI 重算频率；等级开关变更会在下一拍生效
+    private func flushDisplayedLogIfNeeded() {
+        let filtered = logEntriesBacking.filter { entry in
             guard !entry.line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
             switch entry.level {
             case .debug: return showLogLevelDebug
@@ -1211,13 +1225,17 @@ final class BLEManager: NSObject, ObservableObject {
             case .error: return showLogLevelError
             }
         }
-        if filtered.count <= Self.displayedLogMaxCount { return filtered }
-        return Array(filtered.suffix(Self.displayedLogMaxCount))
+        let newDisplayed = filtered.count <= Self.displayedLogMaxCount ? filtered : Array(filtered.suffix(Self.displayedLogMaxCount))
+        if newDisplayed.map(\.id) != displayedLogEntries.map(\.id) {
+            displayedLogEntries = newDisplayed
+        }
     }
     
     /// 清空日志
     func clearLog() {
-        logEntries.removeAll()
+        logEntriesBacking.removeAll()
+        displayedLogEntries = []
+        logDisplayFlushScheduled = false
         otaProgressLogLine = nil
     }
     
@@ -1245,24 +1263,37 @@ final class BLEManager: NSObject, ObservableObject {
             }
             line = "\(formattedTime()) \(tag) \(body)"
         }
-        logEntries.append(LogEntry(level: level, line: line))
+        logEntriesBacking.append(LogEntry(level: level, line: line))
         trimLogEntriesIfNeeded()
+        scheduleDisplayFlushIfNeeded()
     }
     
     /// 追加一条已格式化行（不加重算时间戳），用于保留 \r 式刷新的「最后一条」进度行到主日志
     private func appendLogRaw(_ line: String, level: LogLevel = .info) {
         guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        logEntries.append(LogEntry(level: level, line: line))
+        logEntriesBacking.append(LogEntry(level: level, line: line))
         trimLogEntriesIfNeeded()
+        scheduleDisplayFlushIfNeeded()
+    }
+    
+    /// 安排下一帧刷新显示缓冲（合并多次 append 为一次刷新，单次点击后能尽快看到日志）
+    private func scheduleDisplayFlushIfNeeded() {
+        guard !logDisplayFlushScheduled else { return }
+        logDisplayFlushScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.flushDisplayedLogIfNeeded()
+            self.logDisplayFlushScheduled = false
+        }
     }
     
     /// 日志条数超过上限时一次性裁剪，减少频繁 removeFirst 带来的 UI 更新（缓解连续产测时日志卡顿）
     private static let logEntriesTrimLimit = 300
     private func trimLogEntriesIfNeeded() {
         let limit = Self.logEntriesTrimLimit
-        if logEntries.count > limit {
-            let dropCount = min(100, logEntries.count - limit + 20)
-            logEntries.removeFirst(dropCount)
+        if logEntriesBacking.count > limit {
+            let dropCount = min(100, logEntriesBacking.count - limit + 20)
+            logEntriesBacking.removeFirst(dropCount)
         }
     }
     

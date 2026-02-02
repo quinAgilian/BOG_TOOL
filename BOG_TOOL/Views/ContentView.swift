@@ -44,30 +44,12 @@ struct ContentView: View {
     @State private var showLogArea = true
     /// 是否开启日志自动滚动到底部，默认开启
     @State private var logAutoScrollEnabled = true
-    /// 上次执行自动滚动的时刻，用于节流（避免刷屏时无法控制）
-    @State private var lastAutoScrollDate: Date = .distantPast
 
     /// 产测 OTA：在收到设备返回 OTA Status 1 后再显示弹窗，或处于完成/失败/取消/已重启等终态时显示
     private var showProductionTestOTAOverlay: Bool {
         selectedMode == .productionTest
             && ble.otaInitiatedByProductionTest
             && (ble.otaStatus1ReceivedFromDevice || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTACancelled || ble.isOTARebootDisconnected)
-    }
-
-    /// 日志区富文本（按等级着色：INFO 蓝、WARN 黄、ERROR 红，支持全选与自由拖选）
-    private var logAreaAttributedContent: AttributedString {
-        var result = AttributedString()
-        for entry in ble.displayedLogEntries {
-            var segment = AttributedString(entry.line + "\n")
-            segment.foregroundColor = LogLevelColor.color(entry.level)
-            result.append(segment)
-        }
-        if let progress = ble.otaProgressLogLine {
-            var segment = AttributedString(progress)
-            segment.foregroundColor = .blue
-            result.append(segment)
-        }
-        return result
     }
 
     var body: some View {
@@ -153,25 +135,22 @@ struct ContentView: View {
                     
                     ScrollViewReader { proxy in
                         ScrollView {
-                            // 整块富文本显示，按等级着色，支持全选（Cmd+A）和自由拖选
-                            Text(logAreaAttributedContent)
-                                .font(UIDesignSystem.Typography.monospacedCaption)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
+                            // 独立子 View + Equatable：仅当 displayedLogEntries/otaProgressLogLine 变化时重算，避免 Debug 下 BLE 其他 @Published 更新触发整块 250 条 AttributedString 重建导致卡顿
+                            LogContentTextView(entries: ble.displayedLogEntries, progressLine: ble.otaProgressLogLine)
+                                .equatable()
                                 .padding(UIDesignSystem.Padding.sm)
-                                .id("logContent")
                         }
-                        .onChange(of: ble.logEntries.count, perform: { _ in
+                        .onChange(of: ble.displayedLogEntries.count, perform: { _ in
                             guard logAutoScrollEnabled else { return }
-                            let now = Date()
-                            if now.timeIntervalSince(lastAutoScrollDate) >= 0.4 {
-                                proxy.scrollTo("logContent", anchor: .bottom)
-                                lastAutoScrollDate = now
+                            DispatchQueue.main.async {
+                                proxy.scrollTo(LogContentTextView.logBottomId, anchor: .bottom)
                             }
                         })
                         .onChange(of: ble.otaProgressLogLine) { _ in
                             guard logAutoScrollEnabled else { return }
-                            proxy.scrollTo("logContent", anchor: .bottom)
+                            DispatchQueue.main.async {
+                                proxy.scrollTo(LogContentTextView.logBottomId, anchor: .bottom)
+                            }
                         }
                     }
                     .background(UIDesignSystem.Background.text)
@@ -280,6 +259,37 @@ private struct DeviceInfoStrip: View {
                 .foregroundStyle(UIDesignSystem.Foreground.secondary)
             Text(value)
         }
+    }
+}
+
+/// 日志正文：按行 ForEach 渲染，新日志只追加一行、不整块重算；Equatable 避免 BLE 其他 @Published 触发本 View 重算
+private struct LogContentTextView: View, Equatable {
+    let entries: [BLEManager.LogEntry]
+    let progressLine: String?
+
+    static func == (l: LogContentTextView, r: LogContentTextView) -> Bool {
+        l.entries.map(\.id) == r.entries.map(\.id) && l.progressLine == r.progressLine
+    }
+
+    /// 最后一行用固定 id，便于 ScrollViewReader 滚到底部
+    static let logBottomId = "logBottom"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(entries) { entry in
+                Text(entry.line)
+                    .foregroundStyle(LogLevelColor.color(entry.level))
+            }
+            if let progress = progressLine {
+                Text(progress)
+                    .foregroundStyle(.blue)
+            }
+            Color.clear.frame(height: 0)
+                .id(Self.logBottomId)
+        }
+        .font(UIDesignSystem.Typography.monospacedCaption)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
     }
 }
 
