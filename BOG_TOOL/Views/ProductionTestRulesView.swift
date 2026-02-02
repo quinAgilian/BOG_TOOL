@@ -75,7 +75,7 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.object(forKey: "production_test_reconnect_timeout") as? Double ?? 5.0
     }()
     @State private var valveOpenTimeout: Double = {
-        UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 3.0
+        UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 5.0
     }()
     /// 每个测试步骤之间的等待时间（SOP 定义，单位 ms）
     @State private var stepIntervalMs: Int = {
@@ -88,17 +88,26 @@ struct ProductionTestRulesView: View {
     
     // 压力阈值配置（单位：mbar）
     @State private var pressureClosedMin: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1.300
+        UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1100
+    }()
+    @State private var pressureClosedMax: Double = {
+        UserDefaults.standard.object(forKey: "production_test_pressure_closed_max") as? Double ?? 1350
     }()
     @State private var pressureOpenMin: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1.1
+        UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1300
+    }()
+    @State private var pressureOpenMax: Double = {
+        UserDefaults.standard.object(forKey: "production_test_pressure_open_max") as? Double ?? 1500
     }()
     // 压力差值检查配置
     @State private var pressureDiffCheckEnabled: Bool = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? false
+        UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? true
     }()
-    @State private var pressureDiffThreshold: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_diff_threshold") as? Double ?? 0.1
+    @State private var pressureDiffMin: Double = {
+        UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 30
+    }()
+    @State private var pressureDiffMax: Double = {
+        UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400
     }()
     
     // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「确保电磁阀开启」等可调顺序步骤
@@ -817,10 +826,22 @@ struct ProductionTestRulesView: View {
                     key: "production_test_pressure_closed_min"
                 )
                 thresholdRow(
+                    label: appLanguage.string("production_test_rules.pressure_closed_max"),
+                    value: $pressureClosedMax,
+                    unit: appLanguage.string("production_test_rules.unit_mbar"),
+                    key: "production_test_pressure_closed_max"
+                )
+                thresholdRow(
                     label: appLanguage.string("production_test_rules.pressure_open_min"),
                     value: $pressureOpenMin,
                     unit: appLanguage.string("production_test_rules.unit_mbar"),
                     key: "production_test_pressure_open_min"
+                )
+                thresholdRow(
+                    label: appLanguage.string("production_test_rules.pressure_open_max"),
+                    value: $pressureOpenMax,
+                    unit: appLanguage.string("production_test_rules.unit_mbar"),
+                    key: "production_test_pressure_open_max"
                 )
                 
                 Divider()
@@ -845,12 +866,19 @@ struct ProductionTestRulesView: View {
                 
                 if pressureDiffCheckEnabled {
                     thresholdRow(
-                        label: appLanguage.string("production_test_rules.pressure_diff_threshold"),
-                        value: $pressureDiffThreshold,
+                        label: appLanguage.string("production_test_rules.pressure_diff_min"),
+                        value: $pressureDiffMin,
                         unit: appLanguage.string("production_test_rules.unit_mbar"),
-                        key: "production_test_pressure_diff_threshold"
+                        key: "production_test_pressure_diff_min"
                     )
-                    .padding(.leading, 32) // 缩进以显示层级关系
+                    .padding(.leading, 32)
+                    thresholdRow(
+                        label: appLanguage.string("production_test_rules.pressure_diff_max"),
+                        value: $pressureDiffMax,
+                        unit: appLanguage.string("production_test_rules.unit_mbar"),
+                        key: "production_test_pressure_diff_max"
+                    )
+                    .padding(.leading, 32)
                 }
                 
                 Divider()

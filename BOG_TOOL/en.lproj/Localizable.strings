@@ -145,6 +145,7 @@
 "production_test.execution_log" = "Execution Log";
 "production_test.connected" = "Device Connected";
 "production_test.disconnected" = "Disconnected";
+"production_test.disconnected_after_ota" = "Disconnected (OTA reboot)";
 "production_test.sn_invalid" = "SN Invalid";
 "production_test_rules.summary" = "Test Rules Summary";
 "production_test.test_result_summary" = "Test Result Summary";
@@ -219,9 +220,12 @@
 "production_test_rules.unit_seconds" = "seconds";
 "production_test_rules.pressure_thresholds" = "Pressure Thresholds";
 "production_test_rules.pressure_closed_min" = "Closed State Min";
+"production_test_rules.pressure_closed_max" = "Closed State Max";
 "production_test_rules.pressure_open_min" = "Open State Min";
+"production_test_rules.pressure_open_max" = "Open State Max";
 "production_test_rules.pressure_diff_check" = "Enable Pressure Difference Check";
-"production_test_rules.pressure_diff_threshold" = "Pressure Difference Threshold";
+"production_test_rules.pressure_diff_min" = "Difference Min";
+"production_test_rules.pressure_diff_max" = "Difference Max";
 "production_test_rules.unit_mbar" = "mbar";
 
 /* OTA */
@@ -246,6 +250,7 @@
 "ota.cancel" = "Cancel OTA";
 "ota.reboot" = "Reboot";
 "ota.reboot_countdown" = "Reboot (%d)";
+"ota.rebooting" = "Rebooting...";
 "ota.auto_reboot_after_ota" = "Auto send reboot after OTA completes";
 "ota.progress" = "Progress";
 "ota.ready" = "Ready";
@@ -261,7 +266,7 @@
 "ota.close" = "Close";
 "ota.exclusive_title_reboot" = "OTA Completed, Waiting for Reboot";
 "ota.reboot_disconnected" = "Device rebooted and disconnected";
-"ota.reboot_disconnected_hint" = "Please reconnect to verify firmware version";
+"ota.reboot_disconnected_hint" = "Device rebooted and disconnected";
 "ota.title_reboot_disconnected" = "OTA (Device rebooted)";
 "ota.target_from_production_rules" = "Target firmware from production test rules: %@";
 "ota.packet_size" = "Packet size";
@@ -276,6 +281,10 @@
 "production_test.bluetooth_permission_confirm_title" = "Bluetooth permission / pairing";
 "production_test.bluetooth_permission_confirm_message" = "If a system dialog appeared, please click Allow. When done, click Continue or press Enter to proceed with the test.";
 "production_test.bluetooth_permission_continue" = "Continue";
+"production_test.result_overlay_title_pass" = "Test Passed";
+"production_test.result_overlay_title_fail" = "Test Failed";
+"production_test.result_overlay_dismiss" = "Close";
+"production_test.result_criteria_fw" = "Firmware (match or OTA success)";
 
 /* Menu */
 "menu.floating" = "Floating";

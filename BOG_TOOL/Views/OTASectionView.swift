@@ -324,9 +324,14 @@ struct OTASectionView: View {
                         Text(appLanguage.string("ota.close"))
                             .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
                     } else if ble.isOTACompletedWaitingReboot {
-                        // 显示重启按钮与倒计时（超时后自动执行）
-                        Text(String(format: appLanguage.string("ota.reboot_countdown"), rebootCountdownRemaining))
-                            .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
+                        // 产测弹窗：已自动发 reboot，仅显示「正在重启...」；Debug 显示倒计时
+                        if isProductionTestOTA {
+                            Text(appLanguage.string("ota.rebooting"))
+                                .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
+                        } else {
+                            Text(String(format: appLanguage.string("ota.reboot_countdown"), rebootCountdownRemaining))
+                                .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
+                        }
                     } else {
                         Text(ble.isOTAInProgress ? appLanguage.string("ota.cancel") : appLanguage.string("ota.start"))
                             .frame(minWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth, maxWidth: isModal ? UIDesignSystem.Component.largeButtonWidth : UIDesignSystem.Component.actionButtonWidth)
@@ -336,10 +341,13 @@ struct OTASectionView: View {
                 .controlSize(isModal ? .large : .regular)
                 .disabled(
                     // reboot 断开、失败或取消时允许点击 Close 按钮（即使设备已断开）
+                    // 产测弹窗下「等待重启」时按钮仅显示「正在重启...」不响应点击
                     // 其他情况：需要连接且满足 OTA 条件
-                    (ble.isOTARebootDisconnected || ble.isOTAFailed || ble.isOTACancelled) 
-                        ? false 
-                        : (!ble.isConnected || (!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
+                    (ble.isOTARebootDisconnected || ble.isOTAFailed || ble.isOTACancelled)
+                        ? false
+                        : (isProductionTestOTA && ble.isOTACompletedWaitingReboot)
+                            ? true
+                            : (!ble.isConnected || (!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
                 )
             }
             
@@ -366,7 +374,7 @@ struct OTASectionView: View {
             }
         }
         .task(id: ble.isOTACompletedWaitingReboot) {
-            guard ble.isOTACompletedWaitingReboot else { return }
+            guard ble.isOTACompletedWaitingReboot, !isProductionTestOTA else { return }
             for i in (1...Self.rebootCountdownSeconds).reversed() {
                 guard ble.isOTACompletedWaitingReboot else { return }
                 rebootCountdownRemaining = i

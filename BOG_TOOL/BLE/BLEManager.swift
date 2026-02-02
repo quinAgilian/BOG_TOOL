@@ -92,6 +92,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var isOTAInProgress: Bool = false
     /// 当前 OTA 是否由产测触发（用于 Debug 区不随动、仅产测界面管理）
     @Published var otaInitiatedByProductionTest: Bool = false
+    /// 产测 OTA 下是否已收到设备返回的 OTA Status 1（用于弹窗在「OTA Status: 1」后再显示）
+    @Published var otaStatus1ReceivedFromDevice: Bool = false
     /// OTA 是否在等待设备校验（进度100%但等待Status=3/4）
     @Published var isOTAWaitingValidation: Bool = false
     /// OTA 是否已完成并等待用户确认重启（Status=3确认后，等待用户点击 Reboot 按钮）
@@ -229,7 +231,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// 实际测量：平均 BLE 响应时间约 42.2ms，但测试发现 5ms 延时反而变慢（3分54秒 vs 3分21秒）
     /// 说明设备需要足够的缓冲时间来处理数据，10ms 是最优值
     /// 如果包间延时太小，可能导致设备处理不过来、重传或协议栈问题
-    private static let otaChunkDelayNs: UInt64 = 5_000_000 // 10 ms（实际测试最优值，5ms 反而变慢）
+    private static let otaChunkDelayNs: UInt64 = 10_000_000 // 10 ms（实际测试最优值，5ms 反而变慢）
     /// 启动前发送 abort 后等待设备状态恢复为 0 的超时时间（秒）
     private static let otaAbortWaitTimeoutSeconds: TimeInterval = 5.0
     /// OTA 专用高优先级队列：用于 OTA 数据传输的延时和状态检查，提高 CPU 调度优先级
@@ -573,6 +575,9 @@ final class BLEManager: NSObject, ObservableObject {
         let yearByte = UInt8(Swift.max(0, Swift.min(255, year - 2000)))
         let data = Data([sec, minute, hour, day, weekday, month, yearByte])
         let hexString = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        let rtcWriteFormatter = DateFormatter()
+        rtcWriteFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        appendLog("RTC 写入: \(rtcWriteFormatter.string(from: now))", level: .info)
         writeRTCTrigger(hexString: hexString)
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
@@ -604,8 +609,7 @@ final class BLEManager: NSObject, ObservableObject {
         rebootSentTime = Date()
         
         writeOtaStatus(3)
-        appendLog("[OTA] 已发送 reboot，设备正在重启...")
-        appendLog("[OTA] 设备重启后将断开连接，这是正常现象")
+        appendLog("[OTA] 已发送 reboot，设备将重启并断开连接（正常现象）")
         
         // 启动超时检测任务
         scheduleRebootDisconnectTimeout()
@@ -635,6 +639,7 @@ final class BLEManager: NSObject, ObservableObject {
     func clearOTAStatus() {
         otaFlowState = .idle
         otaInitiatedByProductionTest = false
+        otaStatus1ReceivedFromDevice = false
         isOTAFailed = false
         isOTACancelled = false
         isOTAWaitingValidation = false
@@ -838,7 +843,7 @@ final class BLEManager: NSObject, ObservableObject {
         otaProgress = 0
         otaProgressLogLine = nil
         otaCompletedDuration = nil
-        otaStartTime = Date()
+        otaStartTime = nil  // 在收到设备 status=1 后再开始计时，启动数据包传输之前的时间不计入
         otaFirmwareTotalBytes = data.count
         otaChunkWriteStartTime = nil
         otaChunkRttSum = 0
@@ -1097,8 +1102,11 @@ final class BLEManager: NSObject, ObservableObject {
                     abortOtaAndCleanup(reason: "OTA 标记未设置")
                     return
                 }
-                // 设备已确认 Status=1，可以开始发送数据包
-                otaProgressLogLine = buildOtaProgressLogLine(progress: 0, startTime: otaStartTime ?? Date(), totalBytes: otaFirmwareTotalBytes)
+                // 设备已确认 Status=1，从此时开始计时（启动数据包传输之前的时间不计入）
+                if otaStartTime == nil {
+                    otaStartTime = Date()
+                }
+                otaProgressLogLine = buildOtaProgressLogLine(progress: 0, startTime: otaStartTime!, totalBytes: otaFirmwareTotalBytes)
                 otaFlowState = .sendingChunks(chunks: chunks, nextChunkIndex: 0)
                 writeNextOtaChunkIfNeeded()
             } else if value == 2 {
@@ -1142,11 +1150,13 @@ final class BLEManager: NSObject, ObservableObject {
                     otaCompletedDuration = Date().timeIntervalSince(start)
                 }
                 isOTAInProgress = false
-                // 等待用户手动点击 Reboot 按钮确认重启
                 isOTACompletedWaitingReboot = true
-                appendLog("[OTA] 校验完成，等待用户确认重启")
-                // 播放声音提醒用户需要操作
-                playRebootCountdownSound()
+                if otaInitiatedByProductionTest {
+                    appendLog("[OTA] 校验完成")
+                } else {
+                    appendLog("[OTA] 校验完成，等待用户确认重启")
+                    playRebootCountdownSound()
+                }
             case 4:
                 appendLog("[OTA] 设备校验失败 (image fail)", level: .error)
                 // 输出诊断信息帮助排查问题
@@ -1214,14 +1224,23 @@ final class BLEManager: NSObject, ObservableObject {
             line = "\(formattedTime()) \(tag) \(body)"
         }
         logEntries.append(LogEntry(level: level, line: line))
-        if logEntries.count > 500 { logEntries.removeFirst() }
+        trimLogEntriesIfNeeded()
     }
     
     /// 追加一条已格式化行（不加重算时间戳），用于保留 \r 式刷新的「最后一条」进度行到主日志
     private func appendLogRaw(_ line: String, level: LogLevel = .info) {
         guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         logEntries.append(LogEntry(level: level, line: line))
-        if logEntries.count > 500 { logEntries.removeFirst() }
+        trimLogEntriesIfNeeded()
+    }
+    
+    /// 日志条数超过上限时一次性裁剪，减少频繁 removeFirst 带来的 UI 更新（缓解连续产测时日志卡顿）
+    private func trimLogEntriesIfNeeded() {
+        let limit = 500
+        if logEntries.count > limit {
+            let dropCount = min(150, logEntries.count - limit + 50)
+            logEntries.removeFirst(dropCount)
+        }
     }
     
     private func formattedTime() -> String {
@@ -1491,13 +1510,18 @@ extension BLEManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
             let wasOTAInProgress = isOTAInProgress
+            let wasExpectingReboot = isExpectingDisconnectFromReboot
             if let err = error {
-                appendLog("已断开: \(err.localizedDescription)")
-                if BLEManager.isPairingRemovedError(err) {
-                    errorMessageKey = "error.pairing_removed_hint"
-                    BLEManager.openBluetoothSettings()
+                if wasExpectingReboot {
+                    appendLog("已断开（设备重启导致，属正常现象）")
+                } else {
+                    appendLog("已断开: \(err.localizedDescription)")
+                    if BLEManager.isPairingRemovedError(err) {
+                        errorMessageKey = "error.pairing_removed_hint"
+                        BLEManager.openBluetoothSettings()
+                    }
+                    errorMessage = err.localizedDescription
                 }
-                errorMessage = err.localizedDescription
             } else {
                 appendLog("已断开")
                 // 若为加密不足主动断开，保留错误提示供用户看到「必须同意后手动再次连接」
@@ -1506,7 +1530,7 @@ extension BLEManager: CBCentralManagerDelegate {
                     errorMessageKey = nil
                 }
             }
-            if wasOTAInProgress {
+            if wasOTAInProgress && !wasExpectingReboot {
                 appendLog("[OTA] 连接断开，OTA 已中断", level: .warning)
             }
             connectedPeripheral = nil
@@ -1539,11 +1563,11 @@ extension BLEManager: CBCentralManagerDelegate {
             deviceHardwareRevision = nil
             // 断开连接时，检查是否是因为 reboot 导致的正常断开
             if isExpectingDisconnectFromReboot {
-                // 这是正常的 reboot 断开
-                let elapsed = rebootSentTime.map { Date().timeIntervalSince($0) } ?? 0
-                appendLog("[OTA] 设备已重启并断开连接（正常现象，耗时 \(String(format: "%.1f", elapsed))s）")
-                appendLog("[OTA] 请重新连接设备以验证固件版本")
-                
+                let wasProductionTest = otaInitiatedByProductionTest
+                if !wasProductionTest {
+                    let elapsed = rebootSentTime.map { Date().timeIntervalSince($0) } ?? 0
+                    appendLog("[OTA] 设备已重启并断开连接（正常现象，耗时 \(String(format: "%.1f", elapsed))s）")
+                }
                 // 标记为 reboot 断开，用于 UI 显示友好提示
                 isOTARebootDisconnected = true
                 isOTAFailed = false
@@ -1775,6 +1799,9 @@ extension BLEManager: CBPeripheralDelegate {
                 lastOtaStatusValue = b
                 // 即使 OTA 进行中也打印日志，方便调试
                 appendLog("OTA Status: \(b)")
+                if b == 1 && otaInitiatedByProductionTest {
+                    otaStatus1ReceivedFromDevice = true
+                }
                 handleOtaStatusPollResult(b)
             } else if let u = valveControlCBUUID, characteristic.uuid == u, let b = data.first {
                 lastValveModeValue = formatValveModeData(b)
@@ -1794,7 +1821,7 @@ extension BLEManager: CBPeripheralDelegate {
                     }
                     pendingValveSetOpen = nil
                 }
-            } else if characteristic.uuid == BLEManager.charManufacturerUUID || characteristic.uuid == BLEManager.charModelUUID || characteristic.uuid == BLEManager.charSerialUUID || characteristic.uuid == BLEManager.charFirmwareUUID || characteristic.uuid == BLEManager.charHardwareUUID {
+            } else if characteristic.uuid == BLEManager.charManufacturerUUID || characteristic.uuid == BLEManager.charModelUUID || characteristic.uuid == BLEManager.charSerialUUID || characteristic.uuid == BLEManager.charFirmwareUUID || characteristic.uuid == BLEManager.charHardwareUUID || BLEManager.isHardwareRevisionCharacteristic(characteristic.uuid) {
                 // Device Information 特征：静默读取，不打印日志
                 if let str = stringFromDeviceInfoData(data), !str.isEmpty {
                     // 成功解析为字符串
@@ -1809,7 +1836,7 @@ extension BLEManager: CBPeripheralDelegate {
                         let versions = extractFirmwareVersions(from: str)
                         bootloaderVersion = versions.bootloader
                         currentFirmwareVersion = versions.firmware
-                    } else if characteristic.uuid == BLEManager.charHardwareUUID {
+                    } else if characteristic.uuid == BLEManager.charHardwareUUID || BLEManager.isHardwareRevisionCharacteristic(characteristic.uuid) {
                         deviceHardwareRevision = str
                     }
                 }
@@ -1931,6 +1958,12 @@ extension BLEManager: CBPeripheralDelegate {
         case 2: return "closed"
         default: return "undefined"
         }
+    }
+    
+    /// 判断是否为 GATT 硬件版本特征 2A27（兼容短格式与完整格式 UUID）
+    @MainActor private static func isHardwareRevisionCharacteristic(_ uuid: CBUUID) -> Bool {
+        let normalized = uuid.uuidString.uppercased().replacingOccurrences(of: "-", with: "")
+        return normalized.hasSuffix("2A27") || normalized == "2A27"
     }
     
     /// Device Information 特征值为 UTF-8 字符串

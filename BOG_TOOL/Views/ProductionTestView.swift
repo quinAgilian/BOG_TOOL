@@ -77,6 +77,10 @@ struct ProductionTestView: View {
     /// 连接后蓝牙权限/配对确认弹窗：显示时产测暂停，用户点击「继续」或回车后继续
     @State private var showBluetoothPermissionConfirmation = false
     @State private var bluetoothPermissionContinuation: (() -> Void)? = nil
+    /// 产测结束后是否显示结果 overlay（绿/红弹窗报表）
+    @State private var showResultOverlay = false
+    /// 最近一次产测结束时间（用于 overlay 报表显示）
+    @State private var lastTestEndTime: Date?
     
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
@@ -144,8 +148,8 @@ struct ProductionTestView: View {
                 .shadow(color: .blue.opacity(0.3), radius: 4, x: 0, y: 2)
             }
             
-            // 产测独立 OTA 区域：显示数据包大小、时间统计、速率等；升级过程中可点击「取消升级」
-            if ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTACancelled {
+            // 产测 OTA 由主窗口 overlay 接管时不再在此处显示 inline 区域（避免重复）
+            if (ble.isOTAInProgress || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTACancelled || ble.isOTARebootDisconnected) && !ble.otaInitiatedByProductionTest {
                 productionTestOTAArea
             }
             
@@ -255,6 +259,17 @@ struct ProductionTestView: View {
                 }
             )
             .environmentObject(appLanguage)
+        }
+        .overlay {
+            if showResultOverlay {
+                ProductionTestResultOverlay(
+                    passed: overallTestPassed,
+                    criteria: overallTestCriteria,
+                    timeString: productionTestEndTimeString,
+                    onDismiss: { showResultOverlay = false }
+                )
+                .environmentObject(appLanguage)
+            }
         }
     }
     
@@ -617,6 +632,63 @@ struct ProductionTestView: View {
         )
     }
     
+    // MARK: - 整体通过判定（连接、RTC、固件一致或 OTA 成功、压力、电磁阀）
+    
+    /// 产测整体是否通过：连接成功、RTC 成功、固件一致或 FW 不一致但 OTA 成功、压力通过、电磁阀打开，全部满足才为通过
+    private var overallTestPassed: Bool {
+        let enabled = currentTestSteps.filter { $0.enabled }
+        guard !enabled.isEmpty else { return false }
+        let connectOk = !enabled.contains(where: { $0.id == TestStep.connectDevice.id }) || stepStatuses[TestStep.connectDevice.id] == .passed
+        let rtcOk = !enabled.contains(where: { $0.id == TestStep.readRTC.id }) || stepStatuses[TestStep.readRTC.id] == .passed
+        let fwStepEnabled = enabled.contains(where: { $0.id == TestStep.verifyFirmware.id })
+        let otaStepEnabled = enabled.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id })
+        let fwOk: Bool
+        if !fwStepEnabled {
+            fwOk = true
+        } else if stepStatuses[TestStep.verifyFirmware.id] == .passed {
+            fwOk = true
+        } else if otaStepEnabled, stepStatuses[TestStep.otaBeforeDisconnect.id] == .passed {
+            fwOk = true // FW 不一致但 OTA 成功
+        } else {
+            fwOk = false
+        }
+        let pressureOk = !enabled.contains(where: { $0.id == TestStep.readPressure.id }) || stepStatuses[TestStep.readPressure.id] == .passed
+        let valveOk = !enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) || stepStatuses[TestStep.ensureValveOpen.id] == .passed
+        return connectOk && rtcOk && fwOk && pressureOk && valveOk
+    }
+    
+    /// 用于 overlay 报表的判定项列表：(名称, 是否通过)
+    private var overallTestCriteria: [(name: String, ok: Bool)] {
+        let enabled = currentTestSteps.filter { $0.enabled }
+        var list: [(String, Bool)] = []
+        if enabled.contains(where: { $0.id == TestStep.connectDevice.id }) {
+            list.append((appLanguage.string("production_test_rules.step1_title"), stepStatuses[TestStep.connectDevice.id] == .passed))
+        }
+        if enabled.contains(where: { $0.id == TestStep.readRTC.id }) {
+            list.append((appLanguage.string("production_test_rules.step3_title"), stepStatuses[TestStep.readRTC.id] == .passed))
+        }
+        if enabled.contains(where: { $0.id == TestStep.verifyFirmware.id }) {
+            let fwPass = stepStatuses[TestStep.verifyFirmware.id] == .passed
+            let otaPass = enabled.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) && stepStatuses[TestStep.otaBeforeDisconnect.id] == .passed
+            list.append((appLanguage.string("production_test.result_criteria_fw"), fwPass || otaPass))
+        }
+        if enabled.contains(where: { $0.id == TestStep.readPressure.id }) {
+            list.append((appLanguage.string("production_test_rules.step4_title"), stepStatuses[TestStep.readPressure.id] == .passed))
+        }
+        if enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
+            list.append((appLanguage.string("production_test_rules.step_valve_title"), stepStatuses[TestStep.ensureValveOpen.id] == .passed))
+        }
+        return list
+    }
+    
+    /// 产测结束时间字符串（用于 overlay 报表）
+    private var productionTestEndTimeString: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_POSIX")
+        return formatter.string(from: lastTestEndTime ?? Date())
+    }
+    
     /// 更新测试结果状态
     private func updateTestResultStatus() {
         guard !isRunning else {
@@ -857,11 +929,14 @@ struct ProductionTestView: View {
             deviceInfoReadTimeout: UserDefaults.standard.object(forKey: "production_test_device_info_timeout") as? Double ?? 3.0,
             otaStartWaitTimeout: UserDefaults.standard.object(forKey: "production_test_ota_start_timeout") as? Double ?? 5.0,
             deviceReconnectTimeout: UserDefaults.standard.object(forKey: "production_test_reconnect_timeout") as? Double ?? 5.0,
-            valveOpenTimeout: UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 3.0,
-            pressureClosedMin: UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1.300,
-            pressureOpenMin: UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1.1,
-            pressureDiffCheckEnabled: UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? false,
-            pressureDiffThreshold: UserDefaults.standard.object(forKey: "production_test_pressure_diff_threshold") as? Double ?? 0.1,
+            valveOpenTimeout: UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 5.0,
+            pressureClosedMin: UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1100,
+            pressureClosedMax: UserDefaults.standard.object(forKey: "production_test_pressure_closed_max") as? Double ?? 1350,
+            pressureOpenMin: UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1300,
+            pressureOpenMax: UserDefaults.standard.object(forKey: "production_test_pressure_open_max") as? Double ?? 1500,
+            pressureDiffCheckEnabled: UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? true,
+            pressureDiffMin: UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 30,
+            pressureDiffMax: UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400,
             firmwareUpgradeEnabled: UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? true
         )
         
@@ -881,10 +956,13 @@ struct ProductionTestView: View {
         let otaStartWaitTimeout: Double       // OTA启动等待超时（秒）
         let deviceReconnectTimeout: Double    // 设备重新连接超时（秒）
         let valveOpenTimeout: Double          // 阀门打开超时（秒）
-        let pressureClosedMin: Double        // 关闭状态压力最小值（mbar）
-        let pressureOpenMin: Double          // 开启状态压力最小值（mbar）
+        let pressureClosedMin: Double        // 关闭状态压力下限（mbar）
+        let pressureClosedMax: Double        // 关闭状态压力上限（mbar）
+        let pressureOpenMin: Double          // 开启状态压力下限（mbar）
+        let pressureOpenMax: Double          // 开启状态压力上限（mbar）
         let pressureDiffCheckEnabled: Bool   // 是否启用压力差值检查
-        let pressureDiffThreshold: Double    // 压力差值阈值（mbar）
+        let pressureDiffMin: Double          // 压力差值下限（mbar）
+        let pressureDiffMax: Double          // 压力差值上限（mbar）
         let firmwareUpgradeEnabled: Bool     // 是否启用固件版本升级
     }
     
@@ -952,51 +1030,48 @@ struct ProductionTestView: View {
         return 0
     }
     
-    /// 确保阀门打开 - 复用debug mode的逻辑，使用BLEManager方法
+    /// 确保电磁阀处于 OPEN 状态：先读取状态，已开启则直接通过；否则发送开启命令后等待，超时 5s（可配置）。
     private func ensureValveOpen() async -> Bool {
-        // 加载阈值配置
         let rules = loadTestRules()
         let valveTimeout = rules.thresholds.valveOpenTimeout
         
-        // 先读取当前阀门状态（复用debug mode的方法）
+        // 先读取当前阀门状态
         ble.readValveState()
         try? await Task.sleep(nanoseconds: 500_000_000)
         
-        // 如果已经是打开状态，直接返回
+        // 如果已经是打开状态，直接通过
         if ble.lastValveStateValue == "open" {
+            self.log("阀门已为开启状态，直接通过", level: .info)
             return true
         }
         
+        // 否则发送开启命令，然后等待状态变为 open
         self.log("确保阀门打开...", level: .info)
-        
-        // 使用BLEManager的setValve方法（与debug mode一致）
         ble.setValve(open: true)
         
-        // 等待并验证，使用配置的超时时间
         let targetState = "open"
         let startTime = Date()
         var checkCount = 0
-        let maxChecks = Int(valveTimeout * 10) // 每0.1秒检查一次
+        let maxChecks = Int(valveTimeout * 10) // 每 0.1 秒检查一次
         
         while checkCount < maxChecks {
-            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1秒
+            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 秒
             checkCount += 1
+            ble.readValveState() // 每次循环重新读取状态
+            try? await Task.sleep(nanoseconds: 50_000_000)  // 给读回包一点时间
             
-                // 检查是否达到目标状态
-                if ble.lastValveStateValue == targetState {
-                    self.log("阀门已打开", level: .info)
-                    return true
-                }
-                
-                // 检查超时
-                if Date().timeIntervalSince(startTime) >= valveTimeout {
-                    self.log("警告：阀门打开失败（超时，\(Int(valveTimeout))秒）", level: .warning)
-                    return false
-                }
+            if ble.lastValveStateValue == targetState {
+                self.log("阀门已打开", level: .info)
+                return true
             }
-            
-            self.log("警告：阀门打开失败（超时，\(Int(valveTimeout))秒）", level: .warning)
-            return false
+            if Date().timeIntervalSince(startTime) >= valveTimeout {
+                self.log("警告：阀门打开失败（超时，\(Int(valveTimeout))秒）", level: .warning)
+                return false
+            }
+        }
+        
+        self.log("警告：阀门打开失败（超时，\(Int(valveTimeout))秒）", level: .warning)
+        return false
     }
     
     private func runProductionTest() {
@@ -1014,6 +1089,8 @@ struct ProductionTestView: View {
         
         // 如果未连接，先连接设备
         if !ble.isConnected {
+            showResultOverlay = false
+            ble.clearLog()
             isRunning = true
             testLog.removeAll()
             stepIndex = 0
@@ -1048,6 +1125,8 @@ struct ProductionTestView: View {
             }
         } else {
             // 已连接，直接执行产测流程
+            showResultOverlay = false
+            ble.clearLog()
             isRunning = true
             testLog.removeAll()
             stepIndex = 0
@@ -1084,7 +1163,7 @@ struct ProductionTestView: View {
         }
         self.log("超时: 设备信息=\(t.deviceInfoReadTimeout)s, OTA启动=\(t.otaStartWaitTimeout)s, 重连=\(t.deviceReconnectTimeout)s, RTC读取=\(t.rtcReadTimeout)s, 阀门=\(t.valveOpenTimeout)s", level: .info)
         self.log("RTC: 通过阈值=\(t.rtcPassThreshold)s, 失败阈值=\(t.rtcFailThreshold)s, 写入=\(t.rtcWriteEnabled), 重试=\(t.rtcWriteRetryCount)次", level: .info)
-        self.log("压力: 关阀最小值=\(t.pressureClosedMin) mbar, 开阀最小值=\(t.pressureOpenMin) mbar, 差值检查=\(t.pressureDiffCheckEnabled), 差值阈值=\(t.pressureDiffThreshold) mbar", level: .info)
+        self.log("压力: 关阀 \(t.pressureClosedMin)~\(t.pressureClosedMax) mbar, 开阀 \(t.pressureOpenMin)~\(t.pressureOpenMax) mbar, 差值检查=\(t.pressureDiffCheckEnabled), 差值 \(t.pressureDiffMin)~\(t.pressureDiffMax) mbar", level: .info)
         self.log("固件升级(步骤2): \(t.firmwareUpgradeEnabled ? "启用" : "禁用")", level: .info)
         self.log("———————————————", level: .info)
         
@@ -1141,12 +1220,12 @@ struct ProductionTestView: View {
                 case "step2": // 确认固件版本
                     self.log("步骤2: 确认固件版本", level: .info)
                     
-                    // 等待设备信息读取完成（使用配置的超时时间）
-                    self.log("等待读取设备信息（SN、FW版本）...", level: .info)
+                    // 等待设备信息读取完成（SN、FW、HW 均等待，使用配置的超时时间）
+                    self.log("等待读取设备信息（SN、FW、HW 版本）...", level: .info)
                     let timeoutSeconds = rules.thresholds.deviceInfoReadTimeout
                     let maxWaitCount = Int(timeoutSeconds * 10) // 每0.1秒检查一次
                     var waitCount = 0
-                    while (ble.deviceSerialNumber == nil || ble.currentFirmwareVersion == nil) && waitCount < maxWaitCount {
+                    while (ble.deviceSerialNumber == nil || ble.currentFirmwareVersion == nil || ble.deviceHardwareRevision == nil) && waitCount < maxWaitCount {
                         try? await Task.sleep(nanoseconds: 100_000_000)
                         waitCount += 1
                         // 每2秒输出一次等待状态
@@ -1228,8 +1307,9 @@ struct ProductionTestView: View {
                             resultMessages.append("HW: \(hwVersion) ⚠️")
                         }
                     } else {
-                        self.log("警告：无法读取 HW 版本", level: .warning)
-                        resultMessages.append("HW: ⚠️")
+                        // HW 为可选：设备若未实现 GATT 2A27（Hardware Revision String）则无法读取，属正常
+                        self.log("HW 版本未提供（设备可能未实现 2A27 特征）", level: .info)
+                        resultMessages.append("HW: −")
                     }
                     
                     stepResults[step.id] = resultMessages.joined(separator: "\n")
@@ -1371,7 +1451,9 @@ struct ProductionTestView: View {
                     self.log("步骤4: 读取压力值", level: .info)
                     
                     let pressureClosedMin = rules.thresholds.pressureClosedMin
+                    let pressureClosedMax = rules.thresholds.pressureClosedMax
                     let pressureOpenMin = rules.thresholds.pressureOpenMin
+                    let pressureOpenMax = rules.thresholds.pressureOpenMax
                     
                     // 读取关闭状态压力（复用debug mode的readPressure方法）
                     self.log("读取关闭状态压力...", level: .info)
@@ -1428,11 +1510,11 @@ struct ProductionTestView: View {
                     
                     if let closedBar = closedPressureValue {
                         let closedMbar = closedBar * 1000.0
-                        if closedMbar >= pressureClosedMin {
-                            self.log("✓ 关闭压力验证通过: \(closedMbar) mbar（≥ \(pressureClosedMin) mbar）", level: .info)
+                        if closedMbar >= pressureClosedMin && closedMbar <= pressureClosedMax {
+                            self.log("✓ 关闭压力验证通过: \(closedMbar) mbar（\(pressureClosedMin)~\(pressureClosedMax) mbar）", level: .info)
                             pressureMessages.append("关闭: \(closedPressureStr) ✓")
                         } else {
-                            self.log("✗ 关闭压力验证失败: \(closedMbar) mbar（< \(pressureClosedMin) mbar）", level: .error)
+                            self.log("✗ 关闭压力验证失败: \(closedMbar) mbar（应在 \(pressureClosedMin)~\(pressureClosedMax) mbar）", level: .error)
                             pressureMessages.append("关闭: \(closedPressureStr) ✗")
                             pressurePassed = false
                         }
@@ -1444,11 +1526,11 @@ struct ProductionTestView: View {
                     
                     if let openBar = openPressureValue {
                         let openMbar = openBar * 1000.0
-                        if openMbar >= pressureOpenMin {
-                            self.log("✓ 开启压力验证通过: \(openMbar) mbar（≥ \(pressureOpenMin) mbar）", level: .info)
+                        if openMbar >= pressureOpenMin && openMbar <= pressureOpenMax {
+                            self.log("✓ 开启压力验证通过: \(openMbar) mbar（\(pressureOpenMin)~\(pressureOpenMax) mbar）", level: .info)
                             pressureMessages.append("开启: \(openPressureStr) ✓")
                         } else {
-                            self.log("✗ 开启压力验证失败: \(openMbar) mbar（< \(pressureOpenMin) mbar）", level: .error)
+                            self.log("✗ 开启压力验证失败: \(openMbar) mbar（应在 \(pressureOpenMin)~\(pressureOpenMax) mbar）", level: .error)
                             pressureMessages.append("开启: \(openPressureStr) ✗")
                             pressurePassed = false
                         }
@@ -1458,19 +1540,19 @@ struct ProductionTestView: View {
                         pressurePassed = false
                     }
                     
-                    // 压力差值检查（如果启用）
+                    // 压力差值检查（如果启用）：差值需在 [pressureDiffMin, pressureDiffMax] 范围内
                     if rules.thresholds.pressureDiffCheckEnabled {
                         if let closedMbar = closedPressureValue.map({ $0 * 1000.0 }),
                            let openMbar = openPressureValue.map({ $0 * 1000.0 }) {
                             let diff = abs(openMbar - closedMbar)
-                            let diffThreshold = rules.thresholds.pressureDiffThreshold
-                            
-                            if diff >= diffThreshold {
-                                self.log("✓ 压力差值验证通过: \(String(format: "%.3f", diff)) mbar（≥ \(diffThreshold) mbar）", level: .info)
-                                pressureMessages.append("差值: \(String(format: "%.3f", diff)) mbar ✓")
+                            let diffMin = rules.thresholds.pressureDiffMin
+                            let diffMax = rules.thresholds.pressureDiffMax
+                            if diff >= diffMin && diff <= diffMax {
+                                self.log("✓ 压力差值验证通过: \(String(format: "%.0f", diff)) mbar（\(Int(diffMin))~\(Int(diffMax)) mbar）", level: .info)
+                                pressureMessages.append("差值: \(String(format: "%.0f", diff)) mbar ✓")
                             } else {
-                                self.log("✗ 压力差值验证失败: \(String(format: "%.3f", diff)) mbar（< \(diffThreshold) mbar）", level: .error)
-                                pressureMessages.append("差值: \(String(format: "%.3f", diff)) mbar ✗")
+                                self.log("✗ 压力差值验证失败: \(String(format: "%.0f", diff)) mbar（应在 \(Int(diffMin))~\(Int(diffMax)) mbar）", level: .error)
+                                pressureMessages.append("差值: \(String(format: "%.0f", diff)) mbar ✗")
                                 pressurePassed = false
                             }
                         } else {
@@ -1503,9 +1585,7 @@ struct ProductionTestView: View {
                         self.log("错误：未在固件管理中找到版本 \(rules.firmwareVersion) 的固件，请先在「固件」菜单中添加", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 未找到 \(rules.firmwareVersion) 固件（请在固件管理中添加）"
-                        isRunning = false
-                        currentStepId = nil
-                        return
+                        break
                     }
                     // 产测：由规则决定是否跳过（当前已是目标版本则跳过）；OTA 只接收 URL 执行，不做版本比对
                     if let currentFw = ble.currentFirmwareVersion, currentFw == rules.firmwareVersion {
@@ -1525,9 +1605,7 @@ struct ProductionTestView: View {
                         self.log("错误：OTA 未启动（\(reason)）", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: \(reason)"
-                        isRunning = false
-                        currentStepId = nil
-                        return
+                        break
                     }
                     
                     let otaTimeoutSeconds = rules.thresholds.otaStartWaitTimeout
@@ -1551,9 +1629,7 @@ struct ProductionTestView: View {
                             stepResults[step.id] = "OTA: 启动超时"
                         }
                         stepStatuses[step.id] = .failed
-                        isRunning = false
-                        currentStepId = nil
-                        return
+                        break
                     }
                     
                     self.log("OTA 已启动，传输进行中...", level: .info, category: "OTA")
@@ -1565,49 +1641,18 @@ struct ProductionTestView: View {
                         self.log("错误：OTA 失败或已取消", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 失败或已取消"
-                        isRunning = false
-                        currentStepId = nil
-                        return
+                        break
                     }
                     
                     if ble.otaProgress >= 1.0 && !ble.isOTAFailed {
-                        self.log("OTA 传输完成，等待设备重启...", level: .info, category: "OTA")
-                        try? await Task.sleep(nanoseconds: 5000_000_000)
-                        self.log("等待设备重新连接（超时: \(Int(rules.thresholds.deviceReconnectTimeout))秒）...", level: .info, category: "OTA")
-                        let reconnectTimeoutSeconds = rules.thresholds.deviceReconnectTimeout
-                        let maxReconnectWaitCount = Int(reconnectTimeoutSeconds * 2)
-                        var reconnectWaitCount = 0
-                        while !ble.isConnected && reconnectWaitCount < maxReconnectWaitCount {
-                            try? await Task.sleep(nanoseconds: 500_000_000)
-                            reconnectWaitCount += 1
-                            if reconnectWaitCount % 4 == 0 {
-                                let elapsed = Double(reconnectWaitCount) / 2.0
-                                self.log("等待设备重新连接中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug, category: "OTA")
-                            }
-                        }
-                        if ble.isConnected {
-                            self.log("设备已重新连接，OTA 步骤完成", level: .info, category: "OTA")
-                            if let newFw = ble.currentFirmwareVersion {
-                                stepResults[step.id] = "OTA: \(newFw) ✓"
-                            } else {
-                                stepResults[step.id] = "OTA: 完成 ✓"
-                            }
-                            stepStatuses[step.id] = .passed
-                        } else {
-                            self.log("错误：设备重新连接超时", level: .error)
-                            stepStatuses[step.id] = .failed
-                            stepResults[step.id] = "OTA: 设备未重新连接"
-                            isRunning = false
-                            currentStepId = nil
-                            return
-                        }
+                        self.log("OTA 传输完成", level: .info, category: "OTA")
+                        stepResults[step.id] = "OTA: 完成 ✓"
+                        stepStatuses[step.id] = .passed
                     } else {
                         self.log("错误：OTA 未完成", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 未完成"
-                        isRunning = false
-                        currentStepId = nil
-                        return
+                        break
                     }
                     
                 case "step5": // 待定
@@ -1617,18 +1662,24 @@ struct ProductionTestView: View {
                 case "step_disconnect": // 断开连接
                     self.log("最后步骤: 安全断开连接", level: .info)
                     
-                    // 断开连接前确保阀门打开（复用debug mode的逻辑）
-                    let valveOpened = await ensureValveOpen()
-                    if !valveOpened {
-                        self.log("警告：断开前阀门打开失败，继续断开...", level: .warning)
+                    if ble.isOTARebootDisconnected {
+                        // 设备已因 OTA 重启断开，断开步骤直接视为通过
+                        self.log("设备已因 OTA 重启断开，断开步骤视为通过", level: .info)
+                        stepResults[step.id] = appLanguage.string("production_test.disconnected_after_ota")
+                        stepStatuses[step.id] = .passed
+                    } else {
+                        // 断开连接前确保阀门打开（复用debug mode的逻辑）
+                        let valveOpened = await ensureValveOpen()
+                        if !valveOpened {
+                            self.log("警告：断开前阀门打开失败，继续断开...", level: .warning)
+                        }
+                        self.log("断开连接...", level: .info)
+                        ble.disconnect()
+                        try? await Task.sleep(nanoseconds: 1000_000_000)
+                        self.log("已断开连接", level: .info)
+                        stepResults[step.id] = appLanguage.string("production_test.disconnected")
+                        stepStatuses[step.id] = .passed
                     }
-                    
-                    self.log("断开连接...", level: .info)
-                    ble.disconnect()
-                    try? await Task.sleep(nanoseconds: 1000_000_000)
-                    self.log("已断开连接", level: .info)
-                    stepResults[step.id] = appLanguage.string("production_test.disconnected")
-                    stepStatuses[step.id] = .passed
                     
                 default:
                     self.log("未知步骤: \(step.id)", level: .error)
@@ -1667,15 +1718,16 @@ struct ProductionTestView: View {
         self.log("产测流程结束", level: .info)
         self.log("测试结果统计：通过 \(passedCount)，失败 \(failedCount)，跳过 \(skippedCount)，总计 \(enabledSteps.count)", level: .info)
         
-        // 产测成功（无失败步骤）时在日志区生成报表，统一使用 .info 便于主日志区按等级过滤查看
-        if failedCount == 0 {
-            emitProductionTestReport(enabledSteps: enabledSteps)
-        }
+        // 无论通过或失败，均在日志区输出完整报表，便于主日志区按等级过滤查看
+        emitProductionTestReport(enabledSteps: enabledSteps)
         
         isRunning = false
         currentStepId = nil
         // 更新测试结果状态
         updateTestResultStatus()
+        // 显示结果 overlay（绿/红弹窗报表）
+        lastTestEndTime = Date()
+        showResultOverlay = true
     }
     
     /// 产测成功结束时生成报表并写入日志区，所有行使用 .info 等级
@@ -1710,6 +1762,88 @@ struct ProductionTestView: View {
             }
         }
         self.log("──────────────────────────────", level: .info)
+    }
+}
+
+// MARK: - 产测结果 Overlay（绿/红弹窗报表）
+private struct ProductionTestResultOverlay: View {
+    @EnvironmentObject private var appLanguage: AppLanguage
+    let passed: Bool
+    let criteria: [(name: String, ok: Bool)]
+    let timeString: String
+    let onDismiss: () -> Void
+    
+    private var accentColor: Color { passed ? Color.green : Color.red }
+    private var titleKey: String { passed ? "production_test.result_overlay_title_pass" : "production_test.result_overlay_title_fail" }
+    private var iconName: String { passed ? "checkmark.seal.fill" : "xmark.circle.fill" }
+    
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+                .onTapGesture { onDismiss() }
+            
+            VStack(spacing: 0) {
+                // 顶部色条（绿/红）
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [accentColor, accentColor.opacity(0.8)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(height: 6)
+                
+                VStack(spacing: UIDesignSystem.Spacing.lg) {
+                    // 图标 + 标题
+                    HStack(spacing: UIDesignSystem.Spacing.sm) {
+                        Image(systemName: iconName)
+                            .font(.system(size: 36))
+                            .foregroundStyle(accentColor)
+                        Text(appLanguage.string(titleKey))
+                            .font(.title2.weight(.bold))
+                            .foregroundStyle(Color(NSColor.labelColor))
+                    }
+                    .padding(.top, UIDesignSystem.Padding.lg)
+                    
+                    Text(timeString)
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                    
+                    // 判定项列表
+                    VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+                        ForEach(Array(criteria.enumerated()), id: \.offset) { _, item in
+                            HStack(spacing: UIDesignSystem.Spacing.sm) {
+                                Image(systemName: item.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                    .foregroundStyle(item.ok ? Color.green : Color.red)
+                                    .font(.body)
+                                Text(item.name)
+                                    .font(.subheadline)
+                                    .foregroundStyle(Color(NSColor.labelColor))
+                                Spacer()
+                            }
+                            .padding(.horizontal, UIDesignSystem.Padding.sm)
+                            .padding(.vertical, 6)
+                            .background(Color(NSColor.separatorColor).opacity(0.25))
+                            .cornerRadius(8)
+                        }
+                    }
+                    .padding(.horizontal)
+                    
+                    Button(appLanguage.string("production_test.result_overlay_dismiss")) {
+                        onDismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(accentColor)
+                    .padding(.bottom, UIDesignSystem.Padding.lg)
+                }
+                .frame(minWidth: 320, maxWidth: 420)
+                .background(Color(NSColor.controlBackgroundColor))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .shadow(color: .black.opacity(0.25), radius: 24, x: 0, y: 12)
+        }
     }
 }
 

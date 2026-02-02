@@ -145,6 +145,7 @@
 "production_test.execution_log" = "执行日志";
 "production_test.connected" = "设备已连接";
 "production_test.disconnected" = "已断开";
+"production_test.disconnected_after_ota" = "已断开（OTA 重启）";
 "production_test.sn_invalid" = "SN无效";
 "production_test_rules.summary" = "测试规则摘要";
 "production_test.test_result_summary" = "测试结果摘要";
@@ -218,10 +219,13 @@
 "production_test_rules.valve_open_timeout" = "阀门打开超时";
 "production_test_rules.unit_seconds" = "秒";
 "production_test_rules.pressure_thresholds" = "压力阈值";
-"production_test_rules.pressure_closed_min" = "关闭状态最小值";
-"production_test_rules.pressure_open_min" = "开启状态最小值";
+"production_test_rules.pressure_closed_min" = "关闭状态下限";
+"production_test_rules.pressure_closed_max" = "关闭状态上限";
+"production_test_rules.pressure_open_min" = "开启状态下限";
+"production_test_rules.pressure_open_max" = "开启状态上限";
 "production_test_rules.pressure_diff_check" = "启用压力差值检查";
-"production_test_rules.pressure_diff_threshold" = "压力差值阈值";
+"production_test_rules.pressure_diff_min" = "差值下限";
+"production_test_rules.pressure_diff_max" = "差值上限";
 "production_test_rules.unit_mbar" = "mbar";
 
 /* OTA */
@@ -246,6 +250,7 @@
 "ota.cancel" = "取消 OTA";
 "ota.reboot" = "重启";
 "ota.reboot_countdown" = "重启 (%d)";
+"ota.rebooting" = "正在重启...";
 "ota.auto_reboot_after_ota" = "OTA 完成后自动发送重启";
 "ota.progress" = "进度";
 "ota.ready" = "就绪";
@@ -261,7 +266,7 @@
 "ota.close" = "关闭";
 "ota.exclusive_title_reboot" = "OTA 完成，等待重启";
 "ota.reboot_disconnected" = "设备已重启并断开连接";
-"ota.reboot_disconnected_hint" = "请重新连接设备以验证固件版本";
+"ota.reboot_disconnected_hint" = "设备已重启并断开连接";
 "ota.title_reboot_disconnected" = "OTA (设备已重启)";
 "ota.target_from_production_rules" = "目标固件由产测规则指定：%@";
 "ota.packet_size" = "数据包大小";
@@ -276,6 +281,10 @@
 "production_test.bluetooth_permission_confirm_title" = "蓝牙权限 / 配对";
 "production_test.bluetooth_permission_confirm_message" = "若出现系统弹窗，请点击「允许」。处理完成后，请点击「继续」或按回车键继续产测。";
 "production_test.bluetooth_permission_continue" = "继续";
+"production_test.result_overlay_title_pass" = "产测通过";
+"production_test.result_overlay_title_fail" = "产测失败";
+"production_test.result_overlay_dismiss" = "关闭";
+"production_test.result_criteria_fw" = "固件（一致或 OTA 成功）";
 
 /* 菜单 */
 "menu.floating" = "置顶";

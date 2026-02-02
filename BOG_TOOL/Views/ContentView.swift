@@ -47,6 +47,13 @@ struct ContentView: View {
     /// 上次执行自动滚动的时刻，用于节流（避免刷屏时无法控制）
     @State private var lastAutoScrollDate: Date = .distantPast
 
+    /// 产测 OTA：在收到设备返回 OTA Status 1 后再显示弹窗，或处于完成/失败/取消/已重启等终态时显示
+    private var showProductionTestOTAOverlay: Bool {
+        selectedMode == .productionTest
+            && ble.otaInitiatedByProductionTest
+            && (ble.otaStatus1ReceivedFromDevice || ble.isOTACompletedWaitingReboot || ble.isOTAFailed || ble.isOTACancelled || ble.isOTARebootDisconnected)
+    }
+
     /// 日志区富文本（按等级着色：INFO 蓝、WARN 黄、ERROR 红，支持全选与自由拖选）
     private var logAreaAttributedContent: AttributedString {
         var result = AttributedString()
@@ -112,6 +119,12 @@ struct ContentView: View {
                 .frame(minWidth: 320)
             }
             .frame(minWidth: UIDesignSystem.Window.leftPanelMinWidth)
+            .overlay {
+                if showProductionTestOTAOverlay {
+                    ProductionTestOTAOverlay(ble: ble, firmwareManager: firmwareManager)
+                        .environmentObject(appLanguage)
+                }
+            }
 
             // 右侧：日志
             if showLogArea {
@@ -185,6 +198,24 @@ struct ContentView: View {
     private func applyWindowFloating(_ floating: Bool) {
         let level: NSWindow.Level = floating ? .floating : .normal
         (NSApp.keyWindow ?? NSApp.mainWindow)?.level = level
+    }
+}
+
+/// 产测 OTA 弹窗：仅覆盖左侧主内容区，不覆盖日志区；成功时自动发 reboot，以设备断开为成功确认
+private struct ProductionTestOTAOverlay: View {
+    @EnvironmentObject private var appLanguage: AppLanguage
+    @ObservedObject var ble: BLEManager
+    @ObservedObject var firmwareManager: FirmwareManager
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+            OTASectionView(ble: ble, firmwareManager: firmwareManager, isModal: true, isProductionTestOTA: true)
+        }
+        .onChange(of: ble.isOTACompletedWaitingReboot) { newValue in
+            if newValue { ble.sendReboot() }
+        }
     }
 }
 
