@@ -121,6 +121,11 @@ struct ContentView: View {
                         }
                         .toggleStyle(.checkbox)
                         .help(appLanguage.string("log.auto_scroll_hint"))
+                        Button(appLanguage.string("log.copy_all")) {
+                            copyFullLogToPasteboard()
+                        }
+                        .buttonStyle(.plain)
+                        .help(appLanguage.string("log.copy_all_hint"))
                         Button(appLanguage.string("log.clear")) {
                             ble.clearLog()
                         }
@@ -177,6 +182,19 @@ struct ContentView: View {
     private func applyWindowFloating(_ floating: Bool) {
         let level: NSWindow.Level = floating ? .floating : .normal
         (NSApp.keyWindow ?? NSApp.mainWindow)?.level = level
+    }
+
+    /// 将当前显示的完整日志（含 OTA 进度行）复制到剪贴板；因 ForEach 按行渲染，无法 Cmd+A 全选，用此按钮一次性复制全部
+    private func copyFullLogToPasteboard() {
+        var lines = ble.displayedLogEntries.map(\.line)
+        if let progress = ble.otaProgressLogLine, !progress.isEmpty {
+            lines.append(progress)
+        }
+        let text = lines.joined(separator: "\n")
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #endif
     }
 }
 

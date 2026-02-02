@@ -19,6 +19,8 @@
 "log.hide_area" = "隐藏日志";
 "log.auto_scroll" = "自动滚动";
 "log.auto_scroll_hint" = "开启后，新日志时自动滚动到底部。";
+"log.copy_all" = "复制全部";
+"log.copy_all_hint" = "将完整日志复制到剪贴板（日志按行显示，Cmd+A 只能选一行）。";
 "log.clear" = "清空";
 
 /* 连接/配对错误（对方删除配对信息时：提醒去蓝牙设置中删除该设备） */
@@ -148,6 +150,7 @@
 "production_test.connected" = "设备已连接";
 "production_test.disconnected" = "已断开";
 "production_test.disconnected_after_ota" = "已断开（OTA 重启）";
+"production_test.ota_not_triggered" = "OTA: 未触发（FW 已匹配或未使能）";
 "production_test.sn_invalid" = "SN无效";
 "production_test_rules.summary" = "测试规则摘要";
 "production_test.test_result_summary" = "测试结果摘要";
@@ -163,7 +166,7 @@
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
 "production_test_rules.firmware_version_hint" = "从下拉选择目标固件版本，产测 OTA 步骤将直接使用此版本，无需再选。";
 "production_test_rules.firmware_version_no_entries" = "请在「固件」菜单中添加固件后再选择目标版本。";
-"production_test_rules.firmware_upgrade_enabled" = "启用固件版本升级";
+"production_test_rules.firmware_upgrade_enabled" = "若 FW 不匹配则触发 OTA";
 "production_test_rules.use_parsed_version" = "使用 %@";
 "production_test_rules.use_parsed_version_hint" = "使用从固件文件名解析的版本号";
 "production_test_rules.parsed_version_hint" = "从文件名解析: %@";
@@ -195,7 +198,7 @@
 "production_test_rules.step_valve_desc" = "检查并确保设备电磁阀处于开启状态。";
 "production_test_rules.step_valve_criteria" = "✓ 通过：电磁阀已开启。";
 "production_test_rules.step_ota_title" = "断开前 OTA";
-"production_test_rules.step_ota_desc" = "在断开连接前使用已选固件执行一次固件升级。默认启用。";
+"production_test_rules.step_ota_desc" = "仅当步骤2（确认固件版本）发现版本不匹配且已开启「若 FW 不匹配则触发 OTA」时执行。OTA 步骤始终在 SOP 中，是否执行由该设置决定。";
 "production_test_rules.step_ota_criteria" = "✓ 通过：OTA 完成且设备已重新连接。";
 "production_test_rules.step_disconnect_title" = "安全断开连接";
 "production_test_rules.step_disconnect_desc" = "所有测试完成后安全断开设备连接。";

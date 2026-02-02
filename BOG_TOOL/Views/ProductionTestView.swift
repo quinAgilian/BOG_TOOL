@@ -1179,8 +1179,11 @@ struct ProductionTestView: View {
         self.log("超时: 设备信息=\(t.deviceInfoReadTimeout)s, OTA启动=\(t.otaStartWaitTimeout)s, 重连=\(t.deviceReconnectTimeout)s, RTC读取=\(t.rtcReadTimeout)s, 阀门=\(t.valveOpenTimeout)s", level: .info)
         self.log("RTC: 通过阈值=\(t.rtcPassThreshold)s, 失败阈值=\(t.rtcFailThreshold)s, 写入=\(t.rtcWriteEnabled), 重试=\(t.rtcWriteRetryCount)次", level: .info)
         self.log("压力: 关阀 \(t.pressureClosedMin)~\(t.pressureClosedMax) mbar, 开阀 \(t.pressureOpenMin)~\(t.pressureOpenMax) mbar, 差值检查=\(t.pressureDiffCheckEnabled), 差值 \(t.pressureDiffMin)~\(t.pressureDiffMax) mbar", level: .info)
-        self.log("固件升级(步骤2): \(t.firmwareUpgradeEnabled ? "启用" : "禁用")", level: .info)
+        self.log("OTA: 若 FW 不匹配则触发 \(t.firmwareUpgradeEnabled ? "是" : "否")", level: .info)
         self.log("———————————————", level: .info)
+        
+        /// 由 step2（确认固件版本）设置：FW 不匹配且「若 FW 不匹配则触发 OTA」开启时为 true；step_ota 据此决定是否执行 OTA
+        var fwMismatchRequiresOTA = false
         
         for step in enabledSteps {
                 // 记录步骤开始时的日志索引
@@ -1287,6 +1290,7 @@ struct ProductionTestView: View {
                         self.log("当前 FW 版本: \(fwVersion)", level: .info)
                         if fwVersion != rules.firmwareVersion {
                             if rules.thresholds.firmwareUpgradeEnabled {
+                                fwMismatchRequiresOTA = true
                                 self.log("FW 版本不匹配，需要 OTA（期望: \(rules.firmwareVersion), 实际: \(fwVersion)），将在「断开前 OTA」步骤执行", level: .warning, category: "OTA")
                                 resultMessages.append("FW: \(fwVersion) → 待OTA")
                                 // 提前校验固件管理中是否有目标版本，避免到 OTA 步骤才报错
@@ -1626,8 +1630,15 @@ struct ProductionTestView: View {
                         stepStatuses[step.id] = .failed
                     }
                     
-                case "step_ota": // 断开连接前 OTA（默认启用，仅当固件版本与期望不一致时才执行 OTA）
+                case "step_ota": // 断开连接前 OTA（是否执行由 step2 的「若 FW 不匹配则触发 OTA」+ FW 比对结果决定；OTA 步骤始终在 SOP 中，无法由用户单独关闭）
                     self.log("步骤: 断开前 OTA", level: .info, category: "OTA")
+                    
+                    if !fwMismatchRequiresOTA {
+                        self.log("OTA 未触发（FW 已匹配或未使能「若 FW 不匹配则触发 OTA」）", level: .info, category: "OTA")
+                        stepResults[step.id] = appLanguage.string("production_test.ota_not_triggered")
+                        stepStatuses[step.id] = .passed
+                        break
+                    }
                     
                     // 产测按 SOP 期望版本从固件管理中选择目标固件
                     guard let otaURL = firmwareManager.url(forVersion: rules.firmwareVersion) else {

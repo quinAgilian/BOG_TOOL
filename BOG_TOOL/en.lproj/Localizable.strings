@@ -19,6 +19,8 @@
 "log.hide_area" = "Hide Log";
 "log.auto_scroll" = "Auto scroll";
 "log.auto_scroll_hint" = "When on, log area scrolls to bottom on new entries.";
+"log.copy_all" = "Copy all";
+"log.copy_all_hint" = "Copy full log to clipboard (log is shown line-by-line, so Cmd+A only selects one line).";
 "log.clear" = "Clear";
 
 /* Connection / pairing error (peer removed pairing: remind to remove device in Bluetooth settings) */
@@ -148,6 +150,7 @@
 "production_test.connected" = "Device Connected";
 "production_test.disconnected" = "Disconnected";
 "production_test.disconnected_after_ota" = "Disconnected (OTA reboot)";
+"production_test.ota_not_triggered" = "OTA: Not triggered (FW matched or option off)";
 "production_test.sn_invalid" = "SN Invalid";
 "production_test_rules.summary" = "Test Rules Summary";
 "production_test.test_result_summary" = "Test Result Summary";
@@ -163,7 +166,7 @@
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
 "production_test_rules.firmware_version_hint" = "Select target firmware version from dropdown; production test OTA step will use it directly.";
 "production_test_rules.firmware_version_no_entries" = "Add firmware in Firmware menu first, then select target version.";
-"production_test_rules.firmware_upgrade_enabled" = "Enable Firmware Version Upgrade";
+"production_test_rules.firmware_upgrade_enabled" = "Trigger OTA if FW mismatch";
 "production_test_rules.use_parsed_version" = "Use %@";
 "production_test_rules.use_parsed_version_hint" = "Use version parsed from firmware filename";
 "production_test_rules.parsed_version_hint" = "Parsed from filename: %@";
@@ -195,7 +198,7 @@
 "production_test_rules.step_valve_desc" = "Check and ensure the device solenoid valve is in the open state.";
 "production_test_rules.step_valve_criteria" = "✓ Pass: Solenoid valve is open.";
 "production_test_rules.step_ota_title" = "OTA Before Disconnect";
-"production_test_rules.step_ota_desc" = "Perform firmware OTA using the selected firmware file before disconnecting. Enabled by default.";
+"production_test_rules.step_ota_desc" = "Runs only when step2 (Verify FW) found version mismatch and \"Trigger OTA if FW mismatch\" is on. OTA step stays in SOP; execution is gated by that setting.";
 "production_test_rules.step_ota_criteria" = "✓ Pass: OTA completed and device reconnected.";
 "production_test_rules.step_disconnect_title" = "Safely Disconnect Device";
 "production_test_rules.step_disconnect_desc" = "Safely disconnect from the device after all tests are completed.";

@@ -21,8 +21,8 @@ struct TestStep: Identifiable, Equatable {
     static let tbd = TestStep(id: "step5", key: "step5", isLocked: false, enabled: false)
     /// 确保电磁阀是开启的（可调顺序、有使能开关）
     static let ensureValveOpen = TestStep(id: "step_valve", key: "step_valve", isLocked: false, enabled: true)
-    /// 断开连接前的 OTA 步骤（默认启用）
-    static let otaBeforeDisconnect = TestStep(id: "step_ota", key: "step_ota", isLocked: false, enabled: true)
+    /// 断开连接前的 OTA 步骤（默认启用，不许用户取消）
+    static let otaBeforeDisconnect = TestStep(id: "step_ota", key: "step_ota", isLocked: true, enabled: true)
     static let disconnectDevice = TestStep(id: "step_disconnect", key: "step_disconnect", isLocked: false, enabled: true)
 }
 
@@ -169,11 +169,15 @@ struct ProductionTestRulesView: View {
                 steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
             }
         }
+        // OTA 步骤必须在「确认固件版本」(step2) 之后
+        ProductionTestRulesView.ensureOtaAfterFirmwareVerify(steps: &steps)
         
-        // 加载每个步骤的启用状态
+        // 加载每个步骤的启用状态（step_ota 不许用户关闭，始终为 true）
         if let enabledDict = UserDefaults.standard.dictionary(forKey: "production_test_steps_enabled") as? [String: Bool] {
             for i in 0..<steps.count {
-                if let enabled = enabledDict[steps[i].id] {
+                if steps[i].id == TestStep.otaBeforeDisconnect.id {
+                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: true)
+                } else if let enabled = enabledDict[steps[i].id] {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
                 }
             }
@@ -324,11 +328,12 @@ struct ProductionTestRulesView: View {
             
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(Array(testSteps.enumerated()), id: \.element.id) { index, step in
-                    let isLocked = (index == 0 && step.id == TestStep.connectDevice.id) || 
-                                  (index == testSteps.count - 1 && step.id == TestStep.disconnectDevice.id)
+                    let isPositionLocked = (index == 0 && step.id == TestStep.connectDevice.id) ||
+                                           (index == testSteps.count - 1 && step.id == TestStep.disconnectDevice.id)
+                    let isEnableLocked = isPositionLocked || step.id == TestStep.otaBeforeDisconnect.id // step_ota 不许用户关闭，仅隐藏开关
                     HStack(spacing: 8) {
                         // 拖拽手柄（编辑模式下显示）
-                        if isEditingOrder && !isLocked {
+                        if isEditingOrder && !isPositionLocked {
                             Image(systemName: "line.3.horizontal")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -338,8 +343,8 @@ struct ProductionTestRulesView: View {
                                 .frame(width: 20)
                         }
                         
-                        // 上下移动按钮（锁定步骤不显示）
-                        if !isLocked {
+                        // 上下移动按钮（位置锁定步骤不显示）
+                        if !isPositionLocked {
                             VStack(spacing: 4) {
                                 Button {
                                     moveStepUp(at: index)
@@ -348,7 +353,7 @@ struct ProductionTestRulesView: View {
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(index <= 1) // 不能移动到第一步之前
+                                .disabled(index <= 1 || (step.id == TestStep.otaBeforeDisconnect.id && index > 0 && testSteps[index - 1].id == TestStep.verifyFirmware.id))
                                 
                                 Button {
                                     moveStepDown(at: index)
@@ -357,7 +362,7 @@ struct ProductionTestRulesView: View {
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(index >= testSteps.count - 2) // 不能移动到最后一步之后
+                                .disabled(index >= testSteps.count - 2 || (step.id == TestStep.verifyFirmware.id && index + 1 < testSteps.count && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id))
                             }
                             .frame(width: 24)
                         } else {
@@ -371,7 +376,7 @@ struct ProductionTestRulesView: View {
                                 stepItem(
                                     number: index + 1,
                                     step: step,
-                                    isLocked: isLocked,
+                                    isLocked: isEnableLocked,
                                     isExpanded: expandedSteps.contains(step.id)
                                 )
                                 .contentShape(Rectangle())
@@ -388,8 +393,8 @@ struct ProductionTestRulesView: View {
                                 
                                 Spacer()
                                 
-                                // 启用/禁用开关（锁定步骤始终启用，放在最右边）
-                                if !isLocked {
+                                // 启用/禁用开关（位置锁定或 step_ota 不显示开关，始终视为启用）
+                                if !isEnableLocked {
                                     Toggle("", isOn: Binding(
                                         get: { testSteps[index].enabled },
                                         set: { newValue in
@@ -424,9 +429,9 @@ struct ProductionTestRulesView: View {
                     }
                     .padding(.vertical, 4)
                     .contentShape(Rectangle())
-                    .background(isEditingOrder && !isLocked ? Color.blue.opacity(0.05) : Color.clear)
+                    .background(isEditingOrder && !isPositionLocked ? Color.blue.opacity(0.05) : Color.clear)
                     .gesture(
-                        isEditingOrder && !isLocked ? DragGesture(minimumDistance: 10)
+                        isEditingOrder && !isPositionLocked ? DragGesture(minimumDistance: 10)
                             .onChanged { value in
                                 // 拖拽过程中可以添加视觉反馈
                             }
@@ -450,6 +455,17 @@ struct ProductionTestRulesView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    
+    /// OTA 步骤必须在「确认固件版本」(step2) 之后；若违反则把 step_ota 移到 step2 之后
+    private static func ensureOtaAfterFirmwareVerify(steps: inout [TestStep]) {
+        guard let fwIndex = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }),
+              let otaIndex = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) else { return }
+        if otaIndex <= fwIndex {
+            let ota = steps.remove(at: otaIndex)
+            let insertIndex = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }).map { $0 + 1 } ?? steps.count - 1
+            steps.insert(ota, at: min(insertIndex, steps.count))
+        }
     }
     
     private func moveStep(from source: IndexSet, to destination: Int) {
@@ -476,6 +492,7 @@ struct ProductionTestRulesView: View {
             updatedSteps.removeAll { $0.id == TestStep.disconnectDevice.id }
             updatedSteps.append(TestStep.disconnectDevice)
         }
+        Self.ensureOtaAfterFirmwareVerify(steps: &updatedSteps)
         
         testSteps = updatedSteps
         saveStepsOrder()
@@ -486,6 +503,8 @@ struct ProductionTestRulesView: View {
         guard index > 0 && index < testSteps.count - 1 else { return }
         // 不能移动到第一步的位置
         guard index > 1 else { return }
+        // OTA 步骤不能在「确认固件版本」之前
+        if testSteps[index].id == TestStep.otaBeforeDisconnect.id && testSteps[index - 1].id == TestStep.verifyFirmware.id { return }
         
         testSteps.swapAt(index, index - 1)
         saveStepsOrder()
@@ -496,6 +515,8 @@ struct ProductionTestRulesView: View {
         guard index > 0 && index < testSteps.count - 1 else { return }
         // 不能移动到最后一步的位置
         guard index < testSteps.count - 2 else { return }
+        // 「确认固件版本」不能在 OTA 步骤之后
+        if testSteps[index].id == TestStep.verifyFirmware.id && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id { return }
         
         testSteps.swapAt(index, index + 1)
         saveStepsOrder()
@@ -509,7 +530,8 @@ struct ProductionTestRulesView: View {
     }
     
     private func saveStepsEnabled() {
-        let enabledDict = testSteps.reduce(into: [String: Bool]()) { $0[$1.id] = $1.enabled }
+        var enabledDict = testSteps.reduce(into: [String: Bool]()) { $0[$1.id] = $1.enabled }
+        enabledDict[TestStep.otaBeforeDisconnect.id] = true // step_ota 不许用户关闭，持久化时强制为 true
         UserDefaults.standard.set(enabledDict, forKey: "production_test_steps_enabled")
         // 发送通知，通知产测视图更新步骤列表
         NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
