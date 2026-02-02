@@ -120,31 +120,38 @@ struct ProductionTestView: View {
             }
             .padding(.bottom, UIDesignSystem.Padding.xs)
 
-            // 测试结果摘要卡片 - 根据测试结果更新颜色
-            testResultSummaryCard
-            
-            // 控制按钮区域
+            // 控制按钮区域：未运行时点击开始，运行中显示 TESTING. / TESTING.. / TESTING... 且点击即终止
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 Spacer(minLength: UIDesignSystem.Spacing.lg)
-                Button(action: runProductionTest) {
+                Button(action: {
+                    if isRunning {
+                        stopProductionTest()
+                    } else {
+                        runProductionTest()
+                    }
+                }) {
                     HStack(spacing: UIDesignSystem.Spacing.sm) {
-                        if isRunning {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                                .tint(.white)
-                        } else {
+                        if !isRunning {
                             Image(systemName: "play.circle.fill")
                                 .font(.title3)
+                        } else {
+                            TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
+                                let dots = (Int(timeline.date.timeIntervalSinceReferenceDate * 2) % 3) + 1
+                                Text("TESTING" + String(repeating: ".", count: dots))
+                                    .fontWeight(.semibold)
+                            }
                         }
-                        Text(isRunning ? appLanguage.string("production_test.running") : appLanguage.string("production_test.start"))
-                            .fontWeight(.semibold)
+                        if !isRunning {
+                            Text(appLanguage.string("production_test.start"))
+                                .fontWeight(.semibold)
+                        }
                     }
                     .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
                     .foregroundColor(.white)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(isRunning || ble.isOTAInProgress)
+                .disabled(ble.isOTAInProgress || ble.selectedDeviceId == nil)
                 .shadow(color: .blue.opacity(0.3), radius: 4, x: 0, y: 2)
             }
             
@@ -153,7 +160,7 @@ struct ProductionTestView: View {
                 productionTestOTAArea
             }
             
-            // 测试步骤功能区 - 垂直滚动布局
+            // 测试步骤功能区 - 垂直滚动布局，尽量占满下方空间
             VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                 HStack {
                     Image(systemName: "list.number")
@@ -168,8 +175,9 @@ struct ProductionTestView: View {
                     testStepsSection
                         .padding(.horizontal, UIDesignSystem.Padding.xs)
                 }
-                .frame(maxHeight: 400) // 限制最大高度，超出可滚动
+                .frame(minHeight: 320, maxHeight: .infinity)
             }
+            .frame(maxHeight: .infinity)
             .padding(UIDesignSystem.Padding.sm)
             .background(
                 LinearGradient(
@@ -180,24 +188,9 @@ struct ProductionTestView: View {
             )
             .cornerRadius(UIDesignSystem.CornerRadius.sm)
 
-            // 未连接时提示；产测日志统一在主日志区查看，此处不再展示 test log
-            if !ble.isConnected {
-                HStack {
-                    Spacer()
-                    VStack(spacing: UIDesignSystem.Spacing.sm) {
-                        Image(systemName: "link.badge.plus")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text(appLanguage.string("production_test.connect_first"))
-                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, UIDesignSystem.Padding.lg)
-            }
         }
         .padding(UIDesignSystem.Padding.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(
             LinearGradient(
                 colors: [
@@ -508,126 +501,6 @@ struct ProductionTestView: View {
         }
     }
     
-    /// 测试结果摘要卡片 - 根据测试结果更新颜色和内容
-    private var testResultSummaryCard: some View {
-        let enabledSteps = currentTestSteps.filter { $0.enabled }
-        let passedCount = enabledSteps.filter { stepStatuses[$0.id] == .passed }.count
-        let failedCount = enabledSteps.filter { stepStatuses[$0.id] == .failed }.count
-        let skippedCount = enabledSteps.filter { stepStatuses[$0.id] == .skipped }.count
-        let runningCount = enabledSteps.filter { stepStatuses[$0.id] == .running }.count
-        
-        // 根据测试结果状态确定颜色
-        let (bgColors, iconColor, iconName): ([Color], Color, String) = {
-            switch testResultStatus {
-            case .notStarted:
-                return ([Color.blue.opacity(0.1), Color.purple.opacity(0.05)], .blue, "list.bullet.clipboard")
-            case .running:
-                return ([Color.orange.opacity(0.1), Color.yellow.opacity(0.05)], .orange, "hourglass")
-            case .allPassed:
-                return ([Color.green.opacity(0.15), Color.green.opacity(0.05)], .green, "checkmark.seal.fill")
-            case .partialPassed:
-                return ([Color.orange.opacity(0.15), Color.yellow.opacity(0.05)], .orange, "exclamationmark.triangle.fill")
-            case .allFailed:
-                return ([Color.red.opacity(0.15), Color.red.opacity(0.05)], .red, "xmark.circle.fill")
-            }
-        }()
-        
-        return VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            HStack {
-                Image(systemName: iconName)
-                    .foregroundStyle(iconColor)
-                Text(appLanguage.string("production_test.test_result_summary"))
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-            }
-            
-            HStack(spacing: UIDesignSystem.Spacing.md) {
-                // 版本信息（仅在未开始或进行中时显示）
-                if testResultStatus == .notStarted || testResultStatus == .running {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label(testRules.firmwareVersion.isEmpty ? "—" : testRules.firmwareVersion, systemImage: "number.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Label(testRules.hardwareVersion, systemImage: "cpu.fill")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    // 测试完成后显示测试结果统计
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 8) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                                    .font(.caption)
-                                Text("\(passedCount)")
-                                    .font(.caption.weight(.semibold))
-                            }
-                            HStack(spacing: 4) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.red)
-                                    .font(.caption)
-                                Text("\(failedCount)")
-                                    .font(.caption.weight(.semibold))
-                            }
-                            if skippedCount > 0 {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "minus.circle.fill")
-                                        .foregroundStyle(.gray)
-                                        .font(.caption)
-                                    Text("\(skippedCount)")
-                                        .font(.caption.weight(.semibold))
-                                }
-                            }
-                        }
-                        Text(appLanguage.string("production_test.test_results"))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                
-                Spacer()
-                
-                // 步骤统计
-                VStack(alignment: .trailing, spacing: 4) {
-                    if testResultStatus == .notStarted || testResultStatus == .running {
-                        HStack(spacing: 4) {
-                            Image(systemName: runningCount > 0 ? "hourglass" : "checkmark.circle.fill")
-                                .foregroundStyle(runningCount > 0 ? .orange : .green)
-                                .font(.caption)
-                            Text("\(testRules.enabledStepsCount)")
-                                .font(.caption.weight(.semibold))
-                        }
-                        Text(appLanguage.string("production_test.enabled_steps"))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        // 测试完成后显示通过率
-                        HStack(spacing: 4) {
-                            Image(systemName: testResultStatus == .allPassed ? "checkmark.seal.fill" : testResultStatus == .allFailed ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
-                                .foregroundStyle(iconColor)
-                                .font(.caption)
-                            Text("\(passedCount)/\(enabledSteps.count)")
-                                .font(.caption.weight(.semibold))
-                        }
-                        Text(appLanguage.string("production_test.passed_steps"))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .padding(UIDesignSystem.Padding.sm)
-        .background(
-            LinearGradient(
-                colors: bgColors,
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
-        .cornerRadius(UIDesignSystem.CornerRadius.sm)
-    }
-    
     /// 更新测试规则
     private func updateTestRules() {
         let rules = loadTestRules()
@@ -664,29 +537,60 @@ struct ProductionTestView: View {
         return connectOk && rtcOk && fwOk && pressureOk && gasSystemStatusOk && valveOk
     }
     
-    /// 用于 overlay 报表的判定项列表：(名称, 是否通过)
-    private var overallTestCriteria: [(name: String, ok: Bool)] {
+    /// 用于 overlay 报表的判定项列表：(名称, 是否通过, 是否仅警告通过, 测试数据备注)。禁用的步骤也保留，标记为警告并注明「测试跳过」。
+    private var overallTestCriteria: [(name: String, ok: Bool, isWarning: Bool, detail: String?)] {
         let enabled = currentTestSteps.filter { $0.enabled }
-        var list: [(String, Bool)] = []
+        let skippedDetail = appLanguage.string("production_test.overlay_step_skipped")
+        func detail(for stepId: String) -> String? {
+            let s = (stepResults[stepId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return s.isEmpty ? nil : s
+        }
+        var list: [(String, Bool, Bool, String?)] = []
+        // 连接设备
         if enabled.contains(where: { $0.id == TestStep.connectDevice.id }) {
-            list.append((appLanguage.string("production_test_rules.step1_title"), stepStatuses[TestStep.connectDevice.id] == .passed))
+            list.append((appLanguage.string("production_test_rules.step1_title"), stepStatuses[TestStep.connectDevice.id] == .passed, false, detail(for: TestStep.connectDevice.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.connectDevice.id }) {
+            list.append((appLanguage.string("production_test_rules.step1_title"), true, true, skippedDetail))
         }
+        // RTC
         if enabled.contains(where: { $0.id == TestStep.readRTC.id }) {
-            list.append((appLanguage.string("production_test_rules.step3_title"), stepStatuses[TestStep.readRTC.id] == .passed))
+            list.append((appLanguage.string("production_test_rules.step3_title"), stepStatuses[TestStep.readRTC.id] == .passed, false, detail(for: TestStep.readRTC.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.readRTC.id }) {
+            list.append((appLanguage.string("production_test_rules.step3_title"), true, true, skippedDetail))
         }
+        // 固件（一致或 OTA 成功）
         if enabled.contains(where: { $0.id == TestStep.verifyFirmware.id }) {
             let fwPass = stepStatuses[TestStep.verifyFirmware.id] == .passed
             let otaPass = enabled.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) && stepStatuses[TestStep.otaBeforeDisconnect.id] == .passed
-            list.append((appLanguage.string("production_test.result_criteria_fw"), fwPass || otaPass))
+            let d = detail(for: TestStep.verifyFirmware.id) ?? detail(for: TestStep.otaBeforeDisconnect.id)
+            let isWarning = (fwPass || otaPass) && (d?.contains("升级已禁用") ?? false)
+            list.append((appLanguage.string("production_test.result_criteria_fw"), fwPass || otaPass, isWarning, d))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.verifyFirmware.id }) {
+            list.append((appLanguage.string("production_test.result_criteria_fw"), true, true, skippedDetail))
         }
+        // 压力值
         if enabled.contains(where: { $0.id == TestStep.readPressure.id }) {
-            list.append((appLanguage.string("production_test_rules.step4_title"), stepStatuses[TestStep.readPressure.id] == .passed))
+            list.append((appLanguage.string("production_test_rules.step4_title"), stepStatuses[TestStep.readPressure.id] == .passed, false, detail(for: TestStep.readPressure.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.readPressure.id }) {
+            list.append((appLanguage.string("production_test_rules.step4_title"), true, true, skippedDetail))
         }
+        // Gas system status
         if enabled.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
-            list.append((appLanguage.string("production_test_rules.step_gas_system_status_title"), stepStatuses[TestStep.readGasSystemStatus.id] == .passed))
+            list.append((appLanguage.string("production_test_rules.step_gas_system_status_title"), stepStatuses[TestStep.readGasSystemStatus.id] == .passed, false, detail(for: TestStep.readGasSystemStatus.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+            list.append((appLanguage.string("production_test_rules.step_gas_system_status_title"), true, true, skippedDetail))
         }
+        // 电磁阀
         if enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
-            list.append((appLanguage.string("production_test_rules.step_valve_title"), stepStatuses[TestStep.ensureValveOpen.id] == .passed))
+            list.append((appLanguage.string("production_test_rules.step_valve_title"), stepStatuses[TestStep.ensureValveOpen.id] == .passed, false, detail(for: TestStep.ensureValveOpen.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
+            list.append((appLanguage.string("production_test_rules.step_valve_title"), true, true, skippedDetail))
+        }
+        // 安全断开连接
+        if enabled.contains(where: { $0.id == TestStep.disconnectDevice.id }) {
+            list.append((appLanguage.string("production_test_rules.step_disconnect_title"), stepStatuses[TestStep.disconnectDevice.id] == .passed, false, detail(for: TestStep.disconnectDevice.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.disconnectDevice.id }) {
+            list.append((appLanguage.string("production_test_rules.step_disconnect_title"), true, true, skippedDetail))
         }
         return list
     }
@@ -1095,6 +999,14 @@ struct ProductionTestView: View {
         return false
     }
     
+    /// 用户点击「TESTING.」时终止产测
+    private func stopProductionTest() {
+        guard isRunning else { return }
+        isRunning = false
+        currentStepId = nil
+        log("用户终止测试", level: .info)
+    }
+    
     private func runProductionTest() {
         guard !isRunning else { return }
         
@@ -1123,7 +1035,7 @@ struct ProductionTestView: View {
             // 等待连接完成，且 GATT 特征就绪（发现服务/特征需要时间），才认为连接完成
             Task { @MainActor in
                 var waitCount = 0
-                while !ble.isConnected && waitCount < 100 { // 最多等待10秒
+                while isRunning && !ble.isConnected && waitCount < 100 { // 最多等待10秒
                     try? await Task.sleep(nanoseconds: 100_000_000) // 0.1秒
                     waitCount += 1
                 }
@@ -1132,9 +1044,10 @@ struct ProductionTestView: View {
                     isRunning = false
                     return
                 }
+                guard isRunning else { return }
                 log("已连接，等待 GATT 特征就绪...", level: .info)
                 waitCount = 0
-                while !ble.areCharacteristicsReady && waitCount < 100 { // 最多再等10秒
+                while isRunning && !ble.areCharacteristicsReady && waitCount < 100 { // 最多再等10秒
                     try? await Task.sleep(nanoseconds: 100_000_000)
                     waitCount += 1
                 }
@@ -1143,6 +1056,7 @@ struct ProductionTestView: View {
                     isRunning = false
                     return
                 }
+                guard isRunning else { return }
                 log("GATT 就绪，开始产测", level: .info)
                 await executeProductionTest()
             }
@@ -1195,6 +1109,11 @@ struct ProductionTestView: View {
         var fwMismatchRequiresOTA = false
         
         for step in enabledSteps {
+                guard isRunning else {
+                    currentStepId = nil
+                    self.log("用户终止测试", level: .info)
+                    return
+                }
                 // 记录步骤开始时的日志索引
                 let logStartIndex = testLog.count
                 
@@ -1229,7 +1148,7 @@ struct ProductionTestView: View {
                         var charWaitCount = 0
                         let charTimeoutSeconds = 10.0
                         let maxCharWait = Int(charTimeoutSeconds * 10)
-                        while !ble.areCharacteristicsReady && charWaitCount < maxCharWait {
+                        while isRunning && !ble.areCharacteristicsReady && charWaitCount < maxCharWait {
                             try? await Task.sleep(nanoseconds: 100_000_000)
                             charWaitCount += 1
                         }
@@ -1252,7 +1171,7 @@ struct ProductionTestView: View {
                     let timeoutSeconds = rules.thresholds.deviceInfoReadTimeout
                     let maxWaitCount = Int(timeoutSeconds * 10) // 每0.1秒检查一次
                     var waitCount = 0
-                    while (ble.deviceSerialNumber == nil || ble.currentFirmwareVersion == nil || ble.deviceHardwareRevision == nil) && waitCount < maxWaitCount {
+                    while isRunning && (ble.deviceSerialNumber == nil || ble.currentFirmwareVersion == nil || ble.deviceHardwareRevision == nil) && waitCount < maxWaitCount {
                         try? await Task.sleep(nanoseconds: 100_000_000)
                         waitCount += 1
                         // 每2秒输出一次等待状态
@@ -1332,9 +1251,9 @@ struct ProductionTestView: View {
                                     return
                                 }
                             } else {
-                                // 固件升级已禁用，仅记录警告
-                                self.log("警告：FW 版本不匹配，但固件升级已禁用（期望: \(rules.firmwareVersion), 实际: \(fwVersion)）", level: .warning)
-                                resultMessages.append("FW: \(fwVersion) ⚠️ (升级已禁用)")
+                                // 固件升级已禁用：FW 不匹配仅作警告，本步骤仍视为通过
+                                self.log("警告：FW 版本不匹配，但固件升级已禁用（期望: \(rules.firmwareVersion), 实际: \(fwVersion)），本步骤按警告处理、仍视为通过", level: .warning)
+                                resultMessages.append("FW: \(fwVersion) ⚠️ (升级已禁用，仍通过)")
                             }
                         } else {
                             self.log("✓ FW 版本验证通过: \(fwVersion)", level: .info)
@@ -1381,7 +1300,7 @@ struct ProductionTestView: View {
                     // 等待RTC读取完成
                     self.log("等待 RTC 读取完成（超时: \(Int(rtcTimeoutSeconds))秒）...", level: .info)
                     var waitCount = 0
-                    while (ble.lastRTCValue.isEmpty || ble.lastRTCValue == "--") && waitCount < maxRtcWaitCount {
+                    while isRunning && (ble.lastRTCValue.isEmpty || ble.lastRTCValue == "--") && waitCount < maxRtcWaitCount {
                         try? await Task.sleep(nanoseconds: 100_000_000) // 0.1秒
                         waitCount += 1
                         // 每2秒输出一次等待状态
@@ -1460,7 +1379,7 @@ struct ProductionTestView: View {
                                     // writeRTCTime() 内部已经会自动读取RTC，等待读取完成
                                     self.log("RTC写入成功，等待读取RTC验证...", level: .info)
                                     waitCount = 0
-                                    while (ble.lastRTCValue.isEmpty || ble.lastRTCValue == "--") && waitCount < maxRtcWaitCount {
+                                    while isRunning && (ble.lastRTCValue.isEmpty || ble.lastRTCValue == "--") && waitCount < maxRtcWaitCount {
                                         try? await Task.sleep(nanoseconds: 100_000_000)
                                         waitCount += 1
                                     }
@@ -1619,7 +1538,7 @@ struct ProductionTestView: View {
                     let gasStatusTimeoutSeconds = rules.thresholds.deviceInfoReadTimeout
                     let maxGasStatusWaitCount = Int(gasStatusTimeoutSeconds * 10)
                     var gasStatusWaitCount = 0
-                    while (ble.lastGasSystemStatusValue.isEmpty || ble.lastGasSystemStatusValue == "--") && gasStatusWaitCount < maxGasStatusWaitCount {
+                    while isRunning && (ble.lastGasSystemStatusValue.isEmpty || ble.lastGasSystemStatusValue == "--") && gasStatusWaitCount < maxGasStatusWaitCount {
                         try? await Task.sleep(nanoseconds: 100_000_000)
                         gasStatusWaitCount += 1
                         if gasStatusWaitCount % 20 == 0 {
@@ -1814,7 +1733,7 @@ struct ProductionTestView: View {
         showResultOverlay = true
     }
     
-    /// 产测成功结束时生成报表并写入日志区，所有行使用 .info 等级
+    /// 产测结束时生成报表并写入日志区，按步骤结果使用不同 log 等级（通过=info、失败=error、跳过=warning）
     private func emitProductionTestReport(enabledSteps: [TestStep]) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -1824,110 +1743,126 @@ struct ProductionTestView: View {
         self.log("────────── 产测报表 ──────────", level: .info)
         self.log("时间: \(timeStr)", level: .info)
         let passedCount = enabledSteps.filter { stepStatuses[$0.id] == .passed }.count
+        let failedCount = enabledSteps.filter { stepStatuses[$0.id] == .failed }.count
         let skippedCount = enabledSteps.filter { stepStatuses[$0.id] == .skipped }.count
-        self.log("结果: 通过 \(passedCount)，跳过 \(skippedCount)，总计 \(enabledSteps.count)", level: .info)
+        let resultLevel: LogLevel = failedCount > 0 ? .error : (skippedCount > 0 ? .warning : .info)
+        self.log("结果: 通过 \(passedCount)，失败 \(failedCount)，跳过 \(skippedCount)，总计 \(enabledSteps.count)", level: resultLevel)
         self.log("步骤:", level: .info)
         for (index, step) in enabledSteps.enumerated() {
             let status = stepStatuses[step.id] ?? .pending
             let result = stepResults[step.id] ?? ""
             let title = appLanguage.string("production_test_rules.\(step.key)_title")
             let statusStr: String
+            let stepLevel: LogLevel
             switch status {
-            case .passed: statusStr = "✓"
-            case .failed: statusStr = "✗"
-            case .skipped: statusStr = "−"
-            case .pending, .running: statusStr = "?"
+            case .passed:
+                statusStr = "✓"
+                stepLevel = .info
+            case .failed:
+                statusStr = "✗"
+                stepLevel = .error
+            case .skipped:
+                statusStr = "−"
+                stepLevel = .warning
+            case .pending, .running:
+                statusStr = "?"
+                stepLevel = .info
             }
             let oneLine = result.replacingOccurrences(of: "\n", with: " ")
             if oneLine.isEmpty {
-                self.log("  \(index + 1). \(title) \(statusStr)", level: .info)
+                self.log("  \(index + 1). \(title) \(statusStr)", level: stepLevel)
             } else {
-                self.log("  \(index + 1). \(title) \(statusStr) \(oneLine)", level: .info)
+                self.log("  \(index + 1). \(title) \(statusStr) \(oneLine)", level: stepLevel)
             }
         }
         self.log("──────────────────────────────", level: .info)
     }
 }
 
-// MARK: - 产测结果 Overlay（绿/红弹窗报表）
+// MARK: - 产测结果 Overlay（极简报表：通过=绿，失败=红，仅警告通过=橙）
 private struct ProductionTestResultOverlay: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     let passed: Bool
-    let criteria: [(name: String, ok: Bool)]
+    let criteria: [(name: String, ok: Bool, isWarning: Bool, detail: String?)]
     let timeString: String
     let onDismiss: () -> Void
     
-    private var accentColor: Color { passed ? Color.green : Color.red }
     private var titleKey: String { passed ? "production_test.result_overlay_title_pass" : "production_test.result_overlay_title_fail" }
-    private var iconName: String { passed ? "checkmark.seal.fill" : "xmark.circle.fill" }
+    private var accentColor: Color { passed ? Color(nsColor: .systemGreen) : Color(nsColor: .systemRed) }
+    
+    private func rowColor(ok: Bool, isWarning: Bool) -> Color {
+        if !ok { return Color(nsColor: .systemRed) }
+        if isWarning { return Color(nsColor: .systemOrange) }
+        return Color(nsColor: .systemGreen)
+    }
     
     var body: some View {
         ZStack {
-            Color.black.opacity(0.4)
-                .ignoresSafeArea()
-                .onTapGesture { onDismiss() }
+            // 半透明遮罩：仅覆盖主功能区，不参与命中测试
+            Color.black.opacity(0.3)
+                .allowsHitTesting(false)
             
             VStack(spacing: 0) {
-                // 顶部色条（绿/红）
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [accentColor, accentColor.opacity(0.8)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(height: 6)
-                
-                VStack(spacing: UIDesignSystem.Spacing.lg) {
-                    // 图标 + 标题
-                    HStack(spacing: UIDesignSystem.Spacing.sm) {
-                        Image(systemName: iconName)
-                            .font(.system(size: 36))
-                            .foregroundStyle(accentColor)
-                        Text(appLanguage.string(titleKey))
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(Color(NSColor.labelColor))
-                    }
-                    .padding(.top, UIDesignSystem.Padding.lg)
-                    
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+                    Text(appLanguage.string(titleKey))
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(Color(NSColor.labelColor))
                     Text(timeString)
-                        .font(.subheadline.monospacedDigit())
+                        .font(.caption.monospacedDigit())
                         .foregroundStyle(Color(NSColor.secondaryLabelColor))
                     
-                    // 判定项列表
-                    VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+                    VStack(alignment: .leading, spacing: 10) {
                         ForEach(Array(criteria.enumerated()), id: \.offset) { _, item in
-                            HStack(spacing: UIDesignSystem.Spacing.sm) {
-                                Image(systemName: item.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                    .foregroundStyle(item.ok ? Color.green : Color.red)
-                                    .font(.body)
-                                Text(item.name)
-                                    .font(.subheadline)
-                                    .foregroundStyle(Color(NSColor.labelColor))
-                                Spacer()
+                            let color = rowColor(ok: item.ok, isWarning: item.isWarning)
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .center, spacing: 8) {
+                                    Text(item.ok ? "✓" : "✗")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(color)
+                                    Text(item.name)
+                                        .font(.subheadline)
+                                        .foregroundStyle(Color(NSColor.labelColor))
+                                    Spacer(minLength: 0)
+                                }
+                                if let detail = item.detail, !detail.isEmpty {
+                                    Text(detail)
+                                        .font(.caption)
+                                        .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
-                            .padding(.horizontal, UIDesignSystem.Padding.sm)
-                            .padding(.vertical, 6)
-                            .background(Color(NSColor.separatorColor).opacity(0.25))
-                            .cornerRadius(8)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(color.opacity(0.28))
+                            .cornerRadius(6)
                         }
                     }
-                    .padding(.horizontal)
                     
-                    Button(appLanguage.string("production_test.result_overlay_dismiss")) {
-                        onDismiss()
+                    HStack {
+                        Spacer(minLength: 0)
+                        Text(appLanguage.string("production_test.result_overlay_dismiss"))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .frame(minWidth: 200)
+                            .padding(.vertical, 10)
+                            .background(accentColor, in: RoundedRectangle(cornerRadius: 6))
+                            .contentShape(Rectangle())
+                            .onTapGesture { onDismiss() }
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(accentColor)
-                    .padding(.bottom, UIDesignSystem.Padding.lg)
                 }
-                .frame(minWidth: 320, maxWidth: 420)
-                .background(Color(NSColor.controlBackgroundColor))
+                .padding(UIDesignSystem.Padding.xl)
+                .frame(minWidth: 320, maxWidth: 440)
+                .background(Color(NSColor.windowBackgroundColor))
             }
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .shadow(color: .black.opacity(0.25), radius: 24, x: 0, y: 12)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.15), radius: 16, x: 0, y: 8)
+            .allowsHitTesting(true)
+            .contentShape(RoundedRectangle(cornerRadius: 12))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onExitCommand { onDismiss() }
     }
 }
 

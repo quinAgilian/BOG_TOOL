@@ -158,6 +158,7 @@
 "production_test.test_result_summary" = "测试结果摘要";
 "production_test.test_results" = "测试结果";
 "production_test.passed_steps" = "通过步骤";
+"production_test.overlay_step_skipped" = "测试跳过";
 
 /* 产测规则 */
 "production_test_rules.title" = "产测规则 (SOP)";

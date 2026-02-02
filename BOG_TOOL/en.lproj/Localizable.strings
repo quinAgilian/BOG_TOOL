@@ -158,6 +158,7 @@
 "production_test.test_result_summary" = "Test Result Summary";
 "production_test.test_results" = "Test Results";
 "production_test.passed_steps" = "Passed Steps";
+"production_test.overlay_step_skipped" = "Test skipped";
 
 /* Production test rules */
 "production_test_rules.title" = "Production Test Rules (SOP)";

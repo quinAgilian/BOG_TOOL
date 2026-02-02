@@ -97,8 +97,9 @@ struct ContentView: View {
                         }
                     }
                     .padding(UIDesignSystem.Padding.sm)
+                    .frame(minWidth: 320, minHeight: 700)
                 }
-                .frame(minWidth: 320)
+                .frame(minWidth: 320, maxHeight: .infinity)
             }
             .frame(minWidth: UIDesignSystem.Window.leftPanelMinWidth)
             .overlay {
