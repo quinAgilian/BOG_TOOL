@@ -1283,15 +1283,35 @@ struct ProductionTestView: View {
                         return
                     }
                     
-                    // 验证 Bootloader 版本
-                    if !rules.bootloaderVersion.isEmpty {
-                        if let blVersion = ble.bootloaderVersion, blVersion == rules.bootloaderVersion {
-                            self.log("✓ Bootloader 版本验证通过: \(blVersion)", level: .info)
-                            resultMessages.append("BL: \(blVersion)")
-                        } else {
-                            self.log("警告：Bootloader 版本不匹配（期望: \(rules.bootloaderVersion), 实际: \(ble.bootloaderVersion ?? "未知")）", level: .warning)
-                            resultMessages.append("BL: ⚠️")
+                    // 验证 Bootloader 版本（小于 2 直接报错）
+                    if let blVersionStr = ble.bootloaderVersion {
+                        let blNum = Int(blVersionStr.trimmingCharacters(in: .whitespaces))
+                        if let num = blNum, num < 2 {
+                            self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
+                            stepStatuses[step.id] = .failed
+                            stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
+                            isRunning = false
+                            currentStepId = nil
+                            return
                         }
+                        if !rules.bootloaderVersion.isEmpty {
+                            if blVersionStr == rules.bootloaderVersion {
+                                self.log("✓ Bootloader 版本验证通过: \(blVersionStr)", level: .info)
+                                resultMessages.append("BL: \(blVersionStr)")
+                            } else {
+                                self.log("警告：Bootloader 版本不匹配（期望: \(rules.bootloaderVersion), 实际: \(blVersionStr)）", level: .warning)
+                                resultMessages.append("BL: ⚠️")
+                            }
+                        } else {
+                            resultMessages.append("BL: \(blVersionStr)")
+                        }
+                    } else {
+                        self.log("错误：无法读取 Bootloader 版本", level: .error)
+                        stepStatuses[step.id] = .failed
+                        stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_unreadable")
+                        isRunning = false
+                        currentStepId = nil
+                        return
                     }
                     
                     // 验证 FW 版本（仅检查是否需要升级，不在此步执行 OTA；OTA 在「断开前 OTA」步骤执行）

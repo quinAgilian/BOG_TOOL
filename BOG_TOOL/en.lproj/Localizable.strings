@@ -152,6 +152,8 @@
 "production_test.disconnected_after_ota" = "Disconnected (OTA reboot)";
 "production_test.ota_not_triggered" = "OTA: Not triggered (FW matched or option off)";
 "production_test.sn_invalid" = "SN Invalid";
+"production_test.bootloader_too_old" = "Bootloader version too old (required ≥ 2)";
+"production_test.bootloader_unreadable" = "Cannot read Bootloader version";
 "production_test_rules.summary" = "Test Rules Summary";
 "production_test.test_result_summary" = "Test Result Summary";
 "production_test.test_results" = "Test Results";

@@ -152,6 +152,8 @@
 "production_test.disconnected_after_ota" = "已断开（OTA 重启）";
 "production_test.ota_not_triggered" = "OTA: 未触发（FW 已匹配或未使能）";
 "production_test.sn_invalid" = "SN无效";
+"production_test.bootloader_too_old" = "Bootloader 版本过低（要求 ≥ 2）";
+"production_test.bootloader_unreadable" = "无法读取 Bootloader 版本";
 "production_test_rules.summary" = "测试规则摘要";
 "production_test.test_result_summary" = "测试结果摘要";
 "production_test.test_results" = "测试结果";
