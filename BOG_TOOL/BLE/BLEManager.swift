@@ -897,8 +897,8 @@ final class BLEManager: NSObject, ObservableObject {
             let mtu = peripheral.maximumWriteValueLength(for: .withResponse)
             mtuInfo = "\(mtu) bytes"
         }
-        // 理论时间估算：基于每包约 64ms（BLE响应42ms + 延时10ms + 其他12ms）
-        let estimatedTimeSeconds = Double(totalChunks) * 0.064
+        // 理论时间估算：受 BLE RTT 限制（非连接间隔），每包约 60–70ms（RTT + 包间延时），故约 15 包/秒、3KB/s
+        let estimatedTimeSeconds = Double(totalChunks) * 0.065
         let estimatedMinutes = Int(estimatedTimeSeconds) / 60
         let estimatedSeconds = Int(estimatedTimeSeconds) % 60
         
@@ -1539,6 +1539,8 @@ extension BLEManager: CBCentralManagerDelegate {
             // 连接间隔主要由设备端（Peripheral）通过 L2CAP Connection Parameter Update Request 决定
             // 可以通过观察 BLE 响应时间（如 OTA 时的平均响应时间）来推断连接间隔
             // 典型值：30ms 连接间隔 → 约 60ms BLE RTT；7.5-15ms 连接间隔 → 约 15-30ms BLE RTT
+            // 说明：30ms 是连接事件间隔，不是「每包可发 30 次」；每包需等 writeWithResponse 回调（RTT），
+            // 故实际约 1/0.06≈16.7 包/秒、约 3.3KB/s，600KB 固件约 180–200s，并非 30 包/秒×200s=1200KB
             if #available(macOS 10.13, *) {
                 // macOS 10.13+ 可以通过 maximumWriteValueLength 获取 MTU 相关信息
                 let mtu = peripheral.maximumWriteValueLength(for: .withResponse)
