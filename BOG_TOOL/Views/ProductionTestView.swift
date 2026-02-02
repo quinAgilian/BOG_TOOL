@@ -445,44 +445,50 @@ struct ProductionTestView: View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
             Divider()
             
-                    // 详细结果信息
-                    if !result.isEmpty {
+            // 详细结果信息
+            if !result.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(appLanguage.string("production_test.test_result"))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    
+                    Text(result)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                }
+                .padding(.vertical, UIDesignSystem.Padding.xs)
+            }
+            
+            // 相关日志（注意保护下标范围，防止 testLog 被清空后 stepLogRanges 仍然存在）
+            if let logRange = stepLogRanges[step.id], !testLog.isEmpty {
+                // 将区间裁剪到当前 testLog 的合法范围内
+                let clampedStart = max(0, min(logRange.start, testLog.count))
+                let clampedEnd = max(clampedStart, min(logRange.end, testLog.count))
+                
+                if clampedStart < clampedEnd {
+                    let stepLogs = Array(testLog[clampedStart..<clampedEnd])
+                    if !stepLogs.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(appLanguage.string("production_test.test_result"))
+                            Text(appLanguage.string("production_test.execution_log"))
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                             
-                            Text(result)
-                                .font(.caption)
-                                .foregroundStyle(.primary)
-                                .textSelection(.enabled)
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    ForEach(Array(stepLogs.enumerated()), id: \.offset) { _, logLine in
+                                        Text(logLine)
+                                            .font(.system(.caption2, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                            }
+                            .frame(maxHeight: 150)
                         }
                         .padding(.vertical, UIDesignSystem.Padding.xs)
                     }
-                    
-                    // 相关日志
-                    if let logRange = stepLogRanges[step.id] {
-                        let stepLogs = Array(testLog[logRange.start..<min(logRange.end, testLog.count)])
-                        if !stepLogs.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(appLanguage.string("production_test.execution_log"))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                        
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach(Array(stepLogs.enumerated()), id: \.offset) { _, logLine in
-                                    Text(logLine)
-                                        .font(.system(.caption2, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }
-                        }
-                        .frame(maxHeight: 150)
-                    }
-                    .padding(.vertical, UIDesignSystem.Padding.xs)
                 }
             }
         }
@@ -1097,6 +1103,7 @@ struct ProductionTestView: View {
               let device = ble.discoveredDevices.first(where: { $0.id == selectedDeviceId }) else {
             // 没有选中设备，提示用户
             testLog.removeAll()
+            stepLogRanges.removeAll()
             stepIndex = 0
             log("错误：请先选中设备", level: .error)
             return
@@ -1108,6 +1115,7 @@ struct ProductionTestView: View {
             ble.clearLog()
             isRunning = true
             testLog.removeAll()
+            stepLogRanges.removeAll()
             stepIndex = 0
             log("正在连接设备: \(device.name)...", level: .info)
             ble.connect(to: device)
@@ -1144,6 +1152,7 @@ struct ProductionTestView: View {
             ble.clearLog()
             isRunning = true
             testLog.removeAll()
+            stepLogRanges.removeAll()
             stepIndex = 0
             stepResults.removeAll()
             initializeStepStatuses()
