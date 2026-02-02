@@ -112,6 +112,8 @@
 "debug.pressure" = "压力";
 "debug.open_pressure" = "开阀压力";
 "debug.close_pressure" = "关阀压力";
+"debug.gas_system_status" = "气体系统状态";
+"debug.co2_pressure_limits" = "CO2 压力限值";
 "debug.read" = "读取";
 "debug.ota_production_test_in_progress" = "产测 OTA 进行中，请切回产测界面操作。";
 
@@ -183,6 +185,9 @@
 "production_test_rules.step4_title" = "读取压力值";
 "production_test_rules.step4_desc" = "读取关闭和开启状态下的压力值。";
 "production_test_rules.step4_criteria" = "✓ 通过：关闭状态 > 1.300 mbar，开启状态 > 1.1 mbar。";
+"production_test_rules.step_gas_system_status_title" = "读取 Gas system status";
+"production_test_rules.step_gas_system_status_desc" = "读取气体系统状态并解码，须为 1 (ok) 才通过。";
+"production_test_rules.step_gas_system_status_criteria" = "✓ 通过：Gas system status = 1 (ok)。✗ 失败：非 1（如 0 initially closed、2 leak 等）。";
 "production_test_rules.step5_title" = "待定";
 "production_test_rules.step5_desc" = "待定义的额外测试步骤。";
 "production_test_rules.step5_criteria" = "";

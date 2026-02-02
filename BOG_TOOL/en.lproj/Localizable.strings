@@ -112,6 +112,8 @@
 "debug.pressure" = "Pressure";
 "debug.open_pressure" = "Open pressure";
 "debug.close_pressure" = "Close pressure";
+"debug.gas_system_status" = "Gas system status";
+"debug.co2_pressure_limits" = "CO2 Pressure Limits";
 "debug.read" = "Read";
 "debug.ota_production_test_in_progress" = "Production test OTA in progress. Switch to Production Test tab to manage.";
 
@@ -183,6 +185,9 @@
 "production_test_rules.step4_title" = "Read Pressure Values";
 "production_test_rules.step4_desc" = "Read pressure values in both closed and open states.";
 "production_test_rules.step4_criteria" = "✓ Pass: Closed state > 1.300 mbar, Open state > 1.1 mbar.";
+"production_test_rules.step_gas_system_status_title" = "Read Gas system status";
+"production_test_rules.step_gas_system_status_desc" = "Read and decode gas system status; must be 1 (ok) to pass.";
+"production_test_rules.step_gas_system_status_criteria" = "✓ Pass: Gas system status = 1 (ok). ✗ Fail: not 1 (e.g. 0 initially closed, 2 leak).";
 "production_test_rules.step5_title" = "TBD";
 "production_test_rules.step5_desc" = "Additional test steps to be defined.";
 "production_test_rules.step5_criteria" = "";

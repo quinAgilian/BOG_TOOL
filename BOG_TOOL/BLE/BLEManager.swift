@@ -30,6 +30,10 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var lastPressureValue: String = "--"
     /// 开阀压力（00000003-AEF1-...，CO2 Pressure when valve is open）
     @Published var lastPressureOpenValue: String = "--"
+    /// Gas system status（00000001-AEF1-...，读：0 initially closed, 1 ok, 2 leak, 8/9 low gas…）
+    @Published var lastGasSystemStatusValue: String = "--"
+    /// CO2 Pressure Limits（00000004-AEF1-...，6 个 mbar 值：empty_lo, empty_hi, leak, press_change, press_rise, lglo_leak）
+    @Published var lastPressureLimitsValue: String = "--"
     @Published var lastRTCValue: String = "--"
     /// 最近一次 RTC 读取成功时的系统时间（仅在该次读取时更新）
     @Published var lastSystemTimeAtRTCRead: String = "--"
@@ -187,6 +191,8 @@ final class BLEManager: NSObject, ObservableObject {
     private var valveStateCharacteristic: CBCharacteristic?
     private var pressureCharacteristic: CBCharacteristic?
     private var pressureOpenCharacteristic: CBCharacteristic?
+    private var gasSystemStatusCharacteristic: CBCharacteristic?
+    private var pressureLimitsCharacteristic: CBCharacteristic?
     private var rtcCharacteristic: CBCharacteristic?
     private var testingCharacteristic: CBCharacteristic?
     private var otaStatusCharacteristic: CBCharacteristic?
@@ -201,6 +207,7 @@ final class BLEManager: NSObject, ObservableObject {
     private var rtcCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.rtc) }
     private var testingCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.testing) }
     private var gasSystemStatusCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.gasSystemStatus) }
+    private var co2PressureLimitsCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.co2PressureLimits) }
     private var otaStatusCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.otaStatus) }
     private var otaDataCBUUID: CBUUID? { GattMapping.characteristicUUID(forKey: GattMapping.Key.otaData) }
     
@@ -506,6 +513,18 @@ final class BLEManager: NSObject, ObservableObject {
     func readPressureOpen(silent: Bool = false) {
         readCharacteristic(pressureOpenCharacteristic)
         if !silent { appendLog("请求读取开阀压力") }
+    }
+    
+    /// 读取 Gas system status（00000001-AEF1-...）；silent 为 true 时不打日志
+    func readGasSystemStatus(silent: Bool = false) {
+        readCharacteristic(gasSystemStatusCharacteristic)
+        if !silent { appendLog("请求读取 Gas system status") }
+    }
+    
+    /// 读取 CO2 Pressure Limits（00000004-AEF1-...，6×mbar）；silent 为 true 时不打日志
+    func readPressureLimits(silent: Bool = false) {
+        readCharacteristic(pressureLimitsCharacteristic)
+        if !silent { appendLog("请求读取 CO2 Pressure Limits") }
     }
     
     /// RTC 测试：向 Schedule Time Write 写入十六进制触发，再从 OTA Testing 特征读取 RTC（7 字节）
@@ -1180,9 +1199,10 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
     
-    /// 按当前等级过滤后的日志（供 UI 显示）；过滤掉空行避免勾选 Debug 后出现大块空白
+    /// 按当前等级过滤后的日志（供 UI 显示）；仅保留最后若干条，避免条目过多时主线程重算/重绘整块日志导致卡顿、点击延迟
+    private static let displayedLogMaxCount = 250
     var displayedLogEntries: [LogEntry] {
-        logEntries.filter { entry in
+        let filtered = logEntries.filter { entry in
             guard !entry.line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
             switch entry.level {
             case .debug: return showLogLevelDebug
@@ -1191,6 +1211,8 @@ final class BLEManager: NSObject, ObservableObject {
             case .error: return showLogLevelError
             }
         }
+        if filtered.count <= Self.displayedLogMaxCount { return filtered }
+        return Array(filtered.suffix(Self.displayedLogMaxCount))
     }
     
     /// 清空日志
@@ -1235,10 +1257,11 @@ final class BLEManager: NSObject, ObservableObject {
     }
     
     /// 日志条数超过上限时一次性裁剪，减少频繁 removeFirst 带来的 UI 更新（缓解连续产测时日志卡顿）
+    private static let logEntriesTrimLimit = 300
     private func trimLogEntriesIfNeeded() {
-        let limit = 500
+        let limit = Self.logEntriesTrimLimit
         if logEntries.count > limit {
-            let dropCount = min(150, logEntries.count - limit + 50)
+            let dropCount = min(100, logEntries.count - limit + 20)
             logEntries.removeFirst(dropCount)
         }
     }
@@ -1370,6 +1393,8 @@ final class BLEManager: NSObject, ObservableObject {
             return formatRTCData(data)
         case GattMapping.Key.gasSystemStatus:
             return formatGasStatusData(data)
+        case GattMapping.Key.co2PressureLimits:
+            return formatPressureLimitsData(data)
         case GattMapping.Key.otaStatus:
             if let b = data.first { return "\(b)" }
             return hex
@@ -1396,6 +1421,8 @@ final class BLEManager: NSObject, ObservableObject {
             else if let u = valveStateCBUUID, char.uuid == u { valveStateCharacteristic = char }
             else if let u = pressureReadCBUUID, char.uuid == u { pressureCharacteristic = char }
             else if let u = pressureOpenCBUUID, char.uuid == u { pressureOpenCharacteristic = char }
+            else if let u = gasSystemStatusCBUUID, char.uuid == u { gasSystemStatusCharacteristic = char }
+            else if let u = co2PressureLimitsCBUUID, char.uuid == u { pressureLimitsCharacteristic = char }
             else if let u = rtcCBUUID, char.uuid == u { rtcCharacteristic = char }
             else if let u = testingCBUUID, char.uuid == u { testingCharacteristic = char }
             else if let u = otaStatusCBUUID, char.uuid == u { otaStatusCharacteristic = char }
@@ -1538,6 +1565,8 @@ extension BLEManager: CBCentralManagerDelegate {
             valveStateCharacteristic = nil
             pressureCharacteristic = nil
             pressureOpenCharacteristic = nil
+            gasSystemStatusCharacteristic = nil
+            pressureLimitsCharacteristic = nil
             rtcCharacteristic = nil
             testingCharacteristic = nil
             otaStatusCharacteristic = nil
@@ -1547,6 +1576,8 @@ extension BLEManager: CBCentralManagerDelegate {
             areCharacteristicsReady = false
             lastPressureValue = "--"
             lastPressureOpenValue = "--"
+            lastGasSystemStatusValue = "--"
+            lastPressureLimitsValue = "--"
             lastRTCValue = "--"
             lastSystemTimeAtRTCRead = "--"
             lastTimeDiffFromRTCRead = "--"
@@ -1794,7 +1825,11 @@ extension BLEManager: CBPeripheralDelegate {
                 appendLog("RTC raw: \(hex)")
                 appendLog("RTC: \(lastRTCValue)")
             } else if let u = gasSystemStatusCBUUID, characteristic.uuid == u {
-                appendLog("Gas status: \(formatGasStatusData(data))")
+                lastGasSystemStatusValue = formatGasStatusData(data)
+                appendLog("Gas system status: \(lastGasSystemStatusValue)")
+            } else if let u = co2PressureLimitsCBUUID, characteristic.uuid == u {
+                lastPressureLimitsValue = formatPressureLimitsData(data)
+                appendLog("CO2 Pressure Limits: \(lastPressureLimitsValue.replacingOccurrences(of: "\n", with: ", "))")
             } else if let u = otaStatusCBUUID, characteristic.uuid == u, let b = data.first {
                 lastOtaStatusValue = b
                 // 即使 OTA 进行中也打印日志，方便调试
@@ -1972,9 +2007,26 @@ extension BLEManager: CBPeripheralDelegate {
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
-    /// Gas system status: 0 initially closed, 1 ok, 2 leak, 3–7 见 GattServices.json
+    /// CO2 Pressure Limits: 6 × UInt16 (mbar)，顺序 gas_empty_low, gas_empty_high, leak, press_change, press_rise, lglo_leak
+    @MainActor private func formatPressureLimitsData(_ data: Data) -> String {
+        let labels = ["gas_empty_low", "gas_empty_high", "leak", "press_change", "press_rise", "lglo_leak"]
+        guard data.count >= 12 else {
+            return data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        }
+        var lines: [String] = []
+        for i in 0..<6 {
+            let offset = i * 2
+            let mbar = data.withUnsafeBytes { (p: UnsafeRawBufferPointer) -> UInt16 in
+                p.load(fromByteOffset: offset, as: UInt16.self)
+            }
+            lines.append("\(labels[i]): \(mbar) mbar")
+        }
+        return lines.joined(separator: "\n")
+    }
+    
+    /// Gas system status: 0 initially closed, 1 ok, 2 leak, 3–7 reserved, 8 low gas low output (ok), 9 low gas low output leak check
     @MainActor private func formatGasStatusData(_ data: Data) -> String {
-        let statusNames = ["initially closed", "ok", "leak", "check long closed", "leak check open", "leak confirm closed", "empty", "empty resolve"]
+        let statusNames = ["initially closed", "ok", "leak", "reserved", "reserved", "reserved", "reserved", "reserved", "low gas (ok)", "low gas leak check"]
         guard let b = data.first, Int(b) < statusNames.count else {
             return data.map { String(format: "%02X", $0) }.joined(separator: " ")
         }

@@ -26,6 +26,8 @@ struct DebugModeView: View {
             rtcSection
             valveSection
             pressureSection
+            gasSystemStatusSection
+            co2PressureLimitsSection
             // 谁调用的 OTA 谁管理：产测 OTA 进行中时 Debug 区不随动，仅提示切回产测
             if ble.isOTAInProgress && ble.otaInitiatedByProductionTest {
                 productionTestOTAInProgressHint
@@ -456,6 +458,100 @@ struct DebugModeView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!ble.isConnected || ble.isOTAInProgress)
+            }
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+    
+    // MARK: - Gas system status 与 CO2 Pressure Limits 区域（仅读，同卡紧凑布局）
+    
+    private var gasSystemStatusSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            Text(appLanguage.string("debug.gas_system_status"))
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
+                    Text(ble.lastGasSystemStatusValue)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                }
+                .padding(.horizontal, UIDesignSystem.Padding.md)
+                .padding(.vertical, UIDesignSystem.Padding.xs)
+                .background(Color.secondary.opacity(0.15))
+                .cornerRadius(UIDesignSystem.CornerRadius.sm)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                Button {
+                    ble.readGasSystemStatus()
+                } label: {
+                    Text(appLanguage.string("debug.read"))
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!ble.isConnected || ble.isOTAInProgress)
+            }
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+    
+    /// CO2 Pressure Limits：6 个 mbar 值，2×3 网格 + 读取按钮
+    private var co2PressureLimitsSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            Text(appLanguage.string("debug.co2_pressure_limits"))
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+
+            let lines = ble.lastPressureLimitsValue.isEmpty || ble.lastPressureLimitsValue == "--"
+                ? [String]()
+                : ble.lastPressureLimitsValue.components(separatedBy: "\n").filter { !$0.isEmpty }
+            
+            if lines.isEmpty {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                    Text("--")
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Spacer(minLength: UIDesignSystem.Spacing.lg)
+                    Button {
+                        ble.readPressureLimits()
+                    } label: {
+                        Text(appLanguage.string("debug.read"))
+                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!ble.isConnected || ble.isOTAInProgress)
+                }
+            } else {
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), alignment: .leading),
+                    GridItem(.flexible(), alignment: .leading)
+                ], spacing: UIDesignSystem.Spacing.xs) {
+                    ForEach(lines, id: \.self) { line in
+                        Text(line)
+                            .font(UIDesignSystem.Typography.monospacedCaption)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .padding(.horizontal, UIDesignSystem.Padding.sm)
+                            .padding(.vertical, UIDesignSystem.Padding.xs)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.12))
+                            .cornerRadius(UIDesignSystem.CornerRadius.sm)
+                    }
+                }
+                HStack {
+                    Spacer(minLength: UIDesignSystem.Spacing.lg)
+                    Button {
+                        ble.readPressureLimits()
+                    } label: {
+                        Text(appLanguage.string("debug.read"))
+                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!ble.isConnected || ble.isOTAInProgress)
+                }
             }
         }
         .padding(UIDesignSystem.Padding.sm)

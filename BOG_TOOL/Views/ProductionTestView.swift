@@ -653,8 +653,9 @@ struct ProductionTestView: View {
             fwOk = false
         }
         let pressureOk = !enabled.contains(where: { $0.id == TestStep.readPressure.id }) || stepStatuses[TestStep.readPressure.id] == .passed
+        let gasSystemStatusOk = !enabled.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) || stepStatuses[TestStep.readGasSystemStatus.id] == .passed
         let valveOk = !enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) || stepStatuses[TestStep.ensureValveOpen.id] == .passed
-        return connectOk && rtcOk && fwOk && pressureOk && valveOk
+        return connectOk && rtcOk && fwOk && pressureOk && gasSystemStatusOk && valveOk
     }
     
     /// 用于 overlay 报表的判定项列表：(名称, 是否通过)
@@ -674,6 +675,9 @@ struct ProductionTestView: View {
         }
         if enabled.contains(where: { $0.id == TestStep.readPressure.id }) {
             list.append((appLanguage.string("production_test_rules.step4_title"), stepStatuses[TestStep.readPressure.id] == .passed))
+        }
+        if enabled.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+            list.append((appLanguage.string("production_test_rules.step_gas_system_status_title"), stepStatuses[TestStep.readGasSystemStatus.id] == .passed))
         }
         if enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
             list.append((appLanguage.string("production_test_rules.step_valve_title"), stepStatuses[TestStep.ensureValveOpen.id] == .passed))
@@ -871,7 +875,7 @@ struct ProductionTestView: View {
     /// 加载测试规则配置
     private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds) {
         // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启等步骤）
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .ensureValveOpen, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         var steps: [TestStep] = []
@@ -882,7 +886,7 @@ struct ProductionTestView: View {
                 }
             }
         } else {
-            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .ensureValveOpen, .tbd, .otaBeforeDisconnect, .disconnectDevice]
+            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .ensureValveOpen, .tbd, .otaBeforeDisconnect, .disconnectDevice]
         }
         
         // 确保第一步和最后一步在正确位置
@@ -901,6 +905,16 @@ struct ProductionTestView: View {
         // 迁移：若旧配置中无「确保电磁阀开启」步骤，则插入在断开连接之前
         if !steps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
             steps.insert(TestStep.ensureValveOpen, at: steps.count - 1)
+        }
+        // 迁移：若旧配置中无「读取 Gas system status」步骤，则插入在读取压力之后、确保电磁阀之前
+        if !steps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
+                steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
+                steps.insert(TestStep.readGasSystemStatus, at: idx)
+            } else {
+                steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
+            }
         }
         
         // 加载每个步骤的启用状态
@@ -1045,7 +1059,8 @@ struct ProductionTestView: View {
             return true
         }
         
-        // 否则发送开启命令，然后等待状态变为 open
+        // 判断为关闭，需要打开，尝试重新写入开启
+        self.log("电磁阀当前为关闭状态，尝试重新写入开启", level: .info)
         self.log("确保阀门打开...", level: .info)
         ble.setValve(open: true)
         
@@ -1065,12 +1080,12 @@ struct ProductionTestView: View {
                 return true
             }
             if Date().timeIntervalSince(startTime) >= valveTimeout {
-                self.log("警告：阀门打开失败（超时，\(Int(valveTimeout))秒）", level: .warning)
+                self.log("错误：阀门打开失败（超时，\(Int(valveTimeout))秒）", level: .error)
                 return false
             }
         }
         
-        self.log("警告：阀门打开失败（超时，\(Int(valveTimeout))秒）", level: .warning)
+        self.log("错误：阀门打开失败（超时，\(Int(valveTimeout))秒）", level: .error)
         return false
     }
     
@@ -1565,6 +1580,40 @@ struct ProductionTestView: View {
                     stepResults[step.id] = pressureMessages.joined(separator: "\n")
                     stepStatuses[step.id] = pressurePassed ? .passed : .failed
                     
+                case "step_gas_system_status": // 读取 Gas system status，解码后须为 1 (ok)
+                    self.log("步骤: 读取 Gas system status", level: .info)
+                    ble.readGasSystemStatus()
+                    let gasStatusTimeoutSeconds = rules.thresholds.deviceInfoReadTimeout
+                    let maxGasStatusWaitCount = Int(gasStatusTimeoutSeconds * 10)
+                    var gasStatusWaitCount = 0
+                    while (ble.lastGasSystemStatusValue.isEmpty || ble.lastGasSystemStatusValue == "--") && gasStatusWaitCount < maxGasStatusWaitCount {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        gasStatusWaitCount += 1
+                        if gasStatusWaitCount % 20 == 0 {
+                            let elapsed = Double(gasStatusWaitCount) / 10.0
+                            self.log("等待 Gas system status 读取中...（已等待 \(String(format: "%.1f", elapsed))秒）", level: .debug)
+                        }
+                    }
+                    let gasStatusStr = ble.lastGasSystemStatusValue
+                    if gasStatusStr.isEmpty || gasStatusStr == "--" {
+                        self.log("错误：Gas system status 读取超时或无效（\(Int(gasStatusTimeoutSeconds))秒）", level: .error)
+                        stepResults[step.id] = "Gas system status: 读取超时或无效"
+                        stepStatuses[step.id] = .failed
+                    } else {
+                        self.log("Gas system status 读取值: \(gasStatusStr)", level: .info)
+                        // 解码：1 = ok 为通过，其余均为失败
+                        let isOk = gasStatusStr.hasPrefix("1 (ok)")
+                        if isOk {
+                            self.log("✓ Gas system status 验证通过: \(gasStatusStr)", level: .info)
+                            stepResults[step.id] = "Gas system status: \(gasStatusStr) ✓"
+                            stepStatuses[step.id] = .passed
+                        } else {
+                            self.log("Gas system status 检查失败: \(gasStatusStr)，期望 1 (ok)", level: .error)
+                            stepResults[step.id] = "Gas system status: \(gasStatusStr)，期望 1 (ok)"
+                            stepStatuses[step.id] = .failed
+                        }
+                    }
+                    
                 case "step_valve": // 确保电磁阀是开启的
                     self.log("步骤: 确保电磁阀是开启的", level: .info)
                     let valveOpened = await ensureValveOpen()
@@ -1572,7 +1621,7 @@ struct ProductionTestView: View {
                         stepResults[step.id] = appLanguage.string("production_test_rules.step_valve_criteria")
                         stepStatuses[step.id] = .passed
                     } else {
-                        self.log("电磁阀打开失败或超时", level: .warning)
+                        self.log("电磁阀打开失败或超时", level: .error)
                         stepResults[step.id] = "电磁阀: 打开失败或超时"
                         stepStatuses[step.id] = .failed
                     }
@@ -1659,7 +1708,7 @@ struct ProductionTestView: View {
                     self.log("步骤5: 待定步骤（跳过）", level: .info)
                     stepStatuses[step.id] = .skipped
                     
-                case "step_disconnect": // 断开连接
+                case "step_disconnect": // 安全断开连接（阀门状态已在「确保电磁阀是开启的」步骤中确认，此处仅执行断开）
                     self.log("最后步骤: 安全断开连接", level: .info)
                     
                     if ble.isOTARebootDisconnected {
@@ -1668,11 +1717,6 @@ struct ProductionTestView: View {
                         stepResults[step.id] = appLanguage.string("production_test.disconnected_after_ota")
                         stepStatuses[step.id] = .passed
                     } else {
-                        // 断开连接前确保阀门打开（复用debug mode的逻辑）
-                        let valveOpened = await ensureValveOpen()
-                        if !valveOpened {
-                            self.log("警告：断开前阀门打开失败，继续断开...", level: .warning)
-                        }
                         self.log("断开连接...", level: .info)
                         ble.disconnect()
                         try? await Task.sleep(nanoseconds: 1000_000_000)

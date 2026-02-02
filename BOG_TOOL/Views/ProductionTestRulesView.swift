@@ -16,6 +16,8 @@ struct TestStep: Identifiable, Equatable {
     static let verifyFirmware = TestStep(id: "step2", key: "step2", isLocked: false, enabled: true)
     static let readRTC = TestStep(id: "step3", key: "step3", isLocked: false, enabled: true)
     static let readPressure = TestStep(id: "step4", key: "step4", isLocked: false, enabled: true)
+    /// 读取 Gas system status（0 initially closed, 1 ok, 2 leak…；产测要求 1 ok）
+    static let readGasSystemStatus = TestStep(id: "step_gas_system_status", key: "step_gas_system_status", isLocked: false, enabled: true)
     static let tbd = TestStep(id: "step5", key: "step5", isLocked: false, enabled: false)
     /// 确保电磁阀是开启的（可调顺序、有使能开关）
     static let ensureValveOpen = TestStep(id: "step_valve", key: "step_valve", isLocked: false, enabled: true)
@@ -110,12 +112,13 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400
     }()
     
-    // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「确保电磁阀开启」等可调顺序步骤
+    // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「读取 Gas system status」「确保电磁阀开启」等可调顺序步骤
     private static let defaultSteps: [TestStep] = [
         .connectDevice,
         .verifyFirmware,
         .readRTC,
         .readPressure,
+        .readGasSystemStatus,
         .ensureValveOpen,
         .tbd,
         .otaBeforeDisconnect,
@@ -124,7 +127,7 @@ struct ProductionTestRulesView: View {
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .tbd, .ensureValveOpen, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         // 加载步骤顺序
@@ -155,6 +158,16 @@ struct ProductionTestRulesView: View {
         // 迁移：若旧配置中无「确保电磁阀开启」步骤，则插入在断开连接之前
         if !steps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
             steps.insert(TestStep.ensureValveOpen, at: steps.count - 1)
+        }
+        // 迁移：若旧配置中无「读取 Gas system status」步骤，则插入在读取压力之后、确保电磁阀之前
+        if !steps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
+                steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
+                steps.insert(TestStep.readGasSystemStatus, at: idx)
+            } else {
+                steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
+            }
         }
         
         // 加载每个步骤的启用状态

@@ -100,9 +100,13 @@ enum GattMapping {
     enum Key {
         static let valveControl = "valveControl"
         static let valveState = "valveState"
+        static let valveInterval = "valveInterval"
         static let pressureRead = "pressureRead"
         static let pressureOpen = "pressureOpen"
         static let gasSystemStatus = "gasSystemStatus"
+        static let co2PressureLimits = "co2PressureLimits"
+        static let co2Bottle = "co2Bottle"
+        static let scheduleReadWrite = "scheduleReadWrite"
         static let rtc = "rtc"
         static let testing = "testing"
         static let otaStatus = "otaStatus"
@@ -125,8 +129,13 @@ enum GattMapping {
     private static func fallbackCharacteristicUUIDs() -> [CBUUID] {
         [CBUUID(string: "00000002-B018-FCAD-2244-C82E6B682734"),
          CBUUID(string: "00000001-B018-FCAD-2244-C82E6B682734"),
+         CBUUID(string: "00000003-B018-FCAD-2244-C82E6B682734"),
          CBUUID(string: "00000002-AEF1-CA85-FB4D-3AAFEB7A605A"),
+         CBUUID(string: "00000003-AEF1-CA85-FB4D-3AAFEB7A605A"),
          CBUUID(string: "00000001-AEF1-CA85-FB4D-3AAFEB7A605A"),
+         CBUUID(string: "00000004-AEF1-CA85-FB4D-3AAFEB7A605A"),
+         CBUUID(string: "00000005-AEF1-CA85-FB4D-3AAFEB7A605A"),
+         CBUUID(string: "00000001-6037-C6A0-264E-309A67CEB3D1"),
          CBUUID(string: "00000002-6037-C6A0-264E-309A67CEB3D1"),
          CBUUID(string: "00000001-D1D0-4B64-AFCD-2F977AB4A11D"),
          CBUUID(string: "00000002-D1D0-4B64-AFCD-2F977AB4A11D"),
@@ -137,9 +146,13 @@ enum GattMapping {
         let map: [String: String] = [
             Key.valveControl: "00000002-B018-FCAD-2244-C82E6B682734",
             Key.valveState: "00000001-B018-FCAD-2244-C82E6B682734",
+            Key.valveInterval: "00000003-B018-FCAD-2244-C82E6B682734",
             Key.pressureRead: "00000002-AEF1-CA85-FB4D-3AAFEB7A605A",
             Key.pressureOpen: "00000003-AEF1-CA85-FB4D-3AAFEB7A605A",
             Key.gasSystemStatus: "00000001-AEF1-CA85-FB4D-3AAFEB7A605A",
+            Key.co2PressureLimits: "00000004-AEF1-CA85-FB4D-3AAFEB7A605A",
+            Key.co2Bottle: "00000005-AEF1-CA85-FB4D-3AAFEB7A605A",
+            Key.scheduleReadWrite: "00000001-6037-C6A0-264E-309A67CEB3D1",
             Key.rtc: "00000002-6037-C6A0-264E-309A67CEB3D1",
             Key.testing: "00000003-D1D0-4B64-AFCD-2F977AB4A11D",
             Key.otaStatus: "00000001-D1D0-4B64-AFCD-2F977AB4A11D",
