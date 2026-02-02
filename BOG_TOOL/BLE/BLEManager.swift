@@ -1013,8 +1013,8 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
     
-    /// 进度条/日志刷新间隔（每 N 包更新一次），减轻主线程负载，避免每包都触发 @Published 导致 OTA 速率骤降
-    private static let otaProgressUpdateInterval = 20
+
+    private static let otaProgressUpdateInterval = 10
     
     /// 在 didWriteValueFor(OTA Data) 成功后调用：仅延时再发下一包或写 finished(2)，不读 OTA Status（提速约 15–30s）
     private func continueOtaAfterChunkWrite() {

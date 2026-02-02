@@ -111,36 +111,15 @@ struct ContentView: View {
             // 右侧：日志
             if showLogArea {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        Text(appLanguage.string("log.title"))
-                            .font(UIDesignSystem.Typography.sectionTitle)
-                        Spacer()
-                        Toggle(isOn: $logAutoScrollEnabled) {
-                            Text(appLanguage.string("log.auto_scroll"))
-                                .font(UIDesignSystem.Typography.caption)
-                        }
-                        .toggleStyle(.checkbox)
-                        .help(appLanguage.string("log.auto_scroll_hint"))
-                        Button(appLanguage.string("log.copy_all")) {
-                            copyFullLogToPasteboard()
-                        }
-                        .buttonStyle(.plain)
-                        .help(appLanguage.string("log.copy_all_hint"))
-                        Button(appLanguage.string("log.clear")) {
-                            ble.clearLog()
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, UIDesignSystem.Padding.md)
-                    .padding(.vertical, UIDesignSystem.Padding.xs)
-                    .background(UIDesignSystem.Background.window)
-                    
-                    // 日志等级过滤
-                    LogLevelFilterView(ble: ble)
+                    Text(appLanguage.string("log.title"))
+                        .font(UIDesignSystem.Typography.sectionTitle)
+                        .padding(.horizontal, UIDesignSystem.Padding.md)
+                        .padding(.vertical, UIDesignSystem.Padding.xs)
+                        .background(UIDesignSystem.Background.window)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     
                     ScrollViewReader { proxy in
                         ScrollView {
-                            // 独立子 View + Equatable：仅当 displayedLogEntries/otaProgressLogLine 变化时重算，避免 Debug 下 BLE 其他 @Published 更新触发整块 250 条 AttributedString 重建导致卡顿
                             LogContentTextView(entries: ble.displayedLogEntries, progressLine: ble.otaProgressLogLine)
                                 .equatable()
                                 .padding(UIDesignSystem.Padding.sm)
@@ -159,6 +138,30 @@ struct ContentView: View {
                         }
                     }
                     .background(UIDesignSystem.Background.text)
+                    
+                    // 日志区底部：等级勾选、自动滚动、复制、清除
+                    HStack(spacing: UIDesignSystem.Spacing.md) {
+                        LogLevelFilterView(ble: ble)
+                        Spacer()
+                        Toggle(isOn: $logAutoScrollEnabled) {
+                            Text(appLanguage.string("log.auto_scroll"))
+                                .font(UIDesignSystem.Typography.caption)
+                        }
+                        .toggleStyle(.checkbox)
+                        .help(appLanguage.string("log.auto_scroll_hint"))
+                        Button(appLanguage.string("log.copy_all")) {
+                            copyFullLogToPasteboard()
+                        }
+                        .buttonStyle(.bordered)
+                        .help(appLanguage.string("log.copy_all_hint"))
+                        Button(appLanguage.string("log.clear")) {
+                            ble.clearLog()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.horizontal, UIDesignSystem.Padding.md)
+                    .padding(.vertical, UIDesignSystem.Padding.xs)
+                    .background(UIDesignSystem.Background.window)
                 }
                 .frame(minWidth: UIDesignSystem.Window.rightPanelMinWidth)
             }
@@ -323,7 +326,7 @@ private enum LogLevelColor {
     }
 }
 
-/// 日志等级过滤：Debug / Info / Warning / Error 勾选
+/// 日志等级过滤：Debug / Info / Warning / Error 勾选（无背景，供嵌入底部栏使用）
 private struct LogLevelFilterView: View {
     @ObservedObject var ble: BLEManager
     @EnvironmentObject private var appLanguage: AppLanguage
@@ -335,33 +338,29 @@ private struct LogLevelFilterView: View {
                 .foregroundStyle(UIDesignSystem.Foreground.secondary)
             Toggle(isOn: $ble.showLogLevelDebug) {
                 Text(appLanguage.string("log.level_debug"))
-                .font(UIDesignSystem.Typography.caption)
-                .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.debug))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.debug))
             }
             .toggleStyle(.checkbox)
             Toggle(isOn: $ble.showLogLevelInfo) {
                 Text(appLanguage.string("log.level_info"))
-                .font(UIDesignSystem.Typography.caption)
-                .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.info))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.info))
             }
             .toggleStyle(.checkbox)
             Toggle(isOn: $ble.showLogLevelWarning) {
                 Text(appLanguage.string("log.level_warning"))
-                .font(UIDesignSystem.Typography.caption)
-                .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.warning))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.warning))
             }
             .toggleStyle(.checkbox)
             Toggle(isOn: $ble.showLogLevelError) {
                 Text(appLanguage.string("log.level_error"))
-                .font(UIDesignSystem.Typography.caption)
-                .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.error))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(LogLevelColor.color(BLEManager.LogLevel.error))
             }
             .toggleStyle(.checkbox)
-            Spacer()
         }
-        .padding(.horizontal, UIDesignSystem.Padding.md)
-        .padding(.vertical, UIDesignSystem.Padding.xs)
-        .background(UIDesignSystem.Background.window)
     }
 }
 

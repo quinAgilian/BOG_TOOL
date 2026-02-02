@@ -35,32 +35,6 @@ struct DebugModeView: View {
                 OTASectionView(ble: ble, firmwareManager: firmwareManager)
             }
             UUIDDebugView(ble: ble)
-
-            if ble.isConnected {
-                HStack(spacing: UIDesignSystem.Spacing.md) {
-                    Text(appLanguage.string("debug.current_pressure"))
-                    Text(ble.lastPressureValue)
-                    Text("|")
-                    Text(ble.lastPressureOpenValue)
-                        .font(UIDesignSystem.Typography.monospacedCaption)
-                        .padding(.horizontal, UIDesignSystem.Padding.sm)
-                        .padding(.vertical, UIDesignSystem.Padding.xs)
-                        .background(Color.secondary.opacity(0.2))
-                        .cornerRadius(UIDesignSystem.CornerRadius.sm)
-                }
-
-                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
-                    Text(appLanguage.string("debug.device_rtc"))
-                        .font(UIDesignSystem.Typography.caption)
-                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    Text(ble.lastRTCValue)
-                        .font(UIDesignSystem.Typography.monospacedCaption)
-                        .padding(.horizontal, UIDesignSystem.Padding.sm)
-                        .padding(.vertical, UIDesignSystem.Padding.xs)
-                        .background(Color.secondary.opacity(0.2))
-                        .cornerRadius(UIDesignSystem.CornerRadius.sm)
-                }
-            }
         }
         .padding(UIDesignSystem.Padding.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
