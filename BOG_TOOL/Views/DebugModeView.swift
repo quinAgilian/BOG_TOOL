@@ -23,6 +23,9 @@ struct DebugModeView: View {
             // 连接/断开按钮区域
             connectionSection
 
+            // 设备操作：恢复出厂（擦除 NVM）、重启（仅 UI，逻辑后续实现）
+            deviceActionsSection
+
             rtcSection
             valveSection
             pressureSection
@@ -109,6 +112,49 @@ struct DebugModeView: View {
         .padding(UIDesignSystem.Padding.sm)
         .background(UIDesignSystem.Background.light)
         .cornerRadius(UIDesignSystem.CornerRadius.sm)
+    }
+    
+    // MARK: - 设备操作（恢复出厂 / 重启）
+
+    private var deviceActionsSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            Text(appLanguage.string("debug.device_actions"))
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Text(appLanguage.string("debug.factory_reset_hint"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                Button {
+                    Task { _ = await ble.sendTestingFactoryResetCommand() }
+                } label: {
+                    Text(appLanguage.string("debug.factory_reset"))
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
+            }
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Text(appLanguage.string("debug.reboot_hint"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                Button {
+                    Task { _ = await ble.sendTestingRebootCommand() }
+                } label: {
+                    Text(appLanguage.string("debug.reboot"))
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
+            }
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
     }
     
     // MARK: - RTC 区域（仅 UI）

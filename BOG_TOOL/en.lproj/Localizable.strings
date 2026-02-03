@@ -122,6 +122,11 @@
 "debug.co2_pressure_limits" = "CO2 Pressure Limits";
 "debug.read" = "Read";
 "debug.ota_production_test_in_progress" = "Production test OTA in progress. Switch to Production Test tab to manage.";
+"debug.factory_reset" = "Factory Reset";
+"debug.factory_reset_hint" = "Erase NVS (device will reboot immediately; requires firmware 1.1.2+)";
+"debug.reboot" = "Reboot";
+"debug.reboot_hint" = "Reboot device (unlock then write 0x00000001; requires firmware 1.1.2+)";
+"debug.device_actions" = "Device";
 
 /* UUID debug (read/write by characteristic) */
 "debug.uuid_title" = "UUID Read/Write";
@@ -162,7 +167,7 @@
 "production_test.test_result_summary" = "Test Result Summary";
 "production_test.test_results" = "Test Results";
 "production_test.passed_steps" = "Passed Steps";
-"production_test.overlay_step_skipped" = "Test skipped";
+"production_test.overlay_step_skipped" = "Test skipped due to SOP rule settings";
 
 /* Production test rules */
 "production_test_rules.title" = "Production Test Rules (SOP)";
@@ -173,6 +178,7 @@
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
 "production_test_rules.firmware_version_hint" = "Select target firmware version from dropdown; production test OTA step will use it directly.";
 "production_test_rules.firmware_version_no_entries" = "Add firmware in Firmware menu first, then select target version.";
+"production_test_rules.firmware_version_reboot_required_hint" = "Factory reset or reboot is enabled; only firmware versions that support these commands (e.g. ≥1.1.2) can be selected.";
 "production_test_rules.firmware_upgrade_enabled" = "Trigger OTA if FW mismatch";
 "production_test_rules.use_parsed_version" = "Use %@";
 "production_test_rules.use_parsed_version_hint" = "Use version parsed from firmware filename";
@@ -204,6 +210,13 @@
 "production_test_rules.step_valve_title" = "Ensure Solenoid Valve Is Open";
 "production_test_rules.step_valve_desc" = "Check and ensure the device solenoid valve is in the open state.";
 "production_test_rules.step_valve_criteria" = "✓ Pass: Solenoid valve is open.";
+"production_test_rules.step_reset_title" = "Reboot Device";
+"production_test_rules.step_reset_desc" = "Send reboot command via Testing characteristic (requires FW 1.1.2+ or 0.x > 0.4.1).";
+"production_test_rules.step_reset_criteria" = "✓ Pass: Reboot command sent and device disconnected.";
+"production_test_rules.step_factory_reset_title" = "Factory Reset";
+"production_test_rules.step_factory_reset_desc" = "Erase NVS via Testing characteristic (device will reboot; requires FW 1.1.2+ or 0.x > 0.4.1).";
+"production_test_rules.step_factory_reset_criteria" = "✓ Pass: Factory reset sent and device disconnected.";
+"production_test_rules.step_factory_reset_confirmed_pairing_removed" = "✓ Pass: Factory reset confirmed (device pairing cleared).";
 "production_test_rules.step_ota_title" = "OTA Before Disconnect";
 "production_test_rules.step_ota_desc" = "Runs only when step2 (Verify FW) found version mismatch and \"Trigger OTA if FW mismatch\" is on. OTA step stays in SOP; execution is gated by that setting.";
 "production_test_rules.step_ota_criteria" = "✓ Pass: OTA completed and device reconnected.";
@@ -300,6 +313,8 @@
 "production_test.result_overlay_title_fail" = "Test Failed";
 "production_test.result_overlay_dismiss" = "Close";
 "production_test.result_criteria_fw" = "Firmware (match or OTA success)";
+"production_test.need_retest" = "Re-test required";
+"production_test.need_retest_detail" = "Current firmware did not support factory reset/reboot, so reboot was sent after OTA. Please run the test again to execute the remaining steps.";
 
 /* Menu */
 "menu.floating" = "Floating";

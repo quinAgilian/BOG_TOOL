@@ -102,8 +102,12 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var isOTAWaitingValidation: Bool = false
     /// OTA 是否已完成并等待用户确认重启（Status=3确认后，等待用户点击 Reboot 按钮）
     @Published var isOTACompletedWaitingReboot: Bool = false
+    /// 产测中：若后续还有会触发 reboot 的步骤（恢复出厂/重启），则 OTA 完成后不发送 reboot，由后续步骤触发
+    var shouldSkipRebootAfterOTA: Bool = false
     /// 是否期待因 reboot 导致的连接断开（发送 reboot 后设置为 true，断开后检查）
     private var isExpectingDisconnectFromReboot: Bool = false
+    /// 是否因 Debug 的 Testing 重启/恢复出厂而期待断开（与 OTA reboot 区分，断开后仅清标志不碰 OTA 状态）
+    private var isExpectingDisconnectFromTestingReboot: Bool = false
     /// 发送 reboot 的时间戳（用于超时检测）
     private var rebootSentTime: Date?
     /// reboot 断开超时时间（秒），超过此时间未断开则提示异常
@@ -116,6 +120,10 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaStartTime: Date?
     /// OTA 未启动原因（startOTA 提前返回时设置，产测可读取并写入产测日志；成功启动后清空）
     @Published var lastOTARejectReason: String?
+    /// 最近一次连接尝试是否因「Peer removed pairing」失败（产测恢复出厂后重连用于判定恢复出厂成功）
+    @Published var lastConnectFailureWasPairingRemoved: Bool = false
+    /// 产测恢复出厂后重连时设为 true，使 didFailToConnect 收到 Peer removed pairing 时以 info 记录并跳过弹窗/打开设置
+    var isExpectingPairingRemovedFromFactoryReset: Bool = false
     /// OTA 流程内部标记：进入发送固件前置位，用于状态机校验
     private var otaMarkerSet: Bool = false
     /// OTA 成功完成时的耗时（秒），用于完成后在状态/标题显示
@@ -408,6 +416,7 @@ final class BLEManager: NSObject, ObservableObject {
     
     func connect(to device: BLEDevice) {
         clearError()
+        lastConnectFailureWasPairingRemoved = false
         stopScan()
         // 尝试请求更小的连接间隔以提升OTA速度（注意：macOS/iOS可能不会接受此请求，连接间隔主要由设备端决定）
         // Connection Interval: 7.5ms (0x0006), Latency: 0, Timeout: 5000ms
@@ -554,21 +563,127 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
     
-    /// Testing 特征解锁魔数（GattServices.json：Write 一次后可持续 Read 7 字节 RTC）
+    /// Testing 特征解锁魔数（GattServices.json：Write 一次后可持续 Read 7 字节 RTC）。协议规定所有数据为小端，0x16E975D0 → D0 75 E9 16。
     private static let testingUnlockMagic: Data = {
         var d = Data(capacity: 4)
-        d.append(contentsOf: [0x16, 0xE9, 0x75, 0xD0] as [UInt8]) // 0x16E975D0
+        d.append(contentsOf: [0xD0, 0x75, 0xE9, 0x16] as [UInt8]) // 0x16E975D0 little-endian
         return d
     }()
     
     /// 向 Testing 特征写一次解锁魔数，之后可持续 readRTC() 读取，无需每次写。调用前需确保已连接且 GATT 特征已发现（产测/调试应先等 areCharacteristicsReady）。
     func writeTestingUnlock() {
-        guard let peripheral = connectedPeripheral, let char = testingCharacteristic else {
+        guard connectedPeripheral != nil, let char = testingCharacteristic else {
             appendLog("RTC: 无法解锁 — 未连接或 Testing 特征未发现，请等待 GATT 就绪后再读 RTC", level: .error)
             return
         }
         writeToCharacteristic(char, data: Self.testingUnlockMagic)
         appendLog("RTC: 已写 Testing 解锁")
+    }
+
+    /// Testing 重启/恢复出厂命令的执行结果（供 Debug 与产测根据结果做不同处理）
+    enum TestingCommandResult: Sendable {
+        /// 命令已发送且已在约定时间内确认设备断开（执行成功）
+        case sent
+        /// 已发送但未在约定时间（约 2.5s）内收到断开，结果不确定
+        case timeout
+        /// 因固件版本不支持被拒绝（已打 error 日志）
+        case rejectedByVersion
+        /// 未连接或 Testing 特征未就绪（已打 error 日志）
+        case notReady
+    }
+
+    /// 等待 Testing 命令确认的 continuation（断开时 resume(.sent)，超时 resume(.timeout)）
+    private var testingRebootDisconnectContinuation: CheckedContinuation<TestingCommandResult, Never>?
+    /// Testing 命令确认等待超时时间（秒），reset/reboot 一般 2s 内结束
+    private static let testingCommandConfirmTimeoutSeconds: TimeInterval = 2.5
+
+    /// 判断当前设备固件是否支持 Testing 重启/恢复出厂：首字符为 "0" 时要求 > 0.4.1，否则要求 >= 1.1.2；版本未知则不允许。
+    /// - Returns: (allowed, errorMessage)：允许执行时 errorMessage 为 nil；拒绝时返回应打印的 error 文案。
+    private func isTestingRebootCommandAllowed() -> (allowed: Bool, errorMessage: String?) {
+        guard let version = currentFirmwareVersion, !version.isEmpty else {
+            return (false, "未知固件版本，无法判断是否支持该命令（需连接后读取设备固件版本）")
+        }
+        let parts = version.split(separator: ".").compactMap { Int($0) }
+        guard parts.count >= 3 else {
+            return (false, "未知固件版本，无法解析版本号「\(version)」")
+        }
+        let major = parts[0]
+        let minor = parts.count > 1 ? parts[1] : 0
+        let patch = parts.count > 2 ? parts[2] : 0
+
+        if version.hasPrefix("0") {
+            // 未加密 0.x 系列：要求 > 0.4.1（即 0.4.2 及以上允许）
+            if major > 0 { return (true, nil) }
+            if minor > 4 { return (true, nil) }
+            if minor == 4, patch > 1 { return (true, nil) }
+            return (false, "固件版本 \(version) 不支持该命令（未加密固件需 > 0.4.1）")
+        }
+        // 1.x / 2.x 等：要求 >= 1.1.2
+        if major > 1 { return (true, nil) }
+        if major == 1, minor > 1 { return (true, nil) }
+        if major == 1, minor == 1, patch >= 2 { return (true, nil) }
+        return (false, "固件版本 \(version) 不支持该命令（需 >= 1.1.2）")
+    }
+    
+    /// 当前设备固件是否支持 Testing 重启/恢复出厂（与 isTestingRebootCommandAllowed 一致，供产测判断 OTA 后是否可跳过 reboot）
+    func currentFirmwareSupportsTestingRebootAndFactoryReset() -> Bool {
+        isTestingRebootCommandAllowed().allowed
+    }
+
+    /// 向 Testing 特征发送 4 字节小端命令（例如 0x00000001 reboot / 0x00000002 nvs erase），等待设备断开确认或超时后返回。
+    /// - Returns: .sent 已发送且已确认断开；.timeout 已发送但未在约定时间内确认断开；.rejectedByVersion / .notReady 未发送
+    private func sendTestingCommand(_ value: UInt32, label: String) async -> TestingCommandResult {
+        guard isConnected, let char = testingCharacteristic else {
+            appendLog("[Testing] 无法发送 \(label) — 未连接或 Testing 特征未发现，请等待 GATT 就绪后再试", level: .error)
+            return .notReady
+        }
+
+        let (allowed, errorMsg) = isTestingRebootCommandAllowed()
+        if !allowed, let msg = errorMsg {
+            appendLog("[Testing] \(label) 命令被拒绝 — \(msg)", level: .error)
+            return .rejectedByVersion
+        }
+
+        // 先写解锁 Magic Code（小端），再在短延时后写入 4 字节小端命令
+        writeTestingUnlock()
+
+        let valueLE = value.littleEndian
+        let data = withUnsafeBytes(of: valueLE) { Data($0) }
+        let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+
+        return await withCheckedContinuation { cont in
+            testingRebootDisconnectContinuation = cont
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 200_000_000) // 0.2s
+                if value == 0x0000_0001 || value == 0x0000_0002 {
+                    self.isExpectingDisconnectFromReboot = true
+                    self.rebootSentTime = Date()
+                    self.isExpectingDisconnectFromTestingReboot = true
+                }
+                self.appendLog("[Testing] 发送 \(label) 命令: 0x\(String(format: "%08X", value)) (LE: \(hex))", level: .info)
+                self.writeToCharacteristic(char, data: data)
+            }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(Self.testingCommandConfirmTimeoutSeconds * 1_000_000_000))
+                if let c = self.testingRebootDisconnectContinuation {
+                    self.testingRebootDisconnectContinuation = nil
+                    self.appendLog("[Testing] \(label) 命令未在 \(Int(Self.testingCommandConfirmTimeoutSeconds))s 内确认断开", level: .warning)
+                    c.resume(returning: .timeout)
+                }
+            }
+        }
+    }
+
+    /// 通过 Testing 特征发送 reboot 命令（0x00000001），等待确认断开或超时后返回。
+    /// - Returns: .sent 已发送且已确认设备断开；.timeout 已发送但未在约定时间内确认；.rejectedByVersion / .notReady 未发送
+    func sendTestingRebootCommand() async -> TestingCommandResult {
+        await sendTestingCommand(0x0000_0001, label: "reboot")
+    }
+
+    /// 通过 Testing 特征发送 NVS 擦除（恢复出厂）命令（0x00000002），等待确认断开或超时后返回。
+    /// - Returns: .sent 已发送且已确认设备断开；.timeout 已发送但未在约定时间内确认；.rejectedByVersion / .notReady 未发送
+    func sendTestingFactoryResetCommand() async -> TestingCommandResult {
+        await sendTestingCommand(0x0000_0002, label: "nvs erase")
     }
     
     /// 清除 RTC 读取状态（产测/调试在发起新一次读取前调用，避免误用旧值或误判超时）
@@ -650,6 +765,20 @@ final class BLEManager: NSObject, ObservableObject {
         otaFirmwareTotalBytes = nil
     }
     
+    /// 产测中：OTA 完成后不发送 reboot（因后续将执行恢复出厂/重启），仅清除等待状态并打日志，并关闭产测 OTA 弹窗
+    func completeOTAWithoutReboot() {
+        guard isOTACompletedWaitingReboot else { return }
+        shouldSkipRebootAfterOTA = false
+        isOTACompletedWaitingReboot = false
+        isOTAFailed = false
+        isOTACancelled = false
+        otaInitiatedByProductionTest = false
+        otaStartTime = nil
+        otaFirmwareTotalBytes = nil
+        otaCompletedDuration = nil
+        appendLog("[OTA] 因后续将执行恢复出厂/重启，跳过 OTA 后重启")
+    }
+    
     /// 启动 reboot 断开超时检测：如果发送 reboot 后 30 秒内未断开，提示异常
     private func scheduleRebootDisconnectTimeout() {
         Task { @MainActor in
@@ -662,6 +791,7 @@ final class BLEManager: NSObject, ObservableObject {
                 // 清除期待断开标记，允许用户手动处理
                 isExpectingDisconnectFromReboot = false
                 rebootSentTime = nil
+                isExpectingDisconnectFromTestingReboot = false
             }
         }
     }
@@ -670,6 +800,7 @@ final class BLEManager: NSObject, ObservableObject {
     func clearOTAStatus() {
         otaFlowState = .idle
         otaInitiatedByProductionTest = false
+        shouldSkipRebootAfterOTA = false
         otaStatus1ReceivedFromDevice = false
         isOTAFailed = false
         isOTACancelled = false
@@ -678,6 +809,7 @@ final class BLEManager: NSObject, ObservableObject {
         isOTAInProgress = false
         isOTARebootDisconnected = false
         isExpectingDisconnectFromReboot = false
+        isExpectingDisconnectFromTestingReboot = false
         rebootSentTime = nil
         otaStartTime = nil
         otaFirmwareTotalBytes = nil
@@ -863,6 +995,7 @@ final class BLEManager: NSObject, ObservableObject {
         lastOTARejectReason = nil
         otaMarkerSet = true
         otaInitiatedByProductionTest = initiatedByProductionTest
+        shouldSkipRebootAfterOTA = false
         isOTAInProgress = true
         isOTAFailed = false // 重置失败状态
         isOTACancelled = false // 重置取消状态
@@ -870,6 +1003,7 @@ final class BLEManager: NSObject, ObservableObject {
         isOTACompletedWaitingReboot = false
         isOTARebootDisconnected = false
         isExpectingDisconnectFromReboot = false
+        isExpectingDisconnectFromTestingReboot = false
         rebootSentTime = nil
         otaProgress = 0
         otaProgressLogLine = nil
@@ -953,6 +1087,7 @@ final class BLEManager: NSObject, ObservableObject {
         isOTAInProgress = false
         isOTARebootDisconnected = false
         isExpectingDisconnectFromReboot = false
+        isExpectingDisconnectFromTestingReboot = false
         rebootSentTime = nil
         otaValidationStartTime = nil
         otaProgressLogLine = nil
@@ -1014,14 +1149,15 @@ final class BLEManager: NSObject, ObservableObject {
     }
     
 
-    private static let otaProgressUpdateInterval = 10
+    /// 每 N 包更新一次进度 UI；越小百分比刷新越频繁（2≈每 0.13% 一刷，10≈每 0.67%），过小会加重主线程负载
+    private static let otaProgressUpdateInterval = 2
     
     /// 在 didWriteValueFor(OTA Data) 成功后调用：仅延时再发下一包或写 finished(2)，不读 OTA Status（提速约 15–30s）
     private func continueOtaAfterChunkWrite() {
         guard case .sendingChunks(let chunks, let idx) = otaFlowState else { return }
         let total = chunks.count
         let progress = Double(idx + 1) / Double(total)
-        // 每 N 包更新一次进度，减少主线程与 UI 负载，避免拖慢包间调度；首包与最后一包必更新
+        // 每 N 包更新一次进度，减少主线程与 UI 负载；首包与最后一包必更新
         let shouldUpdateProgress = idx == 0 || (idx + 1) % Self.otaProgressUpdateInterval == 0 || idx + 1 == total
         if shouldUpdateProgress {
             otaProgress = progress
@@ -1526,6 +1662,8 @@ extension BLEManager: CBCentralManagerDelegate {
     
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
+            lastConnectFailureWasPairingRemoved = false
+            isExpectingPairingRemovedFromFactoryReset = false
             // 连接新设备时清除 OTA 覆盖层状态，避免「在 OTA 器件还有弹窗」：上次 reboot 断开/失败/取消后未点关闭就重连时，弹窗应自动消失
             clearOTAStatus()
             
@@ -1554,15 +1692,23 @@ extension BLEManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
             let raw = error?.localizedDescription ?? ""
-            appendLog("连接失败: \(raw)", level: .error)
-            if BLEManager.isPairingRemovedError(error) {
-                errorMessageKey = "error.pairing_removed_hint"
-                errorMessage = raw
-                appendLog(NSLocalizedString("error.pairing_removed_hint", value: "请在系统「蓝牙」设置中删除该设备（忘记设备）后重试连接。", comment: ""), level: .error)
-                BLEManager.openBluetoothSettings()
-            } else {
+            lastConnectFailureWasPairingRemoved = BLEManager.isPairingRemovedError(error)
+            if lastConnectFailureWasPairingRemoved && isExpectingPairingRemovedFromFactoryReset {
+                isExpectingPairingRemovedFromFactoryReset = false
+                appendLog("连接失败（预期）: \(raw) — 恢复出厂成功，设备已清除配对", level: .info)
                 errorMessageKey = nil
-                errorMessage = raw.isEmpty ? nil : raw
+                errorMessage = nil
+            } else {
+                appendLog("连接失败: \(raw)", level: .error)
+                if lastConnectFailureWasPairingRemoved {
+                    errorMessageKey = "error.pairing_removed_hint"
+                    errorMessage = raw
+                    appendLog(NSLocalizedString("error.pairing_removed_hint", value: "请在系统「蓝牙」设置中删除该设备（忘记设备）后重试连接。", comment: ""), level: .error)
+                    BLEManager.openBluetoothSettings()
+                } else {
+                    errorMessageKey = nil
+                    errorMessage = raw.isEmpty ? nil : raw
+                }
             }
         }
     }
@@ -1627,31 +1773,42 @@ extension BLEManager: CBCentralManagerDelegate {
             deviceHardwareRevision = nil
             // 断开连接时，检查是否是因为 reboot 导致的正常断开
             if isExpectingDisconnectFromReboot {
-                let wasProductionTest = otaInitiatedByProductionTest
-                if !wasProductionTest {
-                    let elapsed = rebootSentTime.map { Date().timeIntervalSince($0) } ?? 0
-                    appendLog("[OTA] 设备已重启并断开连接（正常现象，耗时 \(String(format: "%.1f", elapsed))s）")
+                if isExpectingDisconnectFromTestingReboot {
+                    appendLog("[Testing] 设备已重启并断开连接（正常现象）")
+                    isExpectingDisconnectFromReboot = false
+                    rebootSentTime = nil
+                    isExpectingDisconnectFromTestingReboot = false
+                    if let c = testingRebootDisconnectContinuation {
+                        testingRebootDisconnectContinuation = nil
+                        c.resume(returning: .sent)
+                    }
+                } else {
+                    let wasProductionTest = otaInitiatedByProductionTest
+                    if !wasProductionTest {
+                        let elapsed = rebootSentTime.map { Date().timeIntervalSince($0) } ?? 0
+                        appendLog("[OTA] 设备已重启并断开连接（正常现象，耗时 \(String(format: "%.1f", elapsed))s）")
+                    }
+                    // 标记为 reboot 断开，用于 UI 显示友好提示
+                    isOTARebootDisconnected = true
+                    isOTAFailed = false
+                    isOTACancelled = false
+                    
+                    // 清理 OTA 状态（但保留 isOTARebootDisconnected 标记）
+                    otaFlowState = .idle
+                    otaInitiatedByProductionTest = false
+                    isOTAWaitingValidation = false
+                    isOTACompletedWaitingReboot = false
+                    isOTAInProgress = false
+                    otaStartTime = nil
+                    otaFirmwareTotalBytes = nil
+                    otaProgress = 0
+                    otaProgressLogLine = nil
+                    otaValidationStartTime = nil
+                    
+                    // 清除期待断开标记
+                    isExpectingDisconnectFromReboot = false
+                    rebootSentTime = nil
                 }
-                // 标记为 reboot 断开，用于 UI 显示友好提示
-                isOTARebootDisconnected = true
-                isOTAFailed = false
-                isOTACancelled = false
-                
-                // 清理 OTA 状态（但保留 isOTARebootDisconnected 标记）
-                otaFlowState = .idle
-                otaInitiatedByProductionTest = false
-                isOTAWaitingValidation = false
-                isOTACompletedWaitingReboot = false
-                isOTAInProgress = false
-                otaStartTime = nil
-                otaFirmwareTotalBytes = nil
-                otaProgress = 0
-                otaProgressLogLine = nil
-                otaValidationStartTime = nil
-                
-                // 清除期待断开标记
-                isExpectingDisconnectFromReboot = false
-                rebootSentTime = nil
             } else if isOTAInProgress && !isOTACancelled {
                 // 异常断开：OTA 进行中但未发送 reboot
                 if case .done = otaFlowState {
@@ -1672,7 +1829,7 @@ extension BLEManager: CBCentralManagerDelegate {
             }
             // 断开连接时不清除取消状态，让用户看到取消信息
             // isOTACancelled = false
-            if !isExpectingDisconnectFromReboot {
+            if !isExpectingDisconnectFromReboot && !isExpectingDisconnectFromTestingReboot {
                 // 只有在非 reboot 断开时才清除这些状态（reboot 断开时已在上面的分支中清除）
                 otaInitiatedByProductionTest = false
                 isOTAWaitingValidation = false

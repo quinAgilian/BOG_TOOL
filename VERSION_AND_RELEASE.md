@@ -40,6 +40,7 @@
    - **只需维护一个文件**：仓库根目录的 **`VERSION`**（一行，如 `1.0.0`）。发布新版本时改这一处即可。
    - Build 号自动取当前仓库的 Git 提交数，无需手动改。
    - 若没有 `VERSION` 文件或不在 Git 仓库中构建，则回退为版本 `1.0.0`、Build `1`。
+   - **构建后**：Run Script 会改写 `BOG_TOOL/Info.plist` 的版本与 Build 号，所以 `git status` 可能显示 Info.plist 已修改。这是预期行为，可忽略或执行 `git restore BOG_TOOL/Info.plist` 丢弃该修改，无需提交。
    - 如需手动改（不推荐）：可改 `BOG_TOOL/Info.plist` 与 `project.pbxproj` 中的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`，但下次构建会被脚本再次覆盖 Info.plist。
 
 ### 3. 首次创建 main 分支（可选）
@@ -102,8 +103,32 @@ git push origin main
 git push origin v1.0.2
 ```
 
-之后继续在 **develop** 上开发，下次发布（如 1.0.3）再重复「步骤一 + 步骤二 情况 B」。
+之后继续在 **develop** 上开发，下次发布（如 1.0.4）再重复「步骤一 + 步骤二 情况 B」。
+
+### 6. 发布 1.0.3（示例）
+
+与 1.0.2 相同流程，main 已存在则用情况 B：
+
+**步骤一：develop 上改版本号并提交**
+```bash
+# 将根目录 VERSION 文件内容改为 1.0.3，然后：
+git checkout develop
+git add VERSION
+git add -A
+git commit -m "chore: 准备发布 v1.0.3"
+git push origin develop
+```
+
+**步骤二：合并到 main 并打 tag**
+```bash
+git checkout main
+git pull origin main
+git merge develop --no-ff -m "Release v1.0.3"
+git tag -a v1.0.3 -m "Release v1.0.3"
+git push origin main
+git push origin v1.0.3
+```
 
 ---
 
-**当前工程版本**：由根目录 `VERSION` 文件决定（当前为 `1.0.2`）；Build 号由构建时 Git 提交数自动注入。
+**当前工程版本**：由根目录 `VERSION` 文件决定（当前为 `1.0.3`）；Build 号由构建时 Git 提交数自动注入。

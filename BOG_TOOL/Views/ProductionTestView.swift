@@ -79,6 +79,8 @@ struct ProductionTestView: View {
     @State private var bluetoothPermissionContinuation: (() -> Void)? = nil
     /// 产测结束后是否显示结果 overlay（绿/红弹窗报表）
     @State private var showResultOverlay = false
+    /// 本次产测因「当前固件不支持恢复出厂/重启」而在 OTA 后发送了 reboot，报表需提示需要重测
+    @State private var needRetestAfterOtaReboot = false
     /// 最近一次产测结束时间（用于 overlay 报表显示）
     @State private var lastTestEndTime: Date?
     
@@ -261,6 +263,7 @@ struct ProductionTestView: View {
                     passed: overallTestPassed,
                     criteria: overallTestCriteria,
                     timeString: productionTestEndTimeString,
+                    needRetest: needRetestAfterOtaReboot,
                     onDismiss: { showResultOverlay = false }
                 )
                 .environmentObject(appLanguage)
@@ -519,6 +522,8 @@ struct ProductionTestView: View {
     private var overallTestPassed: Bool {
         let enabled = currentTestSteps.filter { $0.enabled }
         guard !enabled.isEmpty else { return false }
+        // 需要重测 = 本次未执行恢复出厂/重启（如因旧固件不支持），视为产测未通过
+        if needRetestAfterOtaReboot { return false }
         let connectOk = !enabled.contains(where: { $0.id == TestStep.connectDevice.id }) || stepStatuses[TestStep.connectDevice.id] == .passed
         let rtcOk = !enabled.contains(where: { $0.id == TestStep.readRTC.id }) || stepStatuses[TestStep.readRTC.id] == .passed
         let fwStepEnabled = enabled.contains(where: { $0.id == TestStep.verifyFirmware.id })
@@ -526,17 +531,21 @@ struct ProductionTestView: View {
         let fwOk: Bool
         if !fwStepEnabled {
             fwOk = true
-        } else if stepStatuses[TestStep.verifyFirmware.id] == .passed {
-            fwOk = true
-        } else if otaStepEnabled, stepStatuses[TestStep.otaBeforeDisconnect.id] == .passed {
-            fwOk = true // FW 不一致但 OTA 成功
-        } else {
+        } else if stepStatuses[TestStep.verifyFirmware.id] != .passed {
             fwOk = false
+        } else if otaStepEnabled {
+            // 步骤2 已通过时，若启用了 OTA 步骤，则必须 OTA 步骤也通过（未触发/已跳过/完成均可），否则整体不通过
+            fwOk = (stepStatuses[TestStep.otaBeforeDisconnect.id] == .passed)
+        } else {
+            fwOk = true
         }
         let pressureOk = !enabled.contains(where: { $0.id == TestStep.readPressure.id }) || stepStatuses[TestStep.readPressure.id] == .passed
         let gasSystemStatusOk = !enabled.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) || stepStatuses[TestStep.readGasSystemStatus.id] == .passed
         let valveOk = !enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) || stepStatuses[TestStep.ensureValveOpen.id] == .passed
-        return connectOk && rtcOk && fwOk && pressureOk && gasSystemStatusOk && valveOk
+        // 恢复出厂 / 重启：若步骤启用则必须真正执行通过，未执行（如版本不支持而跳过）则整体判失败
+        let factoryResetOk = !enabled.contains(where: { $0.id == TestStep.factoryReset.id }) || stepStatuses[TestStep.factoryReset.id] == .passed
+        let resetOk = !enabled.contains(where: { $0.id == TestStep.reset.id }) || stepStatuses[TestStep.reset.id] == .passed
+        return connectOk && rtcOk && fwOk && pressureOk && gasSystemStatusOk && valveOk && factoryResetOk && resetOk
     }
     
     /// 用于 overlay 报表的判定项列表：(名称, 是否通过, 是否仅警告通过, 测试数据备注)。禁用的步骤也保留，标记为警告并注明「测试跳过」。
@@ -570,6 +579,13 @@ struct ProductionTestView: View {
         } else if currentTestSteps.contains(where: { $0.id == TestStep.verifyFirmware.id }) {
             list.append((appLanguage.string("production_test.result_criteria_fw"), true, true, skippedDetail))
         }
+        // 断开前 OTA（单独一行，便于看到 OTA 成功/失败/取消的结论）
+        if enabled.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
+            let otaPass = stepStatuses[TestStep.otaBeforeDisconnect.id] == .passed
+            list.append((appLanguage.string("production_test_rules.step_ota_title"), otaPass, false, detail(for: TestStep.otaBeforeDisconnect.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
+            list.append((appLanguage.string("production_test_rules.step_ota_title"), true, true, skippedDetail))
+        }
         // 压力值
         if enabled.contains(where: { $0.id == TestStep.readPressure.id }) {
             list.append((appLanguage.string("production_test_rules.step4_title"), stepStatuses[TestStep.readPressure.id] == .passed, false, detail(for: TestStep.readPressure.id)))
@@ -587,6 +603,18 @@ struct ProductionTestView: View {
             list.append((appLanguage.string("production_test_rules.step_valve_title"), stepStatuses[TestStep.ensureValveOpen.id] == .passed, false, detail(for: TestStep.ensureValveOpen.id)))
         } else if currentTestSteps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
             list.append((appLanguage.string("production_test_rules.step_valve_title"), true, true, skippedDetail))
+        }
+        // 重启设备
+        if enabled.contains(where: { $0.id == TestStep.reset.id }) {
+            list.append((appLanguage.string("production_test_rules.step_reset_title"), stepStatuses[TestStep.reset.id] == .passed, stepStatuses[TestStep.reset.id] == .skipped, detail(for: TestStep.reset.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.reset.id }) {
+            list.append((appLanguage.string("production_test_rules.step_reset_title"), true, true, skippedDetail))
+        }
+        // 恢复出厂设置
+        if enabled.contains(where: { $0.id == TestStep.factoryReset.id }) {
+            list.append((appLanguage.string("production_test_rules.step_factory_reset_title"), stepStatuses[TestStep.factoryReset.id] == .passed, stepStatuses[TestStep.factoryReset.id] == .skipped, detail(for: TestStep.factoryReset.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.factoryReset.id }) {
+            list.append((appLanguage.string("production_test_rules.step_factory_reset_title"), true, true, skippedDetail))
         }
         // 安全断开连接
         if enabled.contains(where: { $0.id == TestStep.disconnectDevice.id }) {
@@ -786,8 +814,8 @@ struct ProductionTestView: View {
 
     /// 加载测试规则配置
     private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds) {
-        // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启等步骤）
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .otaBeforeDisconnect, .disconnectDevice]
+        // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启、重启、恢复出厂等步骤）
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         var steps: [TestStep] = []
@@ -798,7 +826,7 @@ struct ProductionTestView: View {
                 }
             }
         } else {
-            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .ensureValveOpen, .tbd, .otaBeforeDisconnect, .disconnectDevice]
+            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .ensureValveOpen, .reset, .factoryReset, .tbd, .otaBeforeDisconnect, .disconnectDevice]
         }
         
         // 确保第一步和最后一步在正确位置
@@ -828,11 +856,30 @@ struct ProductionTestView: View {
                 steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
             }
         }
+        // 迁移：若旧配置中无「重启」「恢复出厂」步骤，则插入在断开连接之前
+        if !steps.contains(where: { $0.id == TestStep.reset.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
+                steps.insert(TestStep.reset, at: idx)
+            } else {
+                steps.insert(TestStep.reset, at: steps.count - 1)
+            }
+        }
+        if !steps.contains(where: { $0.id == TestStep.factoryReset.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
+                steps.insert(TestStep.factoryReset, at: idx)
+            } else {
+                steps.insert(TestStep.factoryReset, at: steps.count - 1)
+            }
+        }
+        // 重启、恢复出厂只允许在倒数第三步或倒数第二步（与规则页一致）
+        ProductionTestRulesView.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &steps)
         
-        // 加载每个步骤的启用状态
+        // 加载每个步骤的启用状态（step_reset 产测中不许启用，始终为 false）
         if let enabledDict = UserDefaults.standard.dictionary(forKey: "production_test_steps_enabled") as? [String: Bool] {
             for i in 0..<steps.count {
-                if let enabled = enabledDict[steps[i].id] {
+                if steps[i].id == TestStep.reset.id {
+                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: false)
+                } else if let enabled = enabledDict[steps[i].id] {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
                 }
             }
@@ -956,7 +1003,103 @@ struct ProductionTestView: View {
         return 0
     }
     
+    /// 重启/恢复出厂后重连结果：用于恢复出厂步骤根据「Peer removed pairing」判定复位成功
+    private enum ReconnectAfterResetResult {
+        case reconnected
+        case timeout(pairingRemoved: Bool)
+        case skipped // 已连接或未选中设备，未执行重连
+    }
+    
     /// 确保电磁阀处于 OPEN 状态：先读取状态，已开启则直接通过；否则发送开启命令后等待，超时 5s（可配置）。
+    /// 重启/恢复出厂后设备会断开，需重新连接以便后续步骤（如 OTA）继续执行；恢复出厂步骤可根据返回的 timeout(pairingRemoved: true) 判定复位成功
+    /// - Parameter expectPairingRemoved: 为 true 时表示本次为恢复出厂后的重连，BLE 层将「Peer removed pairing」按 info 处理且检测到后立即视为成功
+    private func reconnectAfterTestingReboot(rules: TestThresholds, expectPairingRemoved: Bool = false) async -> ReconnectAfterResetResult {
+        defer { ble.isExpectingPairingRemovedFromFactoryReset = false }
+        guard let selectedDeviceId = ble.selectedDeviceId,
+              let device = ble.discoveredDevices.first(where: { $0.id == selectedDeviceId }) else {
+            self.log("无法重连：未选中设备或设备不在列表", level: .warning)
+            return .skipped
+        }
+        if ble.isConnected {
+            return .reconnected
+        }
+        self.log("设备已重启，等待 \(Int(rules.deviceReconnectTimeout))s 内重新连接...", level: .info)
+        try? await Task.sleep(nanoseconds: 2_000_000_000) // 给设备 2s 启动时间
+        if expectPairingRemoved {
+            ble.isExpectingPairingRemovedFromFactoryReset = true
+        }
+        ble.connect(to: device)
+        let maxWait = Int(rules.deviceReconnectTimeout * 10)
+        var waitCount = 0
+        while isRunning && !ble.isConnected && !ble.lastConnectFailureWasPairingRemoved && waitCount < maxWait {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waitCount += 1
+        }
+        if !ble.isConnected {
+            let pairingRemoved = ble.lastConnectFailureWasPairingRemoved
+            if pairingRemoved {
+                self.log("检测到设备已清除配对，判定恢复出厂成功", level: .info)
+            } else {
+                self.log("重连超时（\(Int(rules.deviceReconnectTimeout))s）", level: .error)
+            }
+            return .timeout(pairingRemoved: pairingRemoved)
+        }
+        var waitCount2 = 0
+        while isRunning && !ble.areCharacteristicsReady && waitCount2 < maxWait {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waitCount2 += 1
+        }
+        if ble.areCharacteristicsReady {
+            self.log("重连成功，GATT 就绪", level: .info)
+        } else {
+            self.log("重连后 GATT 未就绪（\(Int(rules.deviceReconnectTimeout))s）", level: .warning)
+        }
+        return .reconnected
+    }
+    
+    /// 产测提前终止时：若「恢复出厂」已使能且尚未执行，则先执行恢复出厂再结束，确保恢复出厂被使能时一定会执行
+    private func runFactoryResetIfEnabledBeforeExit(enabledSteps: [TestStep], thresholds: TestThresholds) async {
+        guard enabledSteps.contains(where: { $0.id == TestStep.factoryReset.id }) else { return }
+        let status = stepStatuses[TestStep.factoryReset.id] ?? .pending
+        guard status != .passed, status != .running else { return }
+        guard ble.isConnected else { return }
+        self.log("产测提前终止，因恢复出厂已使能，先执行恢复出厂再结束", level: .info)
+        stepStatuses[TestStep.factoryReset.id] = .running
+        let result = await ble.sendTestingFactoryResetCommand()
+        switch result {
+        case .sent:
+            stepStatuses[TestStep.factoryReset.id] = .passed
+            let reconnectResult = await reconnectAfterTestingReboot(rules: thresholds, expectPairingRemoved: true)
+        switch reconnectResult {
+        case .reconnected, .skipped:
+            stepResults[TestStep.factoryReset.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria")
+        case .timeout(pairingRemoved: true):
+            stepResults[TestStep.factoryReset.id] = appLanguage.string("production_test_rules.step_factory_reset_confirmed_pairing_removed")
+        case .timeout(pairingRemoved: false):
+            stepResults[TestStep.factoryReset.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria")
+        }
+        case .timeout:
+            self.log("警告：恢复出厂命令已发送但未在约定时间内确认断开", level: .warning)
+            stepStatuses[TestStep.factoryReset.id] = .passed
+            let reconnectResult = await reconnectAfterTestingReboot(rules: thresholds, expectPairingRemoved: true)
+            switch reconnectResult {
+            case .reconnected, .skipped:
+                stepResults[TestStep.factoryReset.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria") + "（未确认断开）"
+            case .timeout(pairingRemoved: true):
+                stepResults[TestStep.factoryReset.id] = appLanguage.string("production_test_rules.step_factory_reset_confirmed_pairing_removed")
+            case .timeout(pairingRemoved: false):
+                stepResults[TestStep.factoryReset.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria") + "（未确认断开）"
+            }
+        case .rejectedByVersion:
+            self.log("固件版本不支持恢复出厂命令，步骤跳过", level: .warning)
+            stepResults[TestStep.factoryReset.id] = appLanguage.string("production_test.overlay_step_skipped") + "（版本不支持）"
+            stepStatuses[TestStep.factoryReset.id] = .skipped
+        case .notReady:
+            stepResults[TestStep.factoryReset.id] = "恢复出厂: 未连接或特征未就绪"
+            stepStatuses[TestStep.factoryReset.id] = .failed
+        }
+    }
+
     private func ensureValveOpen() async -> Bool {
         let rules = loadTestRules()
         let valveTimeout = rules.thresholds.valveOpenTimeout
@@ -1026,6 +1169,7 @@ struct ProductionTestView: View {
         // 如果未连接，先连接设备
         if !ble.isConnected {
             showResultOverlay = false
+            needRetestAfterOtaReboot = false
             ble.clearLog()
             isRunning = true
             testLog.removeAll()
@@ -1065,6 +1209,7 @@ struct ProductionTestView: View {
         } else {
             // 已连接，直接执行产测流程
             showResultOverlay = false
+            needRetestAfterOtaReboot = false
             ble.clearLog()
             isRunning = true
             testLog.removeAll()
@@ -1199,6 +1344,7 @@ struct ProductionTestView: View {
                         self.log("错误：SN 无效或为空", level: .error)
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = appLanguage.string("production_test.sn_invalid")
+                        await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                         isRunning = false
                         currentStepId = nil
                         return
@@ -1211,6 +1357,7 @@ struct ProductionTestView: View {
                             self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
                             stepStatuses[step.id] = .failed
                             stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
+                            await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                             isRunning = false
                             currentStepId = nil
                             return
@@ -1230,6 +1377,7 @@ struct ProductionTestView: View {
                         self.log("错误：无法读取 Bootloader 版本", level: .error)
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_unreadable")
+                        await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                         isRunning = false
                         currentStepId = nil
                         return
@@ -1248,6 +1396,7 @@ struct ProductionTestView: View {
                                     self.log("错误：未在固件管理中找到版本 \(rules.firmwareVersion) 的固件，请先在「固件」菜单中添加", level: .error, category: "OTA")
                                     stepStatuses[step.id] = .failed
                                     stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：未找到 \(rules.firmwareVersion) 固件（请在固件管理中添加）"
+                                    await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                                     isRunning = false
                                     currentStepId = nil
                                     return
@@ -1580,8 +1729,78 @@ struct ProductionTestView: View {
                         stepStatuses[step.id] = .failed
                     }
                     
+                case "step_reset": // 重启设备（Testing 0x00000001）
+                    self.log("步骤: 重启设备", level: .info)
+                    let result = await ble.sendTestingRebootCommand()
+                    switch result {
+                    case .sent:
+                        stepResults[step.id] = appLanguage.string("production_test_rules.step_reset_criteria")
+                        stepStatuses[step.id] = .passed
+                        _ = await reconnectAfterTestingReboot(rules: rules.thresholds)
+                    case .timeout:
+                        self.log("警告：重启命令已发送但未在约定时间内确认断开", level: .warning)
+                        stepResults[step.id] = appLanguage.string("production_test_rules.step_reset_criteria") + "（未确认断开）"
+                        stepStatuses[step.id] = .passed
+                        _ = await reconnectAfterTestingReboot(rules: rules.thresholds)
+                    case .rejectedByVersion:
+                        self.log("固件版本不支持重启命令，步骤跳过", level: .warning)
+                        stepResults[step.id] = appLanguage.string("production_test.overlay_step_skipped") + "（版本不支持）"
+                        stepStatuses[step.id] = .skipped
+                    case .notReady:
+                        stepResults[step.id] = "重启: 未连接或特征未就绪"
+                        stepStatuses[step.id] = .failed
+                    }
+                    
+                case "step_factory_reset": // 恢复出厂（Testing 0x00000002）；重连若得到「Peer removed pairing」则判定恢复出厂成功
+                    self.log("步骤: 恢复出厂设置", level: .info)
+                    let result = await ble.sendTestingFactoryResetCommand()
+                    switch result {
+                    case .sent:
+                        stepStatuses[step.id] = .passed
+                        let reconnectResult = await reconnectAfterTestingReboot(rules: rules.thresholds, expectPairingRemoved: true)
+                        switch reconnectResult {
+                        case .reconnected, .skipped:
+                            stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria")
+                        case .timeout(pairingRemoved: true):
+                            stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_confirmed_pairing_removed")
+                        case .timeout(pairingRemoved: false):
+                            stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria")
+                        }
+                    case .timeout:
+                        self.log("警告：恢复出厂命令已发送但未在约定时间内确认断开", level: .warning)
+                        stepStatuses[step.id] = .passed
+                        let reconnectResult = await reconnectAfterTestingReboot(rules: rules.thresholds, expectPairingRemoved: true)
+                        switch reconnectResult {
+                        case .reconnected, .skipped:
+                            stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria") + "（未确认断开）"
+                        case .timeout(pairingRemoved: true):
+                            stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_confirmed_pairing_removed")
+                        case .timeout(pairingRemoved: false):
+                            stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria") + "（未确认断开）"
+                        }
+                    case .rejectedByVersion:
+                        self.log("固件版本不支持恢复出厂命令，步骤跳过", level: .warning)
+                        stepResults[step.id] = appLanguage.string("production_test.overlay_step_skipped") + "（版本不支持）"
+                        stepStatuses[step.id] = .skipped
+                    case .notReady:
+                        stepResults[step.id] = "恢复出厂: 未连接或特征未就绪"
+                        stepStatuses[step.id] = .failed
+                    }
+                    
                 case "step_ota": // 断开连接前 OTA（是否执行由 step2 的「若 FW 不匹配则触发 OTA」+ FW 比对结果决定；OTA 步骤始终在 SOP 中，无法由用户单独关闭）
                     self.log("步骤: 断开前 OTA", level: .info, category: "OTA")
+                    // 若后续还有会触发 reboot 的步骤（恢复出厂/重启）且当前固件支持该命令，则 OTA 完成后不发送 reboot；否则 OTA 后发 reboot，报表提示需要重测
+                    let otaIndex = enabledSteps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id })
+                    let hasRebootStepAfterOTA = otaIndex.map { idx in
+                        enabledSteps[(idx + 1)...].contains { $0.id == TestStep.reset.id || $0.id == TestStep.factoryReset.id }
+                    } ?? false
+                    let currentFirmwareSupports = ble.currentFirmwareSupportsTestingRebootAndFactoryReset()
+                    ble.shouldSkipRebootAfterOTA = hasRebootStepAfterOTA && currentFirmwareSupports
+                    if hasRebootStepAfterOTA && currentFirmwareSupports {
+                        self.log("后续将执行恢复出厂/重启，OTA 完成后将不发送 reboot", level: .info, category: "OTA")
+                    } else if hasRebootStepAfterOTA && !currentFirmwareSupports && fwMismatchRequiresOTA {
+                        self.log("当前固件不支持重启/恢复出厂，OTA 后将发送 reboot，报表将提示需要重测", level: .info, category: "OTA")
+                    }
                     
                     if !fwMismatchRequiresOTA {
                         self.log("OTA 未触发（FW 已匹配或未使能「若 FW 不匹配则触发 OTA」）", level: .info, category: "OTA")
@@ -1610,9 +1829,19 @@ struct ProductionTestView: View {
                         self.log("警告：OTA 前阀门打开失败，继续执行 OTA...", level: .warning, category: "OTA")
                     }
                     
+                    if ble.shouldSkipRebootAfterOTA {
+                        self.log("OTA 启动前确认：完成后不发送 reboot（由后续恢复出厂/重启步骤触发）", level: .info, category: "OTA")
+                    }
+                    if hasRebootStepAfterOTA && !currentFirmwareSupports {
+                        needRetestAfterOtaReboot = true
+                    }
+                    if needRetestAfterOtaReboot {
+                        self.log("本次 OTA 将触发 reboot，OTA 完毕后将提示需要重测", level: .error, category: "OTA")
+                    }
                     self.log("使用已选固件，启动 OTA", level: .info, category: "OTA")
                     if let reason = ble.startOTA(firmwareURL: otaURL, initiatedByProductionTest: true) {
                         self.log("错误：OTA 未启动（\(reason)）", level: .error, category: "OTA")
+                        needRetestAfterOtaReboot = false
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: \(reason)"
                         break
@@ -1632,6 +1861,7 @@ struct ProductionTestView: View {
                     
                     if otaWaitCount >= maxOtaWaitCount {
                         self.log("错误：OTA 启动超时（\(Int(otaTimeoutSeconds))秒）", level: .error, category: "OTA")
+                        needRetestAfterOtaReboot = false
                         if let reason = ble.lastOTARejectReason {
                             self.log("OTA 未启动原因: \(reason)", level: .error, category: "OTA")
                             stepResults[step.id] = "OTA: 启动超时（\(reason)）"
@@ -1649,6 +1879,7 @@ struct ProductionTestView: View {
                     
                     if ble.isOTAFailed || ble.isOTACancelled {
                         self.log("错误：OTA 失败或已取消", level: .error, category: "OTA")
+                        needRetestAfterOtaReboot = false
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 失败或已取消"
                         break
@@ -1660,6 +1891,7 @@ struct ProductionTestView: View {
                         stepStatuses[step.id] = .passed
                     } else {
                         self.log("错误：OTA 未完成", level: .error, category: "OTA")
+                        needRetestAfterOtaReboot = false
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 未完成"
                         break
@@ -1749,6 +1981,9 @@ struct ProductionTestView: View {
         let skippedCount = enabledSteps.filter { stepStatuses[$0.id] == .skipped }.count
         let resultLevel: LogLevel = failedCount > 0 ? .error : (skippedCount > 0 ? .warning : .info)
         self.log("结果: 通过 \(passedCount)，失败 \(failedCount)，跳过 \(skippedCount)，总计 \(enabledSteps.count)", level: resultLevel)
+        if needRetestAfterOtaReboot {
+            self.log("需要重测（本次因当前固件不支持恢复出厂/重启而在 OTA 后发送了 reboot，请重测以执行后续步骤）", level: .warning)
+        }
         self.log("步骤:", level: .info)
         for (index, step) in enabledSteps.enumerated() {
             let status = stepStatuses[step.id] ?? .pending
@@ -1787,15 +2022,36 @@ private struct ProductionTestResultOverlay: View {
     let passed: Bool
     let criteria: [(name: String, ok: Bool, isWarning: Bool, detail: String?)]
     let timeString: String
+    let needRetest: Bool
     let onDismiss: () -> Void
     
-    private var titleKey: String { passed ? "production_test.result_overlay_title_pass" : "production_test.result_overlay_title_fail" }
-    private var accentColor: Color { passed ? Color(nsColor: .systemGreen) : Color(nsColor: .systemRed) }
+    /// 需要重测时也按「测试失败」展示标题与主色，仅通过说明文案提示用户重测
+    private var titleKey: String {
+        if needRetest { return "production_test.result_overlay_title_fail" }
+        return passed ? "production_test.result_overlay_title_pass" : "production_test.result_overlay_title_fail"
+    }
+    private var accentColor: Color {
+        if needRetest { return Color(nsColor: .systemRed) }
+        return passed ? Color(nsColor: .systemGreen) : Color(nsColor: .systemRed)
+    }
     
     private func rowColor(ok: Bool, isWarning: Bool) -> Color {
         if !ok { return Color(nsColor: .systemRed) }
         if isWarning { return Color(nsColor: .systemOrange) }
         return Color(nsColor: .systemGreen)
+    }
+    
+    /// 较深的背景色，用于每行通过/失败/警告的底色（比 system 色 + 低透明度更醒目）
+    private func rowBackgroundColor(ok: Bool, isWarning: Bool) -> Color {
+        if !ok { return Color(red: 0.85, green: 0.25, blue: 0.22) }   // 深红
+        if isWarning { return Color(red: 0.9, green: 0.55, blue: 0.2) } // 深橙
+        return Color(red: 0.22, green: 0.6, blue: 0.35)                 // 深绿
+    }
+    
+    /// Close 按钮使用的深色（通过=深绿，失败/需要重测=深红）
+    private var closeButtonColor: Color {
+        if needRetest { return Color(red: 0.7, green: 0.18, blue: 0.18) }
+        return passed ? Color(red: 0.15, green: 0.5, blue: 0.25) : Color(red: 0.7, green: 0.18, blue: 0.18)
     }
     
     var body: some View {
@@ -1812,10 +2068,17 @@ private struct ProductionTestResultOverlay: View {
                     Text(timeString)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                    if needRetest {
+                        Text(appLanguage.string("production_test.need_retest_detail"))
+                            .font(.subheadline)
+                            .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(Array(criteria.enumerated()), id: \.offset) { _, item in
                             let color = rowColor(ok: item.ok, isWarning: item.isWarning)
+                            let bgColor = rowBackgroundColor(ok: item.ok, isWarning: item.isWarning)
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(alignment: .center, spacing: 8) {
                                     Text(item.ok ? "✓" : "✗")
@@ -1836,7 +2099,7 @@ private struct ProductionTestResultOverlay: View {
                             .padding(.vertical, 4)
                             .padding(.horizontal, 8)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(color.opacity(0.28))
+                            .background(bgColor)
                             .cornerRadius(6)
                         }
                     }
@@ -1848,7 +2111,7 @@ private struct ProductionTestResultOverlay: View {
                             .foregroundStyle(.white)
                             .frame(minWidth: 200)
                             .padding(.vertical, 10)
-                            .background(accentColor, in: RoundedRectangle(cornerRadius: 6))
+                            .background(closeButtonColor, in: RoundedRectangle(cornerRadius: 6))
                             .contentShape(Rectangle())
                             .onTapGesture { onDismiss() }
                         Spacer(minLength: 0)
