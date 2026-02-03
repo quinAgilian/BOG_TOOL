@@ -46,10 +46,17 @@ struct GattProtocolView: View {
                     .font(.title2.weight(.semibold))
                     .textSelection(.enabled)
                 Spacer()
-                Text(appLanguage.string("gatt.data_source"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                if let version = GattMapping.specVersion, !version.isEmpty {
+                    Text("\(appLanguage.string("gatt.data_source")) (\(version))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                } else {
+                    Text(appLanguage.string("gatt.data_source"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
         }
         .padding()

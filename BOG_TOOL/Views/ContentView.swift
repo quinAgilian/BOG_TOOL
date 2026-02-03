@@ -15,20 +15,83 @@ enum AppMode: String, CaseIterable {
     }
 }
 
-/// 通过挂到窗口层级上的 NSView 设置窗口是否置顶（Floating），并启用窗口位置/尺寸持久化
+// MARK: - 窗口位置/尺寸持久化（双屏下系统 frameAutosave 常不生效，改为手动 UserDefaults）
+private enum WindowFrameStorage {
+    static let keyX = "BOG_TOOL_window_frame_x"
+    static let keyY = "BOG_TOOL_window_frame_y"
+    static let keyW = "BOG_TOOL_window_frame_width"
+    static let keyH = "BOG_TOOL_window_frame_height"
+
+    static func save(_ frame: NSRect) {
+        UserDefaults.standard.set(frame.origin.x, forKey: keyX)
+        UserDefaults.standard.set(frame.origin.y, forKey: keyY)
+        UserDefaults.standard.set(frame.size.width, forKey: keyW)
+        UserDefaults.standard.set(frame.size.height, forKey: keyH)
+    }
+
+    static func load() -> NSRect? {
+        let x = UserDefaults.standard.double(forKey: keyX)
+        let y = UserDefaults.standard.double(forKey: keyY)
+        let w = UserDefaults.standard.double(forKey: keyW)
+        let h = UserDefaults.standard.double(forKey: keyH)
+        guard w > 100, h > 100 else { return nil }
+        return NSRect(x: x, y: y, width: w, height: h)
+    }
+
+    /// 若保存的 frame 与任意屏幕有交集则返回该 frame，否则返回主屏内居中且保留尺寸的 frame
+    static func loadValidated() -> NSRect? {
+        guard var frame = load() else { return nil }
+        let onScreen = NSScreen.screens.contains { $0.frame.intersects(frame) }
+        if onScreen { return frame }
+        guard let main = NSScreen.main ?? NSScreen.screens.first else { return frame }
+        let visible = main.visibleFrame
+        frame.origin.x = visible.midX - frame.width / 2
+        frame.origin.y = visible.midY - frame.height / 2
+        return frame
+    }
+}
+
+/// 通过挂到窗口层级上的 NSView 设置窗口是否置顶（Floating），并用手动 UserDefaults 持久化窗口位置与尺寸（兼容双屏）
 private struct WindowLevelSetter: NSViewRepresentable {
     var floating: Bool
-    
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeNSView(context: Context) -> NSView {
         NSView()
     }
-    
+
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let window = nsView.window else { return }
         window.level = floating ? .floating : .normal
-        // 启用窗口 frame 自动保存/恢复，用户调整大小或位置后下次启动会沿用
-        if window.frameAutosaveName.isEmpty {
-            window.setFrameAutosaveName("BOG_TOOL_MainWindow")
+
+        let coordinator = context.coordinator
+        guard !coordinator.didSetupWindow else { return }
+
+        coordinator.didSetupWindow = true
+        window.delegate = coordinator
+
+        if let frame = WindowFrameStorage.loadValidated() {
+            DispatchQueue.main.async {
+                window.setFrame(frame, display: true)
+                DispatchQueue.main.async {
+                    window.setFrame(frame, display: true)
+                }
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var didSetupWindow = false
+
+        func windowDidResize(_ notification: Notification) {
+            (notification.object as? NSWindow).map { WindowFrameStorage.save($0.frame) }
+        }
+
+        func windowDidMove(_ notification: Notification) {
+            (notification.object as? NSWindow).map { WindowFrameStorage.save($0.frame) }
         }
     }
 }
@@ -246,7 +309,13 @@ private struct ProductionTestOTAOverlay: View {
             OTASectionView(ble: ble, firmwareManager: firmwareManager, isModal: true, isProductionTestOTA: true)
         }
         .onChange(of: ble.isOTACompletedWaitingReboot) { newValue in
-            if newValue { ble.sendReboot() }
+            if newValue {
+                if ble.shouldSkipRebootAfterOTA {
+                    ble.completeOTAWithoutReboot()
+                } else {
+                    ble.sendReboot()
+                }
+            }
         }
     }
 }

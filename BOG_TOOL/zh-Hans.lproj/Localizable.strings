@@ -122,6 +122,11 @@
 "debug.co2_pressure_limits" = "CO2 压力限值";
 "debug.read" = "读取";
 "debug.ota_production_test_in_progress" = "产测 OTA 进行中，请切回产测界面操作。";
+"debug.factory_reset" = "恢复出厂";
+"debug.factory_reset_hint" = "擦除 NVS（设备将立即自动重启；需固件 1.1.2+）";
+"debug.reboot" = "重启设备";
+"debug.reboot_hint" = "重启设备（先解锁再写 0x00000001；需固件 1.1.2+）";
+"debug.device_actions" = "设备";
 
 /* UUID 调试（按特征读写） */
 "debug.uuid_title" = "UUID 读写";
@@ -162,7 +167,7 @@
 "production_test.test_result_summary" = "测试结果摘要";
 "production_test.test_results" = "测试结果";
 "production_test.passed_steps" = "通过步骤";
-"production_test.overlay_step_skipped" = "测试跳过";
+"production_test.overlay_step_skipped" = "因 SOP 规则设置而跳过";
 
 /* 产测规则 */
 "production_test_rules.title" = "产测规则 (SOP)";
@@ -173,6 +178,7 @@
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
 "production_test_rules.firmware_version_hint" = "从下拉选择目标固件版本，产测 OTA 步骤将直接使用此版本，无需再选。";
 "production_test_rules.firmware_version_no_entries" = "请在「固件」菜单中添加固件后再选择目标版本。";
+"production_test_rules.firmware_version_reboot_required_hint" = "已启用恢复出厂或重启，仅支持该命令的固件版本（如 ≥1.1.2）可选。";
 "production_test_rules.firmware_upgrade_enabled" = "若 FW 不匹配则触发 OTA";
 "production_test_rules.use_parsed_version" = "使用 %@";
 "production_test_rules.use_parsed_version_hint" = "使用从固件文件名解析的版本号";
@@ -204,6 +210,13 @@
 "production_test_rules.step_valve_title" = "确保电磁阀是开启的";
 "production_test_rules.step_valve_desc" = "检查并确保设备电磁阀处于开启状态。";
 "production_test_rules.step_valve_criteria" = "✓ 通过：电磁阀已开启。";
+"production_test_rules.step_reset_title" = "重启设备";
+"production_test_rules.step_reset_desc" = "通过 Testing 特征发送重启命令（需固件 1.1.2+ 或 0.x > 0.4.1）。";
+"production_test_rules.step_reset_criteria" = "✓ 通过：已发送重启命令且设备已断开。";
+"production_test_rules.step_factory_reset_title" = "恢复出厂设置";
+"production_test_rules.step_factory_reset_desc" = "通过 Testing 特征擦除 NVS（设备将重启；需固件 1.1.2+ 或 0.x > 0.4.1）。";
+"production_test_rules.step_factory_reset_criteria" = "✓ 通过：已发送恢复出厂且设备已断开。";
+"production_test_rules.step_factory_reset_confirmed_pairing_removed" = "✓ 通过：恢复出厂成功（设备已清除配对）。";
 "production_test_rules.step_ota_title" = "断开前 OTA";
 "production_test_rules.step_ota_desc" = "仅当步骤2（确认固件版本）发现版本不匹配且已开启「若 FW 不匹配则触发 OTA」时执行。OTA 步骤始终在 SOP 中，是否执行由该设置决定。";
 "production_test_rules.step_ota_criteria" = "✓ 通过：OTA 完成且设备已重新连接。";
@@ -300,6 +313,8 @@
 "production_test.result_overlay_title_fail" = "产测失败";
 "production_test.result_overlay_dismiss" = "关闭";
 "production_test.result_criteria_fw" = "固件（一致或 OTA 成功）";
+"production_test.need_retest" = "需要重测";
+"production_test.need_retest_detail" = "本次因当前固件不支持恢复出厂/重启而在 OTA 后发送了 reboot，请重测以执行后续步骤。";
 
 /* 菜单 */
 "menu.floating" = "置顶";

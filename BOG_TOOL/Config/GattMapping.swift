@@ -13,6 +13,11 @@ enum GattMapping {
         config?.deviceNamePrefix ?? "ESP32"
     }
     
+    /// 协议规范版本（如 2026-02-03），用于 GATT 展示页
+    static var specVersion: String? {
+        config?.specVersion
+    }
+    
     /// 本 App 需要发现的服务 UUID 列表（用于 discoverServices）
     static var appServiceCBUUIDs: [CBUUID] {
         guard let uuids = config?.appServiceUuids else { return fallbackServiceUUIDs() }
@@ -167,6 +172,10 @@ enum GattMapping {
 
 struct GattConfig: Codable {
     let deviceNamePrefix: String
+    /// Optional spec version (e.g. "2026-02-03") for display on GATT protocol page
+    let specVersion: String?
+    /// All GATT payloads are little-endian (e.g. 0x00000001 → 01 00 00 00)
+    let byteOrder: String?
     let services: [GattServiceDefinition]
     let appServiceUuids: [String]
     let appCharacteristicKeys: [String: String]

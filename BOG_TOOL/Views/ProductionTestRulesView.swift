@@ -21,6 +21,10 @@ struct TestStep: Identifiable, Equatable {
     static let tbd = TestStep(id: "step5", key: "step5", isLocked: false, enabled: false)
     /// 确保电磁阀是开启的（可调顺序、有使能开关）
     static let ensureValveOpen = TestStep(id: "step_valve", key: "step_valve", isLocked: false, enabled: true)
+    /// 重启设备（Testing 特征 0x00000001，固件 1.1.2+ 或 0.x > 0.4.1）；产测中默认禁用且不允许启用，顺序可调
+    static let reset = TestStep(id: "step_reset", key: "step_reset", isLocked: false, enabled: false)
+    /// 恢复出厂设置（Testing 特征 0x00000002 擦除 NVS，固件 1.1.2+ 或 0.x > 0.4.1）
+    static let factoryReset = TestStep(id: "step_factory_reset", key: "step_factory_reset", isLocked: false, enabled: true)
     /// 断开连接前的 OTA 步骤（默认启用，不许用户取消）
     static let otaBeforeDisconnect = TestStep(id: "step_ota", key: "step_ota", isLocked: true, enabled: true)
     static let disconnectDevice = TestStep(id: "step_disconnect", key: "step_disconnect", isLocked: false, enabled: true)
@@ -112,7 +116,7 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400
     }()
     
-    // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「读取 Gas system status」「确保电磁阀开启」等可调顺序步骤
+    // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「重启」「恢复出厂」等可调顺序步骤（须在第2步到倒数第二步之间）
     private static let defaultSteps: [TestStep] = [
         .connectDevice,
         .verifyFirmware,
@@ -120,6 +124,8 @@ struct ProductionTestRulesView: View {
         .readPressure,
         .readGasSystemStatus,
         .ensureValveOpen,
+        .reset,
+        .factoryReset,
         .tbd,
         .otaBeforeDisconnect,
         .disconnectDevice
@@ -127,7 +133,7 @@ struct ProductionTestRulesView: View {
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         // 加载步骤顺序
@@ -169,14 +175,33 @@ struct ProductionTestRulesView: View {
                 steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
             }
         }
+        // 迁移：若旧配置中无「重启」「恢复出厂」步骤，则插入在断开连接之前（第2步到倒数第二步之间）
+        if !steps.contains(where: { $0.id == TestStep.reset.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
+                steps.insert(TestStep.reset, at: idx)
+            } else {
+                steps.insert(TestStep.reset, at: steps.count - 1)
+            }
+        }
+        if !steps.contains(where: { $0.id == TestStep.factoryReset.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
+                steps.insert(TestStep.factoryReset, at: idx)
+            } else {
+                steps.insert(TestStep.factoryReset, at: steps.count - 1)
+            }
+        }
         // OTA 步骤必须在「确认固件版本」(step2) 之后
         ProductionTestRulesView.ensureOtaAfterFirmwareVerify(steps: &steps)
+        // 重启、恢复出厂只允许在倒数第三步或倒数第二步
+        ProductionTestRulesView.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &steps)
         
-        // 加载每个步骤的启用状态（step_ota 不许用户关闭，始终为 true）
+        // 加载每个步骤的启用状态（step_ota 不许用户关闭，始终为 true；step_reset 产测中不许启用，始终为 false）
         if let enabledDict = UserDefaults.standard.dictionary(forKey: "production_test_steps_enabled") as? [String: Bool] {
             for i in 0..<steps.count {
                 if steps[i].id == TestStep.otaBeforeDisconnect.id {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: true)
+                } else if steps[i].id == TestStep.reset.id {
+                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: false)
                 } else if let enabled = enabledDict[steps[i].id] {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
                 }
@@ -307,6 +332,21 @@ struct ProductionTestRulesView: View {
         }
     }
     
+    /// 当前 SOP 是否启用了恢复出厂或重启（二者需支持 reboot/恢复出厂 的固件版本）
+    private var productionTestRequiresFirmwareSupportForRebootSteps: Bool {
+        testSteps.contains { step in
+            (step.id == TestStep.factoryReset.id || step.id == TestStep.reset.id) && step.enabled
+        }
+    }
+    
+    /// 产测可选固件列表：当恢复出厂/重启启用时仅包含支持该命令的版本（>=1.1.2 或 0.x>0.4.1），否则为全部
+    private var productionTestAllowedFirmwareEntries: [FirmwareEntry] {
+        if productionTestRequiresFirmwareSupportForRebootSteps {
+            return firmwareManager.entries.filter { Self.firmwareVersionSupportsRebootAndFactoryReset($0.parsedVersion) }
+        }
+        return firmwareManager.entries
+    }
+    
     private var testStepsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -330,7 +370,7 @@ struct ProductionTestRulesView: View {
                 ForEach(Array(testSteps.enumerated()), id: \.element.id) { index, step in
                     let isPositionLocked = (index == 0 && step.id == TestStep.connectDevice.id) ||
                                            (index == testSteps.count - 1 && step.id == TestStep.disconnectDevice.id)
-                    let isEnableLocked = isPositionLocked || step.id == TestStep.otaBeforeDisconnect.id // step_ota 不许用户关闭，仅隐藏开关
+                    let isEnableLocked = isPositionLocked || step.id == TestStep.otaBeforeDisconnect.id || step.id == TestStep.reset.id // step_ota 不许关闭；step_reset 产测中不许启用，仅隐藏开关
                     HStack(spacing: 8) {
                         // 拖拽手柄（编辑模式下显示）
                         if isEditingOrder && !isPositionLocked {
@@ -353,7 +393,12 @@ struct ProductionTestRulesView: View {
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(index <= 1 || (step.id == TestStep.otaBeforeDisconnect.id && index > 0 && testSteps[index - 1].id == TestStep.verifyFirmware.id))
+                                .disabled(
+                                    index <= 1
+                                    || (step.id == TestStep.otaBeforeDisconnect.id && index > 0 && testSteps[index - 1].id == TestStep.verifyFirmware.id)
+                                    || ((step.id == TestStep.reset.id || step.id == TestStep.factoryReset.id) && index < testSteps.count - 2) // 重启/恢复出厂只能在上移后仍在倒数第二或倒数第三
+                                    || (index == testSteps.count - 4 && (testSteps[index - 1].id == TestStep.reset.id || testSteps[index - 1].id == TestStep.factoryReset.id)) // 不能把倒数第三步的重启/恢复出厂顶到更前
+                                )
                                 
                                 Button {
                                     moveStepDown(at: index)
@@ -362,7 +407,12 @@ struct ProductionTestRulesView: View {
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(index >= testSteps.count - 2 || (step.id == TestStep.verifyFirmware.id && index + 1 < testSteps.count && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id))
+                                .disabled(
+                                    index >= testSteps.count - 2
+                                    || (step.id == TestStep.verifyFirmware.id && index + 1 < testSteps.count && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id)
+                                    || ((step.id == TestStep.reset.id || step.id == TestStep.factoryReset.id) && index < testSteps.count - 3) // 重启/恢复出厂只能在下移后仍在倒数第二或倒数第三
+                                    || (index == testSteps.count - 4 && (testSteps[index + 1].id == TestStep.reset.id || testSteps[index + 1].id == TestStep.factoryReset.id)) // 不能把倒数第三步的重启/恢复出厂挤到更前
+                                )
                             }
                             .frame(width: 24)
                         } else {
@@ -467,6 +517,38 @@ struct ProductionTestRulesView: View {
             steps.insert(ota, at: min(insertIndex, steps.count))
         }
     }
+
+    /// 判断给定固件版本字符串是否支持 Testing 重启/恢复出厂（与 BLEManager 规则一致：0.x > 0.4.1，否则 >= 1.1.2）
+    private static func firmwareVersionSupportsRebootAndFactoryReset(_ version: String) -> Bool {
+        guard !version.isEmpty else { return false }
+        let parts = version.split(separator: ".").compactMap { Int($0) }
+        guard parts.count >= 3 else { return false }
+        let major = parts[0]
+        let minor = parts.count > 1 ? parts[1] : 0
+        let patch = parts.count > 2 ? parts[2] : 0
+        if version.hasPrefix("0") {
+            if major > 0 { return true }
+            if minor > 4 { return true }
+            if minor == 4, patch > 1 { return true }
+            return false
+        }
+        if major > 1 { return true }
+        if major == 1, minor > 1 { return true }
+        if major == 1, minor == 1, patch >= 2 { return true }
+        return false
+    }
+    
+    /// 重启、恢复出厂只允许在倒数第三步或倒数第二步（索引 count-3、count-2），不可再往前调
+    static func ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: inout [TestStep]) {
+        let count = steps.count
+        guard count >= 4 else { return } // 至少：连接、某一步、重置/恢复出厂、断开
+        guard let resetStep = steps.first(where: { $0.id == TestStep.reset.id }),
+              let factoryResetStep = steps.first(where: { $0.id == TestStep.factoryReset.id }) else { return }
+        let otherSteps = steps.filter { $0.id != TestStep.reset.id && $0.id != TestStep.factoryReset.id }
+        guard otherSteps.count == count - 2 else { return }
+        // 仅允许在倒数第三、倒数第二步：前面 count-3 个其它步骤 + 重启 + 恢复出厂 + 最后一步断开
+        steps = Array(otherSteps.prefix(count - 3)) + [resetStep, factoryResetStep] + Array(otherSteps.suffix(1))
+    }
     
     private func moveStep(from source: IndexSet, to destination: Int) {
         guard let sourceIndex = source.first else { return }
@@ -478,10 +560,18 @@ struct ProductionTestRulesView: View {
         
         // 如果目标位置在源位置之后，需要调整索引（因为先删除后插入）
         let adjustedDestination = destination > sourceIndex ? destination - 1 : destination
+        let count = testSteps.count
+        let resetSlots = [count - 3, count - 2]
+        let step = testSteps[sourceIndex]
+        let isResetOrFactoryReset = step.id == TestStep.reset.id || step.id == TestStep.factoryReset.id
+        // 重启、恢复出厂只能落在倒数第三或倒数第二步
+        if isResetOrFactoryReset, !resetSlots.contains(adjustedDestination) { return }
+        // 其它步骤不能占倒数第三、倒数第二步
+        if !isResetOrFactoryReset, resetSlots.contains(adjustedDestination) { return }
         
         var updatedSteps = testSteps
-        let step = updatedSteps.remove(at: sourceIndex)
-        updatedSteps.insert(step, at: adjustedDestination)
+        let removed = updatedSteps.remove(at: sourceIndex)
+        updatedSteps.insert(removed, at: adjustedDestination)
         
         // 确保第一步和最后一步在正确位置
         if updatedSteps[0].id != TestStep.connectDevice.id {
@@ -493,6 +583,7 @@ struct ProductionTestRulesView: View {
             updatedSteps.append(TestStep.disconnectDevice)
         }
         Self.ensureOtaAfterFirmwareVerify(steps: &updatedSteps)
+        Self.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &updatedSteps)
         
         testSteps = updatedSteps
         saveStepsOrder()
@@ -505,6 +596,10 @@ struct ProductionTestRulesView: View {
         guard index > 1 else { return }
         // OTA 步骤不能在「确认固件版本」之前
         if testSteps[index].id == TestStep.otaBeforeDisconnect.id && testSteps[index - 1].id == TestStep.verifyFirmware.id { return }
+        // 重启/恢复出厂只能处于倒数第二或倒数第三步，上移后仍须在此两格
+        if (testSteps[index].id == TestStep.reset.id || testSteps[index].id == TestStep.factoryReset.id) && index < testSteps.count - 2 { return }
+        // 不能把倒数第三步的重启/恢复出厂顶到更前
+        if index == testSteps.count - 4 && (testSteps[index - 1].id == TestStep.reset.id || testSteps[index - 1].id == TestStep.factoryReset.id) { return }
         
         testSteps.swapAt(index, index - 1)
         saveStepsOrder()
@@ -517,6 +612,10 @@ struct ProductionTestRulesView: View {
         guard index < testSteps.count - 2 else { return }
         // 「确认固件版本」不能在 OTA 步骤之后
         if testSteps[index].id == TestStep.verifyFirmware.id && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id { return }
+        // 重启/恢复出厂只能处于倒数第二或倒数第三步，下移后仍须在此两格
+        if (testSteps[index].id == TestStep.reset.id || testSteps[index].id == TestStep.factoryReset.id) && index < testSteps.count - 3 { return }
+        // 不能把倒数第三步的重启/恢复出厂挤到更前（与下方交换会把它换到 count-4）
+        if index == testSteps.count - 4 && (testSteps[index + 1].id == TestStep.reset.id || testSteps[index + 1].id == TestStep.factoryReset.id) { return }
         
         testSteps.swapAt(index, index + 1)
         saveStepsOrder()
@@ -532,6 +631,7 @@ struct ProductionTestRulesView: View {
     private func saveStepsEnabled() {
         var enabledDict = testSteps.reduce(into: [String: Bool]()) { $0[$1.id] = $1.enabled }
         enabledDict[TestStep.otaBeforeDisconnect.id] = true // step_ota 不许用户关闭，持久化时强制为 true
+        enabledDict[TestStep.reset.id] = false // step_reset 产测中不许启用，持久化时强制为 false
         UserDefaults.standard.set(enabledDict, forKey: "production_test_steps_enabled")
         // 发送通知，通知产测视图更新步骤列表
         NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
@@ -660,7 +760,7 @@ struct ProductionTestRulesView: View {
                     }
                 }
                 
-                // FW 版本：从固件管理下拉选择，产测 OTA 步骤直接使用此版本，无需再选
+                // FW 版本：从固件管理下拉选择，产测 OTA 步骤直接使用此版本；当恢复出厂/重启启用时仅允许选择支持该命令的版本（>=1.1.2 或 0.x>0.4.1）
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 12) {
                         Text(appLanguage.string("production_test_rules.firmware_version_label"))
@@ -670,7 +770,7 @@ struct ProductionTestRulesView: View {
                         
                         Picker("", selection: $firmwareVersion) {
                             Text(appLanguage.string("ota.not_selected")).tag("")
-                            ForEach(firmwareManager.entries) { e in
+                            ForEach(productionTestAllowedFirmwareEntries) { e in
                                 Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
                                     .tag(e.parsedVersion)
                             }
@@ -685,6 +785,12 @@ struct ProductionTestRulesView: View {
                         Spacer()
                     }
                     
+                    if productionTestRequiresFirmwareSupportForRebootSteps && !productionTestAllowedFirmwareEntries.isEmpty {
+                        Text(appLanguage.string("production_test_rules.firmware_version_reboot_required_hint"))
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .padding(.leading, 112)
+                    }
                     Text(appLanguage.string("production_test_rules.firmware_version_hint"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -720,6 +826,26 @@ struct ProductionTestRulesView: View {
                                 UserDefaults.standard.set(newValue, forKey: "production_test_firmware_upgrade_enabled")
                                 NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                             }
+                    }
+                }
+                .onChange(of: productionTestRequiresFirmwareSupportForRebootSteps) { requires in
+                    if requires {
+                        let allowed = productionTestAllowedFirmwareEntries
+                        if !allowed.contains(where: { $0.parsedVersion == firmwareVersion }) {
+                            firmwareVersion = allowed.first?.parsedVersion ?? ""
+                            UserDefaults.standard.set(firmwareVersion, forKey: "production_test_firmware_version")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                    }
+                }
+                .onAppear {
+                    if productionTestRequiresFirmwareSupportForRebootSteps {
+                        let allowed = productionTestAllowedFirmwareEntries
+                        if !allowed.contains(where: { $0.parsedVersion == firmwareVersion }) {
+                            firmwareVersion = allowed.first?.parsedVersion ?? ""
+                            UserDefaults.standard.set(firmwareVersion, forKey: "production_test_firmware_version")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
                     }
                 }
                 
