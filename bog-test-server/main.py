@@ -758,12 +758,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!s || typeof s !== 'object') s = defaultSummary;
       var today = (s.today && typeof s.today === 'object') ? s.today : defaultSummary.today;
       var totalRecords = (s.totalRecords != null ? s.totalRecords : 0);
-      if (recordsData && recordsData.items && Array.isArray(recordsData.items)) {
-        var dedupEl = document.getElementById('filter-dedup');
-        if (dedupEl && dedupEl.checked === true) {
-          totalRecords = recordsData.items.length;
-        }
-      }
       lastSummary = s;
       const el = document.getElementById('summary-cards');
       if (!el) return;
@@ -922,8 +916,50 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         return true;
       });
     }
+    function computeSummaryFromPayload(payload) {
+      if (!payload || !payload.items || !payload.items.length) return defaultSummary;
+      const items = payload.items;
+      const totalRecords = items.length;
+      const deviceSet = new Set();
+      let passed = 0;
+      let failed = 0;
+      const todayStr = new Date().toISOString().slice(0, 10);
+      let todayTotal = 0;
+      let todayPassed = 0;
+      let todayFailed = 0;
+      items.forEach(item => {
+        const sn = getDeviceSn(item);
+        if (sn) deviceSet.add(sn);
+        if (item.overallPassed) passed += 1;
+        else failed += 1;
+        const created = (item.createdAt || '').slice(0, 10);
+        if (created === todayStr) {
+          todayTotal += 1;
+          if (item.overallPassed) todayPassed += 1;
+          else todayFailed += 1;
+        }
+      });
+      const passRate = totalRecords ? Math.round((passed * 1000.0) / totalRecords) / 10.0 : 0.0;
+      const todayPassRate = todayTotal ? Math.round((todayPassed * 1000.0) / todayTotal) / 10.0 : 0.0;
+      return {
+        totalRecords: totalRecords,
+        total: deviceSet.size,
+        passed: passed,
+        failed: failed,
+        passRatePercent: passRate,
+        today: {
+          total: todayTotal,
+          passed: todayPassed,
+          failed: todayFailed,
+          passRatePercent: todayPassRate
+        }
+      };
+    }
     function applyDedupFilter() {
-      if (!lastFetchedData || !lastFetchedData.items) return;
+      if (!lastFetchedData || !lastFetchedData.items) {
+        renderSummary(defaultSummary);
+        return;
+      }
       const dedupEl = document.getElementById('filter-dedup');
       const dedupChecked = dedupEl && dedupEl.checked === true;
       let payload = lastFetchedData;
@@ -931,6 +967,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         payload = { total: lastFetchedData.total, limit: lastFetchedData.limit, offset: lastFetchedData.offset, items: dedupByDevice(lastFetchedData.items) };
       }
       renderRecords(payload, expandedId);
+      const summary = computeSummaryFromPayload(payload);
+      renderSummary(summary);
     }
     function showLoadError(msg) {
       var el = document.getElementById('summary-cards');
@@ -939,19 +977,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="color:#c00">' + (msg || t('summaryError')) + '</td></tr>';
     }
     async function loadRecords() {
-      const sn = document.getElementById('filter-sn').value.trim();
-      const from = document.getElementById('filter-from').value || undefined;
-      const to = document.getElementById('filter-to').value || undefined;
       try {
         const data = await getRecords();
         lastFetchedData = data;
         applyDedupFilter();
-        try {
-          const s = await getSummary(sn, from, to);
-          renderSummary(s);
-        } catch (e) {
-          renderSummary({ totalRecords: 0, total: 0, passed: 0, failed: 0, passRatePercent: 0, today: { total: 0, passed: 0, failed: 0, passRatePercent: 0 } });
-        }
       } catch (e) {
         var msg = (e && e.message) ? e.message : String(e);
         if (msg.indexOf('fetch') !== -1 || msg === 'Failed to fetch') msg = t('loadFailed');
