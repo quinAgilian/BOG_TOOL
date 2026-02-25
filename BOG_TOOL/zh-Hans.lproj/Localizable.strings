@@ -325,8 +325,8 @@
 /* 服务器 */
 "server.settings_title" = "服务器设置";
 "server.base_url_label" = "服务器地址（IP/URL）";
-"server.base_url_placeholder" = "http://127.0.0.1:8000";
-"server.base_url_hint" = "产测结果上报与预览页的 base URL，默认本机 8000 端口";
+"server.base_url_placeholder" = "https://bog-test.generalquin.top";
+"server.base_url_hint" = "产测结果上报与预览页的 base URL，默认 bog-test.generalquin.top";
 "server.upload_enabled" = "是否上传至服务器";
 "server.open_preview" = "打开预览";
 "server.footer_upload_on" = "上传开";

@@ -8,7 +8,7 @@ private enum ServerSettingsKeys {
     static let baseURL = "server_base_url"
     static let uploadEnabled = "server_upload_enabled"
     /// 默认服务器地址；推荐部署远程服务器后在此配置，或首次启动时由用户输入
-    static let defaultBaseURL = "http://127.0.0.1:8000"
+    static let defaultBaseURL = "https://bog-test.generalquin.top"
 }
 
 /// 产测服务器配置（仅支持远程服务器）
