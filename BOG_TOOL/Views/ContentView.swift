@@ -99,6 +99,7 @@ private struct WindowLevelSetter: NSViewRepresentable {
 struct ContentView: View {
     @EnvironmentObject private var appSettings: AppSettings
     @EnvironmentObject private var appLanguage: AppLanguage
+    @EnvironmentObject private var serverSettings: ServerSettings
     @StateObject private var ble = BLEManager()
     @StateObject private var firmwareManager = FirmwareManager.shared
     @State private var selectedMode: AppMode = .productionTest
@@ -180,7 +181,7 @@ struct ContentView: View {
                 }
                 .frame(maxHeight: .infinity)
                 
-                // App 版本与 SOP 版本（左下角，不抢眼）
+                // App 版本、SOP 版本、服务器状态（左下角，不抢眼）
                 HStack(spacing: UIDesignSystem.Spacing.md) {
                     Text("\(appLanguage.string("version.app_label")) v\(appVersionString)")
                         .font(UIDesignSystem.Typography.monospacedCaption)
@@ -190,6 +191,10 @@ struct ContentView: View {
                     Text("\(appLanguage.string("version.sop_label")) \(sopVersionString)")
                         .font(UIDesignSystem.Typography.monospacedCaption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Text("·")
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    ServerStatusFooter(serverSettings: serverSettings)
+                        .environmentObject(appLanguage)
                     Spacer()
                 }
                 .padding(.horizontal, UIDesignSystem.Padding.lg)
@@ -267,12 +272,20 @@ struct ContentView: View {
             // 启动时先激活窗口，再设置置顶，否则未激活时 level 可能不生效
             NSApp.activate(ignoringOtherApps: true)
             applyWindowFloating(appSettings.windowFloating)
+            // 失败落盘：若有待重传的产测结果，自动重传
+            serverSettings.retryPendingUploads { msg in
+                DispatchQueue.main.async { ble.appendLog(msg, level: .info) }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openFirmwareManager)) { _ in
             showFirmwareManager = true
         }
         .sheet(isPresented: $showFirmwareManager) {
             FirmwareManagerView(manager: firmwareManager)
+                .environmentObject(appLanguage)
+        }
+        .sheet(isPresented: $serverSettings.showServerSettingsSheet) {
+            ServerSettingsView(serverSettings: serverSettings)
                 .environmentObject(appLanguage)
         }
     }
@@ -293,6 +306,52 @@ struct ContentView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         #endif
+    }
+}
+
+/// 底部栏服务器状态：上传开/关 + 地址缩写，点击可打开服务器设置
+private struct ServerStatusFooter: View {
+    @EnvironmentObject private var appLanguage: AppLanguage
+    @ObservedObject var serverSettings: ServerSettings
+
+    private var hostDescription: String {
+        guard let url = URL(string: serverSettings.effectiveBaseURL),
+              let host = url.host, !host.isEmpty else { return "" }
+        if let port = url.port, port != 80 && port != 443 {
+            return "\(host):\(port)"
+        }
+        return host
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(appLanguage.string("menu.server"))
+                .font(UIDesignSystem.Typography.monospacedCaption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            Circle()
+                .fill(serverSettings.uploadToServerEnabled ? Color.green : Color.secondary.opacity(0.5))
+                .frame(width: 6, height: 6)
+            Text(appLanguage.string(serverSettings.uploadToServerEnabled ? "server.footer_upload_on" : "server.footer_upload_off"))
+                .font(UIDesignSystem.Typography.monospacedCaption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            if !hostDescription.isEmpty {
+                Text("(\(hostDescription))")
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary.opacity(0.8))
+            }
+            if serverSettings.pendingUploadsCount > 0 {
+                Text("·")
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Text(String(format: appLanguage.string("server.footer_pending"), serverSettings.pendingUploadsCount))
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .onTapGesture {
+            serverSettings.showServerSettingsSheet = true
+        }
+        .help(appLanguage.string("server.footer_hint"))
     }
 }
 

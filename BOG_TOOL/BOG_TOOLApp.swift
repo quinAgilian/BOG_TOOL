@@ -22,6 +22,7 @@ final class AppSettings: ObservableObject {
 struct BOG_TOOLApp: App {
     @StateObject private var appSettings = AppSettings()
     @StateObject private var appLanguage = AppLanguage()
+    @StateObject private var serverSettings = ServerSettings()
 
     init() {
         #if DEBUG
@@ -35,6 +36,7 @@ struct BOG_TOOLApp: App {
             ContentView()
                 .environmentObject(appSettings)
                 .environmentObject(appLanguage)
+                .environmentObject(serverSettings)
                 #if DEBUG
                 .modifier(InjectionObserver())
                 #endif
@@ -51,6 +53,28 @@ struct BOG_TOOLApp: App {
                     NotificationCenter.default.post(name: .openFirmwareManager, object: nil)
                 }
                 .keyboardShortcut("f", modifiers: [.command])
+            }
+            CommandMenu(appLanguage.string("menu.server")) {
+                Button(appLanguage.string("server.settings_title")) {
+                    serverSettings.showServerSettingsSheet = true
+                }
+                .keyboardShortcut(",", modifiers: [.command])
+                Menu(appLanguage.string("server.local_service")) {
+                    Button(appLanguage.string("server.start_server")) {
+                        serverSettings.startLocalServer()
+                    }
+                    .disabled(serverSettings.localServerPath.trimmingCharacters(in: .whitespaces).isEmpty || serverSettings.isLocalServerRunning)
+                    Button(appLanguage.string("server.stop_server")) {
+                        serverSettings.stopLocalServer()
+                    }
+                    .disabled(!serverSettings.isLocalServerRunning)
+                }
+                Divider()
+                Toggle(appLanguage.string("server.upload_enabled"), isOn: $serverSettings.uploadToServerEnabled)
+                Button(appLanguage.string("server.open_preview")) {
+                    serverSettings.openPreviewInBrowser()
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
             }
         }
     }
