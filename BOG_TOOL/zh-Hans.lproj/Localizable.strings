@@ -328,13 +328,6 @@
 "server.base_url_placeholder" = "http://127.0.0.1:8000";
 "server.base_url_hint" = "产测结果上报与预览页的 base URL，默认本机 8000 端口";
 "server.upload_enabled" = "是否上传至服务器";
-"server.local_path_label" = "本地服务路径";
-"server.local_path_placeholder" = "/path/to/bog-test-server";
-"server.local_path_hint" = "bog-test-server 目录（含 .venv），用于启动/停止本地服务";
-"server.local_service" = "本地服务";
-"server.start_server" = "启动服务器";
-"server.stop_server" = "停止服务器";
-"server.status_running" = "运行中";
 "server.open_preview" = "打开预览";
 "server.footer_upload_on" = "上传开";
 "server.footer_upload_off" = "上传关";

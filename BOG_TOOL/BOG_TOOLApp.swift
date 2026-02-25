@@ -66,16 +66,6 @@ struct BOG_TOOLApp: App {
                     serverSettings.showServerSettingsSheet = true
                 }
                 .keyboardShortcut(",", modifiers: [.command])
-                Menu(appLanguage.string("server.local_service")) {
-                    Button(appLanguage.string("server.start_server")) {
-                        serverSettings.startLocalServer()
-                    }
-                    .disabled(serverSettings.localServerPath.trimmingCharacters(in: .whitespaces).isEmpty || serverSettings.isLocalServerRunning)
-                    Button(appLanguage.string("server.stop_server")) {
-                        serverSettings.stopLocalServer()
-                    }
-                    .disabled(!serverSettings.isLocalServerRunning)
-                }
                 Divider()
                 Toggle(appLanguage.string("server.upload_enabled"), isOn: $serverSettings.uploadToServerEnabled)
                 Button(appLanguage.string("server.open_preview")) {
