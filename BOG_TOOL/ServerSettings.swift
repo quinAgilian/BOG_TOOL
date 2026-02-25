@@ -38,6 +38,13 @@ final class ServerSettings: ObservableObject {
     /// 待重传产测结果条数（失败落盘），供底部状态栏显示
     @Published private(set) var pendingUploadsCount: Int = 0
 
+    /// 当前服务器连通性与延迟（基于定期对 /api/summary 的 HTTP 探测）
+    @Published private(set) var isServerReachable: Bool = false
+    @Published private(set) var lastPingLatencyMs: Double? = nil
+
+    private var networkTimer: Timer?
+    private var isRetryingPendingUploads: Bool = false
+
     static let defaultBaseURL = ServerSettingsKeys.defaultBaseURL
 
     init() {
@@ -45,6 +52,8 @@ final class ServerSettings: ObservableObject {
         self.uploadToServerEnabled = UserDefaults.standard.object(forKey: ServerSettingsKeys.uploadEnabled) as? Bool ?? false
         self.localServerPath = UserDefaults.standard.string(forKey: ServerSettingsKeys.localServerPath) ?? ""
         DispatchQueue.main.async { [weak self] in self?.refreshPendingUploadsCount() }
+        startNetworkHealthTimer()
+        performNetworkHealthCheck()
     }
 
     /// 用于打开预览、启动服务等的 base URL（保证有值）
@@ -157,6 +166,10 @@ final class ServerSettings: ObservableObject {
             if !items.isEmpty { log("待重传 \(items.count) 条，但当前未配置服务器地址，跳过重传") }
             return
         }
+        if isRetryingPendingUploads {
+            return
+        }
+        isRetryingPendingUploads = true
         Task {
             var pending = items
             var sentCount = 0
@@ -186,7 +199,68 @@ final class ServerSettings: ObservableObject {
             if sentCount > 0 {
                 await MainActor.run { log("本次启动共重传 \(sentCount) 条产测结果") }
             }
+            await MainActor.run {
+                self.isRetryingPendingUploads = false
+            }
         }
+    }
+
+    /// 无日志的重传，供网络探测成功后自动调用
+    func retryPendingUploadsSilently() {
+        retryPendingUploads { _ in }
+    }
+
+    // MARK: - 网络探测与延迟
+
+    private func startNetworkHealthTimer() {
+        networkTimer?.invalidate()
+        networkTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.performNetworkHealthCheck()
+        }
+    }
+
+    private func performNetworkHealthCheck() {
+        let base = effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: base + "/api/summary") else { return }
+
+        let start = Date()
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+            guard let self = self else { return }
+
+            if let _ = error {
+                DispatchQueue.main.async {
+                    self.isServerReachable = false
+                    self.lastPingLatencyMs = nil
+                }
+                return
+            }
+
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                DispatchQueue.main.async {
+                    self.isServerReachable = false
+                    self.lastPingLatencyMs = nil
+                }
+                return
+            }
+
+            let latencyMs = Date().timeIntervalSince(start) * 1000.0
+            DispatchQueue.main.async {
+                self.isServerReachable = true
+                self.lastPingLatencyMs = latencyMs
+
+                if self.uploadToServerEnabled && self.pendingUploadsCount > 0 {
+                    self.retryPendingUploadsSilently()
+                }
+            }
+        }.resume()
+    }
+
+    deinit {
+        networkTimer?.invalidate()
     }
 }
 

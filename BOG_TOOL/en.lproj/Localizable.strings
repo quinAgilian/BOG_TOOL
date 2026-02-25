@@ -340,6 +340,8 @@
 "server.footer_upload_off" = "Upload off";
 "server.footer_pending" = "Pending %d";
 "server.footer_hint" = "Click to open server settings";
+"server.footer_latency" = "server ping %d ms";
+"server.footer_offline" = "offline";
 
 /* 固件管理 */
 "firmware_manager.title" = "Firmware Manager";

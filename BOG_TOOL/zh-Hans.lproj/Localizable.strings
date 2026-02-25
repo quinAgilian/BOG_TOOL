@@ -340,6 +340,8 @@
 "server.footer_upload_off" = "上传关";
 "server.footer_pending" = "待重传 %d 条";
 "server.footer_hint" = "点击打开服务器设置";
+"server.footer_latency" = "服务器延迟 %d ms";
+"server.footer_offline" = "离线";
 
 /* 固件管理 */
 "firmware_manager.title" = "固件管理";

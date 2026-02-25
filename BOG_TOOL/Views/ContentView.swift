@@ -347,6 +347,21 @@ private struct ServerStatusFooter: View {
                     .font(UIDesignSystem.Typography.monospacedCaption)
                     .foregroundStyle(.orange)
             }
+            if let latency = serverSettings.lastPingLatencyMs {
+                Text("·")
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Text(String(format: appLanguage.string("server.footer_latency"), Int(latency.rounded())))
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            } else if serverSettings.uploadToServerEnabled && !serverSettings.isServerReachable {
+                Text("·")
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Text(appLanguage.string("server.footer_offline"))
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .foregroundStyle(.red)
+            }
         }
         .onTapGesture {
             serverSettings.showServerSettingsSheet = true
