@@ -1,8 +1,9 @@
 """
 产测数据接收服务：接收 BOG_TOOL 产测结果 POST，落库，提供 Summary 与记录查询。
-本地先运行测试，再部署到云端。
+推荐部署到远程服务器，BOG_TOOL APP 作为 HTTP 客户端连接。
 """
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -13,14 +14,16 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+
+from schemas import ProductionTestPayload
 
 # ---------------------------------------------------------------------------
 # 配置与数据库
 # ---------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "bog_test.db"
+_db_path = os.environ.get("BOG_DB_PATH", "")
+DB_PATH = Path(_db_path) if _db_path.startswith("/") else (BASE_DIR / (_db_path or "bog_test.db"))
 
 
 def get_db() -> sqlite3.Connection:
@@ -63,34 +66,6 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_pt_sn ON production_tests(device_serial_number)"
         )
         conn.commit()
-
-
-# ---------------------------------------------------------------------------
-# API 请求/响应模型
-# ---------------------------------------------------------------------------
-
-
-class StepSummaryItem(BaseModel):
-    stepId: str
-    status: str  # passed | failed | skipped
-
-
-class ProductionTestPayload(BaseModel):
-    """BOG_TOOL 产测结束时 POST 的 JSON 结构"""
-    startTime: Optional[str] = None
-    endTime: Optional[str] = None
-    durationSeconds: Optional[float] = None
-    deviceSerialNumber: str = Field(..., min_length=1)
-    deviceName: Optional[str] = None
-    deviceFirmwareVersion: Optional[str] = None
-    deviceBootloaderVersion: Optional[str] = None
-    deviceHardwareRevision: Optional[str] = None
-    overallPassed: bool
-    needRetest: bool = False
-    stepsSummary: list[StepSummaryItem] = Field(default_factory=list)
-    stepResults: Optional[dict[str, str]] = None
-    """结构化测试详情：RTC 时间/时间差、压力(mbar)、Gas 状态、阀门状态等"""
-    testDetails: Optional[dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------

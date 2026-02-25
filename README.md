@@ -74,11 +74,24 @@ BLE 协议由 **`BOG_TOOL/Config/GattServices.json`** 定义，运行时由 **`G
 
 ## 项目结构
 
+本仓库为 **monorepo**，包含两部分：
+
+| 目录 | 说明 |
+|------|------|
+| **`BOG_TOOL/`** | macOS SwiftUI 应用（BLE 连接、产测、调试） |
+| **`bog-test-server/`** | Python FastAPI 产测数据服务（独立部署、独立仓库可拆） |
+
+**服务端与 APP 隔离**：APP 仅通过 HTTP API 与服务器通信；服务器可部署到远程，APP 在「服务器设置」中配置 base URL 即可。
+
 ```
 BOG_TOOL/
 ├── BOG_TOOL.xcodeproj
 ├── BOG_TOOL/
 │   ├── BOG_TOOLApp.swift      # 应用入口
+│   ├── Networking/
+│   │   ├── ServerClient.swift # 产测结果上报、健康检查（仅 HTTP）
+│   │   └── ServerModels.swift # API 路径常量
+│   ├── ServerSettings.swift   # 服务器 base URL、上传开关
 │   ├── Config/
 │   │   ├── GattServices.json  # GATT 协议定义（从 Excel 维护）
 │   │   ├── GattMapping.swift  # 加载 JSON，供 BLE 按 key 取 UUID
@@ -94,8 +107,18 @@ BOG_TOOL/
 │   │   └── RTCTestView.swift       # RTC 测试 UI
 │   ├── Assets.xcassets
 │   └── Info.plist              # 蓝牙使用说明等
+├── bog-test-server/           # 产测数据服务（见 bog-test-server/README.md）
+│   ├── main.py
+│   ├── schemas.py
+│   └── requirements.txt
 └── README.md
 ```
+
+## 产测数据上报
+
+产测结束后，若开启「上传至服务器」，APP 会将结果 POST 到 `bog-test-server`。  
+- 在 **服务器设置**（菜单 `Server → 服务器设置`）中配置 **base URL**（如 `http://你的服务器IP:8000`）。  
+- 服务器部署说明见 `bog-test-server/README.md`。
 
 ## 固件约定（供参考）
 

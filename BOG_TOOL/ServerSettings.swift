@@ -8,11 +8,14 @@ private enum ServerSettingsKeys {
     static let baseURL = "server_base_url"
     static let uploadEnabled = "server_upload_enabled"
     static let localServerPath = "server_local_path"
-    static let defaultBaseURL = "http://8.129.99.18:8000"
+    /// 默认服务器地址；推荐部署远程服务器后在此配置，或首次启动时由用户输入
+    static let defaultBaseURL = "http://127.0.0.1:8000"
 }
 
 /// 产测服务器配置与本地服务进程管理
 final class ServerSettings: ObservableObject {
+    weak var serverClient: ServerClient?
+
     @Published var serverBaseURL: String {
         didSet {
             let v = serverBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -75,6 +78,8 @@ final class ServerSettings: ObservableObject {
     }
 
     /// 启动本地 bog-test-server（需已配置 localServerPath 且该路径下存在 .venv/bin/uvicorn）
+    /// - Note: 已弃用。推荐将 bog-test-server 部署到远程服务器，APP 仅作为 HTTP 客户端连接。
+    @available(*, deprecated, message: "Prefer deploying bog-test-server remotely; app acts as HTTP client only")
     func startLocalServer() {
         let path = (localServerPath as NSString).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return }
@@ -99,16 +104,17 @@ final class ServerSettings: ObservableObject {
     }
 
     /// 停止由本 App 启动的本地服务
+    @available(*, deprecated, message: "Prefer deploying bog-test-server remotely")
     func stopLocalServer() {
         serverProcess?.terminate()
         serverProcess = nil
         isLocalServerRunning = false
     }
 
-    /// 产测结果上报接口 URL
+    /// 产测结果上报接口 URL（由 ServerClient 使用，路径与 bog-test-server 保持一致）
     var productionTestReportURL: URL? {
         let base = effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return URL(string: base + "/api/production-test")
+        return URL(string: base + ServerAPI.productionTest)
     }
 
     // MARK: - 失败落盘与下次启动重传
@@ -162,7 +168,7 @@ final class ServerSettings: ObservableObject {
     /// 下次启动或恢复网络后调用：逐条重传，成功则从列表中移除
     func retryPendingUploads(log: @escaping (String) -> Void) {
         let items: [[String: Any]] = pendingUploadsFileQueue.sync { loadPendingFromFile() }
-        guard !items.isEmpty, let baseURL = productionTestReportURL else {
+        guard !items.isEmpty, let client = serverClient else {
             if !items.isEmpty { log("待重传 \(items.count) 条，但当前未配置服务器地址，跳过重传") }
             return
         }
@@ -175,22 +181,14 @@ final class ServerSettings: ObservableObject {
             var sentCount = 0
             for i in (0..<pending.count).reversed() {
                 let body = pending[i]
-                guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { continue }
-                var request = URLRequest(url: baseURL)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.httpBody = jsonData
-                request.timeoutInterval = 30
                 do {
-                    let (_, response) = try await URLSession.shared.data(for: request)
-                    if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                        pending.remove(at: i)
-                        pendingUploadsFileQueue.sync { savePendingToFile(pending) }
-                        sentCount += 1
-                        await MainActor.run {
-                            refreshPendingUploadsCount()
-                            log("已重传待上传产测结果 1 条")
-                        }
+                    try await client.uploadProductionTest(body: body)
+                    pending.remove(at: i)
+                    pendingUploadsFileQueue.sync { savePendingToFile(pending) }
+                    sentCount += 1
+                    await MainActor.run {
+                        refreshPendingUploadsCount()
+                        log("已重传待上传产测结果 1 条")
                     }
                 } catch {
                     await MainActor.run { log("重传失败: \(error.localizedDescription)") }
@@ -220,43 +218,17 @@ final class ServerSettings: ObservableObject {
     }
 
     private func performNetworkHealthCheck() {
-        let base = effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: base + "/api/summary") else { return }
-
-        let start = Date()
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 5
-
-        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
-            guard let self = self else { return }
-
-            if let _ = error {
-                DispatchQueue.main.async {
-                    self.isServerReachable = false
-                    self.lastPingLatencyMs = nil
-                }
-                return
-            }
-
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                DispatchQueue.main.async {
-                    self.isServerReachable = false
-                    self.lastPingLatencyMs = nil
-                }
-                return
-            }
-
-            let latencyMs = Date().timeIntervalSince(start) * 1000.0
-            DispatchQueue.main.async {
-                self.isServerReachable = true
+        guard let client = serverClient else { return }
+        Task {
+            let (reachable, latencyMs) = await client.performHealthCheck()
+            await MainActor.run {
+                self.isServerReachable = reachable
                 self.lastPingLatencyMs = latencyMs
-
                 if self.uploadToServerEnabled && self.pendingUploadsCount > 0 {
                     self.retryPendingUploadsSilently()
                 }
             }
-        }.resume()
+        }
     }
 
     deinit {
@@ -281,7 +253,7 @@ struct ServerSettingsView: View {
                     .keyboardShortcut(.cancelAction)
             }
 
-            // 服务器地址
+            // 服务器地址（推荐配置远程部署的 bog-test-server 地址）
             VStack(alignment: .leading, spacing: 6) {
                 Text(appLanguage.string("server.base_url_label"))
                     .font(.subheadline.weight(.medium))
@@ -299,7 +271,7 @@ struct ServerSettingsView: View {
 
             Divider()
 
-            // 本地服务路径（用于启动/停止）
+            // 本地服务路径（已弃用，推荐使用远程服务器）
             VStack(alignment: .leading, spacing: 6) {
                 Text(appLanguage.string("server.local_path_label"))
                     .font(.subheadline.weight(.medium))

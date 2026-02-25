@@ -1,7 +1,7 @@
 # BOG 产测数据服务
 
 接收 BOG_TOOL 产测结束时 POST 的数据，落库（SQLite），并提供汇总（Summary）与记录查询、导出。  
-**建议先本地部署测试，再部署到云端。**
+**推荐部署到远程服务器，BOG_TOOL APP 作为 HTTP 客户端连接。**
 
 ## 环境要求
 
@@ -31,7 +31,8 @@ uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
 ### 3. 本地测试 POST
 
-数据库会在首次请求时自动创建，表名为 `production_tests`，数据文件为当前目录下的 `bog_test.db`。
+数据库会在首次请求时自动创建，表名为 `production_tests`，数据文件默认为当前目录下的 `bog_test.db`。  
+可通过环境变量 `BOG_DB_PATH` 指定数据库路径（绝对路径或相对当前目录的路径）。
 
 用 curl 模拟 BOG_TOOL 上报一条记录：
 
@@ -85,7 +86,7 @@ sudo chown $USER:$USER bog-test-server
 cd bog-test-server
 ```
 
-将本地的 `main.py`、`requirements.txt` 上传到该目录（scp、git clone 或粘贴内容）。
+将本地的 `main.py`、`schemas.py`、`requirements.txt` 上传到该目录（scp、git clone 或粘贴内容）。
 
 ```bash
 python3 -m venv .venv
@@ -113,6 +114,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/bog-test-server
 Environment="PATH=/opt/bog-test-server/.venv/bin"
+Environment="BOG_DB_PATH=/opt/bog-test-server/bog_test.db"
 ExecStart=/opt/bog-test-server/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=3

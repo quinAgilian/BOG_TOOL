@@ -22,9 +22,15 @@ final class AppSettings: ObservableObject {
 struct BOG_TOOLApp: App {
     @StateObject private var appSettings = AppSettings()
     @StateObject private var appLanguage = AppLanguage()
-    @StateObject private var serverSettings = ServerSettings()
+    @StateObject private var serverSettings: ServerSettings
+    @StateObject private var serverClient: ServerClient
 
     init() {
+        let settings = ServerSettings()
+        let client = ServerClient(serverSettings: settings)
+        settings.serverClient = client
+        _serverSettings = StateObject(wrappedValue: settings)
+        _serverClient = StateObject(wrappedValue: client)
         #if DEBUG
         // InjectionIII 热重载：加载后保存 Swift 文件即可在运行中的 App 里看到 UI 更新
         _ = Bundle(path: "/Applications/InjectionIII.app/Contents/Resources/macOSInjection.bundle")?.load()
@@ -37,6 +43,7 @@ struct BOG_TOOLApp: App {
                 .environmentObject(appSettings)
                 .environmentObject(appLanguage)
                 .environmentObject(serverSettings)
+                .environmentObject(serverClient)
                 #if DEBUG
                 .modifier(InjectionObserver())
                 #endif
