@@ -8,7 +8,7 @@ private enum ServerSettingsKeys {
     static let baseURL = "server_base_url"
     static let uploadEnabled = "server_upload_enabled"
     static let localServerPath = "server_local_path"
-    static let defaultBaseURL = "http://127.0.0.1:8000"
+    static let defaultBaseURL = "http://8.129.99.18:8000"
 }
 
 /// 产测服务器配置与本地服务进程管理
