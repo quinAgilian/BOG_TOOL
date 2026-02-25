@@ -52,6 +52,7 @@ enum TestResultStatus {
 /// 产测模式：连接后执行 开→关→开，并在开前/开后/关后各读一次压力
 struct ProductionTestView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
+    @EnvironmentObject private var serverSettings: ServerSettings
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var isRunning = false
@@ -83,6 +84,22 @@ struct ProductionTestView: View {
     @State private var needRetestAfterOtaReboot = false
     /// 最近一次产测结束时间（用于 overlay 报表显示）
     @State private var lastTestEndTime: Date?
+    /// 本次产测开始时间（用于上传 durationSeconds）
+    @State private var lastTestStartTime: Date?
+    /// 本次产测过程中缓存的设备信息（步骤 2 通过时写入），用于结束后上传，与是否仍连接无关
+    @State private var capturedDeviceSN: String?
+    @State private var capturedDeviceName: String?
+    @State private var capturedFirmwareVersion: String?
+    @State private var capturedBootloaderVersion: String?
+    @State private var capturedHardwareRevision: String?
+    /// 本次产测关键测试数据（各步骤通过时缓存），用于上传结构化详情
+    @State private var capturedRtcDeviceTime: String?
+    @State private var capturedRtcSystemTime: String?
+    @State private var capturedRtcTimeDiffSeconds: Double?
+    @State private var capturedPressureClosedMbar: Double?
+    @State private var capturedPressureOpenMbar: Double?
+    @State private var capturedGasSystemStatus: String?
+    @State private var capturedValveState: String?
     
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
@@ -280,6 +297,20 @@ struct ProductionTestView: View {
         stepIndex = 0
         currentStepId = nil
         testResultStatus = .notStarted
+        capturedDeviceSN = nil
+        capturedDeviceName = nil
+        capturedFirmwareVersion = nil
+        capturedBootloaderVersion = nil
+        capturedHardwareRevision = nil
+        capturedRtcDeviceTime = nil
+        capturedRtcSystemTime = nil
+        capturedRtcTimeDiffSeconds = nil
+        capturedPressureClosedMbar = nil
+        capturedPressureOpenMbar = nil
+        capturedGasSystemStatus = nil
+        capturedValveState = nil
+        lastTestStartTime = nil
+        lastTestEndTime = nil
     }
     
     /// 初始化步骤状态
@@ -1225,14 +1256,27 @@ struct ProductionTestView: View {
     }
     
     private func executeProductionTest() async {
-        // 确保状态已初始化（使用最新的步骤列表）
+        // 确保状态已初始化（使用最新的步骤列表），并清空上一轮的设备信息缓存
         stepResults.removeAll()
         stepLogRanges.removeAll()
         expandedSteps.removeAll()
+        capturedDeviceSN = nil
+        capturedDeviceName = nil
+        capturedFirmwareVersion = nil
+        capturedBootloaderVersion = nil
+        capturedHardwareRevision = nil
+        capturedRtcDeviceTime = nil
+        capturedRtcSystemTime = nil
+        capturedRtcTimeDiffSeconds = nil
+        capturedPressureClosedMbar = nil
+        capturedPressureOpenMbar = nil
+        capturedGasSystemStatus = nil
+        capturedValveState = nil
         initializeStepStatuses()
         
         // 使用当前的测试步骤列表（已从UserDefaults加载）
         let enabledSteps = currentTestSteps.filter { $0.enabled }
+        lastTestStartTime = Date()
         
         // 加载版本配置（用于步骤验证）
         let rules = loadTestRules()
@@ -1432,6 +1476,12 @@ struct ProductionTestView: View {
                     
                     stepResults[step.id] = resultMessages.joined(separator: "\n")
                     stepStatuses[step.id] = .passed
+                    // 缓存设备信息，供产测结束后上传使用（与是否仍连接无关）
+                    capturedDeviceSN = ble.deviceSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    capturedDeviceName = ble.connectedDeviceName
+                    capturedFirmwareVersion = ble.currentFirmwareVersion
+                    capturedBootloaderVersion = ble.bootloaderVersion
+                    capturedHardwareRevision = ble.deviceHardwareRevision
                     
                 case "step3": // 检查 RTC - 步骤1 已保证连接且 GATT 就绪，此处直接读 RTC
                     self.log("步骤3: 检查 RTC", level: .info)
@@ -1555,7 +1605,7 @@ struct ProductionTestView: View {
                             }
                         }
                         
-                        // 更新步骤结果和状态
+                        // 更新步骤结果和状态，并缓存 RTC 详情供上传
                         if rtcPassed {
                             stepResults[step.id] = "RTC: \(deviceRTCString)\n时间差: \(timeDiffString) ✓"
                             stepStatuses[step.id] = .passed
@@ -1563,6 +1613,10 @@ struct ProductionTestView: View {
                             stepResults[step.id] = "RTC: \(deviceRTCString)\n时间差: \(timeDiffString) ✗"
                             stepStatuses[step.id] = .failed
                         }
+                        capturedRtcDeviceTime = (ble.lastRTCValue.isEmpty || ble.lastRTCValue == "--") ? deviceRTCString : ble.lastRTCValue
+                        capturedRtcSystemTime = (ble.lastSystemTimeAtRTCRead.isEmpty || ble.lastSystemTimeAtRTCRead == "--") ? systemTimeString : ble.lastSystemTimeAtRTCRead
+                        let diffStr = (ble.lastTimeDiffFromRTCRead.isEmpty || ble.lastTimeDiffFromRTCRead == "--") ? timeDiffString : ble.lastTimeDiffFromRTCRead
+                        capturedRtcTimeDiffSeconds = (diffStr != "--" ? parseTimeDiff(diffStr) : nil)
                     }
                     
                 case "step4": // 读取压力值 - 复用debug mode的方法，并验证阈值
@@ -1682,6 +1736,8 @@ struct ProductionTestView: View {
                     
                     stepResults[step.id] = pressureMessages.joined(separator: "\n")
                     stepStatuses[step.id] = pressurePassed ? .passed : .failed
+                    capturedPressureClosedMbar = closedPressureValue.map { $0 * 1000.0 }
+                    capturedPressureOpenMbar = openPressureValue.map { $0 * 1000.0 }
                     
                 case "step_gas_system_status": // 读取 Gas system status，解码后须为 1 (ok)
                     self.log("步骤: 读取 Gas system status", level: .info)
@@ -1715,6 +1771,7 @@ struct ProductionTestView: View {
                             stepResults[step.id] = "Gas system status: \(gasStatusStr)，期望 1 (ok)"
                             stepStatuses[step.id] = .failed
                         }
+                        capturedGasSystemStatus = gasStatusStr.isEmpty || gasStatusStr == "--" ? nil : gasStatusStr
                     }
                     
                 case "step_valve": // 确保电磁阀是开启的
@@ -1723,6 +1780,7 @@ struct ProductionTestView: View {
                     if valveOpened {
                         stepResults[step.id] = appLanguage.string("production_test_rules.step_valve_criteria")
                         stepStatuses[step.id] = .passed
+                        capturedValveState = ble.lastValveStateValue
                     } else {
                         self.log("电磁阀打开失败或超时", level: .error)
                         stepResults[step.id] = "电磁阀: 打开失败或超时"
@@ -1947,16 +2005,14 @@ struct ProductionTestView: View {
                 }
             }
             
-        // 统计测试结果
-        let passedCount = enabledSteps.filter { stepStatuses[$0.id] == .passed }.count
-        let failedCount = enabledSteps.filter { stepStatuses[$0.id] == .failed }.count
-        let skippedCount = enabledSteps.filter { stepStatuses[$0.id] == .skipped }.count
-        
         self.log("产测流程结束", level: .info)
-        self.log("测试结果统计：通过 \(passedCount)，失败 \(failedCount)，跳过 \(skippedCount)，总计 \(enabledSteps.count)", level: .info)
-        
         // 无论通过或失败，均在日志区输出完整报表，便于主日志区按等级过滤查看
         emitProductionTestReport(enabledSteps: enabledSteps)
+        
+        // 若已开启「上传至服务器」，则异步上报本次产测结果
+        if serverSettings.uploadToServerEnabled {
+            Task { await uploadProductionTestResultIfNeeded(enabledSteps: enabledSteps) }
+        }
         
         isRunning = false
         currentStepId = nil
@@ -1965,6 +2021,120 @@ struct ProductionTestView: View {
         // 显示结果 overlay（绿/红弹窗报表）
         lastTestEndTime = Date()
         showResultOverlay = true
+    }
+    
+    /// 若「上传至服务器」已开启，将本次产测结果 POST 到服务器（使用产测过程中缓存的设备信息，与当前是否连接无关）
+    private func uploadProductionTestResultIfNeeded(enabledSteps: [TestStep]) async {
+        guard serverSettings.uploadToServerEnabled,
+              let url = serverSettings.productionTestReportURL else { return }
+        let sn = (capturedDeviceSN ?? ble.deviceSerialNumber)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !sn.isEmpty else {
+            self.log("上传跳过：无设备 SN（步骤2 未通过或未执行）", level: .warning)
+            return
+        }
+        let endTime = lastTestEndTime ?? Date()
+        let startTime = lastTestStartTime ?? endTime
+        let durationSeconds = endTime.timeIntervalSince(startTime)
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let startTimeStr = isoFormatter.string(from: startTime)
+        let endTimeStr = isoFormatter.string(from: endTime)
+        let stepsSummary: [[String: String]] = enabledSteps.map { step in
+            let status: String
+            switch stepStatuses[step.id] ?? .pending {
+            case .passed: status = "passed"
+            case .failed: status = "failed"
+            case .skipped: status = "skipped"
+            case .pending, .running: status = "pending"
+            }
+            return ["stepId": step.id, "status": status]
+        }
+        var body: [String: Any] = [
+            "deviceSerialNumber": sn,
+            "overallPassed": overallTestPassed,
+            "needRetest": needRetestAfterOtaReboot,
+            "startTime": startTimeStr,
+            "endTime": endTimeStr,
+            "durationSeconds": durationSeconds,
+            "stepsSummary": stepsSummary,
+        ]
+        let deviceName = capturedDeviceName ?? ble.connectedDeviceName
+        if let name = deviceName, !name.isEmpty { body["deviceName"] = name }
+        if let v = capturedFirmwareVersion ?? ble.currentFirmwareVersion { body["deviceFirmwareVersion"] = v }
+        if let v = capturedBootloaderVersion ?? ble.bootloaderVersion { body["deviceBootloaderVersion"] = v }
+        if let v = capturedHardwareRevision ?? ble.deviceHardwareRevision { body["deviceHardwareRevision"] = v }
+        if !stepResults.isEmpty {
+            body["stepResults"] = stepResults
+        }
+        var testDetails: [String: Any] = [:]
+        if let v = capturedRtcDeviceTime { testDetails["rtcDeviceTime"] = v }
+        if let v = capturedRtcSystemTime { testDetails["rtcSystemTime"] = v }
+        if let v = capturedRtcTimeDiffSeconds { testDetails["rtcTimeDiffSeconds"] = v }
+        if let v = capturedPressureClosedMbar { testDetails["pressureClosedMbar"] = v }
+        if let v = capturedPressureOpenMbar { testDetails["pressureOpenMbar"] = v }
+        if let v = capturedGasSystemStatus { testDetails["gasSystemStatus"] = v }
+        if let v = capturedValveState { testDetails["valveState"] = v }
+        if !testDetails.isEmpty { body["testDetails"] = testDetails }
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = jsonData
+        request.timeoutInterval = 30
+        let maxAttempts = 3
+        let retryDelaySeconds: UInt64 = 2
+        self.log("正在上传产测结果至服务器（后台）…", level: .info)
+        for attempt in 1...maxAttempts {
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    self.log("产测结果已上传至服务器", level: .info)
+                    return
+                }
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                // 4xx 视为不可重试，直接落盘并结束
+                if (400..<500).contains(code) {
+                    self.log("上传失败：服务器返回 \(code)（客户端错误），不重试；结果已写入本地，下次启动将自动重传", level: .error)
+                    serverSettings.savePendingUpload(body: body)
+                    return
+                }
+                // 5xx 或其它可重试
+                if attempt < maxAttempts {
+                    self.log("上传服务器返回 \(code)，\(retryDelaySeconds) 秒后重试（\(attempt)/\(maxAttempts)）", level: .warning)
+                    try? await Task.sleep(nanoseconds: retryDelaySeconds * 1_000_000_000)
+                } else {
+                    self.log("上传服务器返回 \(code)，已重试 \(maxAttempts) 次；结果已写入本地，下次启动将自动重传", level: .error)
+                    serverSettings.savePendingUpload(body: body)
+                }
+            } catch {
+                let retriable = Self.isRetriableNetworkError(error)
+                if retriable && attempt < maxAttempts {
+                    self.log("上传失败（\(attempt)/\(maxAttempts)）: \(error.localizedDescription)，\(retryDelaySeconds) 秒后重试", level: .warning)
+                    try? await Task.sleep(nanoseconds: retryDelaySeconds * 1_000_000_000)
+                } else {
+                    if !retriable {
+                        self.log("上传失败（不可重试）: \(error.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
+                    } else {
+                        self.log("上传失败（已重试 \(maxAttempts) 次）: \(error.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
+                    }
+                    serverSettings.savePendingUpload(body: body)
+                    return
+                }
+            }
+        }
+    }
+
+    /// 仅对超时、连接错误等可重试错误返回 true；4xx 由上层根据 statusCode 判断；非 URLError 视为不可重试
+    private static func isRetriableNetworkError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .timedOut, .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet,
+             .dnsLookupFailed, .cannotFindHost, .secureConnectionFailed, .resourceUnavailable,
+             .internationalRoamingOff, .dataNotAllowed:
+            return true
+        default:
+            return false
+        }
     }
     
     /// 产测结束时生成报表并写入日志区，按步骤结果使用不同 log 等级（通过=info、失败=error、跳过=warning）
@@ -1976,11 +2146,6 @@ struct ProductionTestView: View {
         
         self.log("────────── 产测报表 ──────────", level: .info)
         self.log("时间: \(timeStr)", level: .info)
-        let passedCount = enabledSteps.filter { stepStatuses[$0.id] == .passed }.count
-        let failedCount = enabledSteps.filter { stepStatuses[$0.id] == .failed }.count
-        let skippedCount = enabledSteps.filter { stepStatuses[$0.id] == .skipped }.count
-        let resultLevel: LogLevel = failedCount > 0 ? .error : (skippedCount > 0 ? .warning : .info)
-        self.log("结果: 通过 \(passedCount)，失败 \(failedCount)，跳过 \(skippedCount)，总计 \(enabledSteps.count)", level: resultLevel)
         if needRetestAfterOtaReboot {
             self.log("需要重测（本次因当前固件不支持恢复出厂/重启而在 OTA 后发送了 reboot，请重测以执行后续步骤）", level: .warning)
         }
