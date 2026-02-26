@@ -73,7 +73,8 @@ final class ServerClient: ObservableObject, ServerClientProtocol {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 5
+        // 健康检查 3 秒超时
+        request.timeoutInterval = 3
 
         let start = Date()
         do {

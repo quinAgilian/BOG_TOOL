@@ -49,7 +49,7 @@ struct BOG_TOOLApp: App {
                 #endif
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 1200, height: 900)
+        .defaultSize(width: 1440, height: 900)
         .commands {
             // 保留系统默认的「新建窗口」(Cmd+N)，便于同进程多窗口；SOP 规则存 UserDefaults，规则变更通过 productionTestRulesDidChange 通知各窗口同步
             CommandGroup(after: .windowList) {

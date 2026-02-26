@@ -324,20 +324,34 @@ private struct ServerStatusFooter: View {
     }
 
     var body: some View {
+        // 服务器状态颜色：<500ms 绿色，>=500ms 黄色；超时/离线为红色；未开启上传则灰色
+        let serverStatusColor: Color = {
+            guard serverSettings.uploadToServerEnabled else {
+                return Color.secondary
+            }
+            if let latency = serverSettings.lastPingLatencyMs, serverSettings.isServerReachable {
+                return latency < 500 ? Color.green : Color.yellow
+            } else if !serverSettings.isServerReachable {
+                return Color.red
+            } else {
+                return Color.secondary
+            }
+        }()
+
         HStack(spacing: 4) {
             Text(appLanguage.string("menu.server"))
                 .font(UIDesignSystem.Typography.monospacedCaption)
                 .foregroundStyle(UIDesignSystem.Foreground.secondary)
             Circle()
-                .fill(serverSettings.uploadToServerEnabled ? Color.green : Color.secondary.opacity(0.5))
+                .fill(serverSettings.uploadToServerEnabled ? serverStatusColor : Color.secondary.opacity(0.5))
                 .frame(width: 6, height: 6)
             Text(appLanguage.string(serverSettings.uploadToServerEnabled ? "server.footer_upload_on" : "server.footer_upload_off"))
                 .font(UIDesignSystem.Typography.monospacedCaption)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                .foregroundStyle(serverStatusColor)
             if !hostDescription.isEmpty {
                 Text("(\(hostDescription))")
                     .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary.opacity(0.8))
+                    .foregroundStyle(serverStatusColor.opacity(0.8))
             }
             if serverSettings.pendingUploadsCount > 0 {
                 Text("·")
@@ -347,13 +361,32 @@ private struct ServerStatusFooter: View {
                     .font(UIDesignSystem.Typography.monospacedCaption)
                     .foregroundStyle(.orange)
             }
+
+            // 显示当前待上传/重传进度：x/y。无待上传时显示 0/0。
+            let progressTotal: Int = {
+                if serverSettings.isRetryingPendingUploads, serverSettings.retryTotalCount > 0 {
+                    return serverSettings.retryTotalCount
+                } else {
+                    return serverSettings.pendingUploadsCount
+                }
+            }()
+            let progressCurrent: Int = {
+                if serverSettings.isRetryingPendingUploads, serverSettings.retryTotalCount > 0 {
+                    return serverSettings.retryUploadedCount
+                } else {
+                    return 0
+                }
+            }()
+            Text("(\(progressCurrent)/\(progressTotal))")
+                .font(UIDesignSystem.Typography.monospacedCaption)
+                .foregroundStyle(serverSettings.pendingUploadsCount > 0 ? .orange : UIDesignSystem.Foreground.secondary)
             if let latency = serverSettings.lastPingLatencyMs {
                 Text("·")
                     .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    .foregroundStyle(serverStatusColor)
                 Text(String(format: appLanguage.string("server.footer_latency"), Int(latency.rounded())))
                     .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    .foregroundStyle(serverStatusColor)
             } else if serverSettings.uploadToServerEnabled && !serverSettings.isServerReachable {
                 Text("·")
                     .font(UIDesignSystem.Typography.monospacedCaption)

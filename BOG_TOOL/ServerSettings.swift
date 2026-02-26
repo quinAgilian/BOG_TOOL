@@ -8,7 +8,7 @@ private enum ServerSettingsKeys {
     static let baseURL = "server_base_url"
     static let uploadEnabled = "server_upload_enabled"
     /// 默认服务器地址；推荐部署远程服务器后在此配置，或首次启动时由用户输入
-    static let defaultBaseURL = "https://bog-test.generalquin.top"
+    static let defaultBaseURL = "http://8.129.99.18:8000"
 }
 
 /// 产测服务器配置（仅支持远程服务器）
@@ -32,12 +32,16 @@ final class ServerSettings: ObservableObject {
     /// 待重传产测结果条数（失败落盘），供底部状态栏显示
     @Published private(set) var pendingUploadsCount: Int = 0
 
+    /// 当前自动重传进度（已上传条数 / 本轮总条数），仅在重传任务进行时有效
+    @Published private(set) var retryUploadedCount: Int = 0
+    @Published private(set) var retryTotalCount: Int = 0
+
     /// 当前服务器连通性与延迟（基于定期对 /api/summary 的 HTTP 探测）
     @Published private(set) var isServerReachable: Bool = false
     @Published private(set) var lastPingLatencyMs: Double? = nil
 
     private var networkTimer: Timer?
-    private var isRetryingPendingUploads: Bool = false
+    @Published private(set) var isRetryingPendingUploads: Bool = false
 
     static let defaultBaseURL = ServerSettingsKeys.defaultBaseURL
 
@@ -101,6 +105,10 @@ final class ServerSettings: ObservableObject {
             savePendingToFile(items)
         }
         refreshPendingUploadsCount()
+        // 若当前判断服务器可达且已开启上传，则立即尝试重传一次，而不是等下次启动
+        if uploadToServerEnabled && isServerReachable {
+            retryPendingUploadsSilently()
+        }
     }
 
     /// 从磁盘刷新待重传条数并更新 @Published，供底部状态栏等 UI 使用
@@ -119,10 +127,15 @@ final class ServerSettings: ObservableObject {
         if isRetryingPendingUploads {
             return
         }
+        let total = items.count
         isRetryingPendingUploads = true
         Task {
             var pending = items
             var sentCount = 0
+            await MainActor.run {
+                self.retryTotalCount = total
+                self.retryUploadedCount = 0
+            }
             for i in (0..<pending.count).reversed() {
                 let body = pending[i]
                 do {
@@ -130,7 +143,9 @@ final class ServerSettings: ObservableObject {
                     pending.remove(at: i)
                     pendingUploadsFileQueue.sync { savePendingToFile(pending) }
                     sentCount += 1
+                    let currentSent = sentCount
                     await MainActor.run {
+                        self.retryUploadedCount = currentSent
                         refreshPendingUploadsCount()
                         log("已重传待上传产测结果 1 条")
                     }
@@ -138,10 +153,12 @@ final class ServerSettings: ObservableObject {
                     await MainActor.run { log("重传失败: \(error.localizedDescription)") }
                 }
             }
-            if sentCount > 0 {
-                await MainActor.run { log("本次启动共重传 \(sentCount) 条产测结果") }
-            }
             await MainActor.run {
+                if sentCount > 0 {
+                    log("本次启动共重传 \(sentCount) 条产测结果")
+                }
+                self.retryUploadedCount = 0
+                self.retryTotalCount = 0
                 self.isRetryingPendingUploads = false
             }
         }
@@ -156,7 +173,8 @@ final class ServerSettings: ObservableObject {
 
     private func startNetworkHealthTimer() {
         networkTimer?.invalidate()
-        networkTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+        // 每 3 秒进行一次健康检查（请求本身也设置 3 秒超时）
+        networkTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.performNetworkHealthCheck()
         }
     }

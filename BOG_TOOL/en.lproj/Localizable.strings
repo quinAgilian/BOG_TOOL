@@ -325,8 +325,8 @@
 /* Server */
 "server.settings_title" = "Server Settings";
 "server.base_url_label" = "Server URL";
-"server.base_url_placeholder" = "https://bog-test.generalquin.top";
-"server.base_url_hint" = "Base URL for report upload and preview; default bog-test.generalquin.top";
+"server.base_url_placeholder" = "http://8.129.99.18:8000";
+"server.base_url_hint" = "Base URL for report upload and preview; default production 8.129.99.18:8000 (use :8001 for test)";
 "server.upload_enabled" = "Upload to server";
 "server.open_preview" = "Open preview";
 "server.footer_upload_on" = "Upload on";
