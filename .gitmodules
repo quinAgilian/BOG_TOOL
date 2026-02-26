@@ -1,0 +1,3 @@
+[submodule "server/bog-test-server"]
+	path = server/bog-test-server
+	url = https://github.com/generalquin1991/bog-test-server.git

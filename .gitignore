@@ -127,5 +127,5 @@ Temporary Items
 *.xcactivitylog
 *.xcresult
 
-bog-test-server/
-bog-test-server-backup/
+/bog-test-server/
+/bog-test-server-backup/
