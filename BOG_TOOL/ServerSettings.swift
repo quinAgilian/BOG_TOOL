@@ -7,12 +7,14 @@ import AppKit
 private enum ServerSettingsKeys {
     static let baseURL = "server_base_url"
     static let uploadEnabled = "server_upload_enabled"
-    static let localServerPath = "server_local_path"
+    /// 默认服务器地址；推荐部署远程服务器后在此配置，或首次启动时由用户输入
     static let defaultBaseURL = "http://8.129.99.18:8000"
 }
 
-/// 产测服务器配置与本地服务进程管理
+/// 产测服务器配置（仅支持远程服务器）
 final class ServerSettings: ObservableObject {
+    weak var serverClient: ServerClient?
+
     @Published var serverBaseURL: String {
         didSet {
             let v = serverBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -24,91 +26,43 @@ final class ServerSettings: ObservableObject {
         didSet { UserDefaults.standard.set(uploadToServerEnabled, forKey: ServerSettingsKeys.uploadEnabled) }
     }
 
-    @Published var localServerPath: String {
-        didSet { UserDefaults.standard.set(localServerPath, forKey: ServerSettingsKeys.localServerPath) }
-    }
-
     /// 用于菜单触发显示「服务器设置」面板
     @Published var showServerSettingsSheet: Bool = false
 
-    /// 本地 uvicorn 进程是否已启动（由本 App 启动时为 true）
-    @Published private(set) var isLocalServerRunning: Bool = false
-    private var serverProcess: Process?
-
     /// 待重传产测结果条数（失败落盘），供底部状态栏显示
     @Published private(set) var pendingUploadsCount: Int = 0
+
+    /// 当前自动重传进度（已上传条数 / 本轮总条数），仅在重传任务进行时有效
+    @Published private(set) var retryUploadedCount: Int = 0
+    @Published private(set) var retryTotalCount: Int = 0
 
     /// 当前服务器连通性与延迟（基于定期对 /api/summary 的 HTTP 探测）
     @Published private(set) var isServerReachable: Bool = false
     @Published private(set) var lastPingLatencyMs: Double? = nil
 
     private var networkTimer: Timer?
-    private var isRetryingPendingUploads: Bool = false
+    @Published private(set) var isRetryingPendingUploads: Bool = false
 
     static let defaultBaseURL = ServerSettingsKeys.defaultBaseURL
 
     init() {
         self.serverBaseURL = UserDefaults.standard.string(forKey: ServerSettingsKeys.baseURL) ?? Self.defaultBaseURL
         self.uploadToServerEnabled = UserDefaults.standard.object(forKey: ServerSettingsKeys.uploadEnabled) as? Bool ?? false
-        self.localServerPath = UserDefaults.standard.string(forKey: ServerSettingsKeys.localServerPath) ?? ""
         DispatchQueue.main.async { [weak self] in self?.refreshPendingUploadsCount() }
         startNetworkHealthTimer()
         performNetworkHealthCheck()
     }
 
-    /// 用于打开预览、启动服务等的 base URL（保证有值）
+    /// 用于打开预览等的 base URL（保证有值）
     var effectiveBaseURL: String {
         let v = serverBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return v.isEmpty ? Self.defaultBaseURL : v
-    }
-
-    /// 从 base URL 解析端口（用于启动本地服务时传参）
-    var serverPort: Int {
-        guard let url = URL(string: effectiveBaseURL), let port = url.port else { return 8000 }
-        return port
     }
 
     /// 在默认浏览器中打开数据概览页
     func openPreviewInBrowser() {
         guard let url = URL(string: effectiveBaseURL) else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    /// 启动本地 bog-test-server（需已配置 localServerPath 且该路径下存在 .venv/bin/uvicorn）
-    func startLocalServer() {
-        let path = (localServerPath as NSString).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else { return }
-        let uvicornPath = (path as NSString).appendingPathComponent(".venv/bin/uvicorn")
-        guard FileManager.default.isExecutableFile(atPath: uvicornPath) else { return }
-        let workDir = URL(fileURLWithPath: path)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: uvicornPath)
-        process.arguments = ["main:app", "--host", "127.0.0.1", "--port", "\(serverPort)"]
-        process.currentDirectoryURL = workDir
-        process.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async { self?.isLocalServerRunning = false }
-        }
-        do {
-            try process.run()
-            serverProcess = process
-            isLocalServerRunning = true
-        } catch {
-            serverProcess = nil
-            isLocalServerRunning = false
-        }
-    }
-
-    /// 停止由本 App 启动的本地服务
-    func stopLocalServer() {
-        serverProcess?.terminate()
-        serverProcess = nil
-        isLocalServerRunning = false
-    }
-
-    /// 产测结果上报接口 URL
-    var productionTestReportURL: URL? {
-        let base = effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return URL(string: base + "/api/production-test")
     }
 
     // MARK: - 失败落盘与下次启动重传
@@ -151,6 +105,10 @@ final class ServerSettings: ObservableObject {
             savePendingToFile(items)
         }
         refreshPendingUploadsCount()
+        // 若当前判断服务器可达且已开启上传，则立即尝试重传一次，而不是等下次启动
+        if uploadToServerEnabled && isServerReachable {
+            retryPendingUploadsSilently()
+        }
     }
 
     /// 从磁盘刷新待重传条数并更新 @Published，供底部状态栏等 UI 使用
@@ -162,44 +120,45 @@ final class ServerSettings: ObservableObject {
     /// 下次启动或恢复网络后调用：逐条重传，成功则从列表中移除
     func retryPendingUploads(log: @escaping (String) -> Void) {
         let items: [[String: Any]] = pendingUploadsFileQueue.sync { loadPendingFromFile() }
-        guard !items.isEmpty, let baseURL = productionTestReportURL else {
+        guard !items.isEmpty, let client = serverClient else {
             if !items.isEmpty { log("待重传 \(items.count) 条，但当前未配置服务器地址，跳过重传") }
             return
         }
         if isRetryingPendingUploads {
             return
         }
+        let total = items.count
         isRetryingPendingUploads = true
         Task {
             var pending = items
             var sentCount = 0
+            await MainActor.run {
+                self.retryTotalCount = total
+                self.retryUploadedCount = 0
+            }
             for i in (0..<pending.count).reversed() {
                 let body = pending[i]
-                guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { continue }
-                var request = URLRequest(url: baseURL)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.httpBody = jsonData
-                request.timeoutInterval = 30
                 do {
-                    let (_, response) = try await URLSession.shared.data(for: request)
-                    if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                        pending.remove(at: i)
-                        pendingUploadsFileQueue.sync { savePendingToFile(pending) }
-                        sentCount += 1
-                        await MainActor.run {
-                            refreshPendingUploadsCount()
-                            log("已重传待上传产测结果 1 条")
-                        }
+                    try await client.uploadProductionTest(body: body)
+                    pending.remove(at: i)
+                    pendingUploadsFileQueue.sync { savePendingToFile(pending) }
+                    sentCount += 1
+                    let currentSent = sentCount
+                    await MainActor.run {
+                        self.retryUploadedCount = currentSent
+                        refreshPendingUploadsCount()
+                        log("已重传待上传产测结果 1 条")
                     }
                 } catch {
                     await MainActor.run { log("重传失败: \(error.localizedDescription)") }
                 }
             }
-            if sentCount > 0 {
-                await MainActor.run { log("本次启动共重传 \(sentCount) 条产测结果") }
-            }
             await MainActor.run {
+                if sentCount > 0 {
+                    log("本次启动共重传 \(sentCount) 条产测结果")
+                }
+                self.retryUploadedCount = 0
+                self.retryTotalCount = 0
                 self.isRetryingPendingUploads = false
             }
         }
@@ -214,49 +173,24 @@ final class ServerSettings: ObservableObject {
 
     private func startNetworkHealthTimer() {
         networkTimer?.invalidate()
-        networkTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+        // 每 3 秒进行一次健康检查（请求本身也设置 3 秒超时）
+        networkTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.performNetworkHealthCheck()
         }
     }
 
     private func performNetworkHealthCheck() {
-        let base = effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: base + "/api/summary") else { return }
-
-        let start = Date()
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 5
-
-        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
-            guard let self = self else { return }
-
-            if let _ = error {
-                DispatchQueue.main.async {
-                    self.isServerReachable = false
-                    self.lastPingLatencyMs = nil
-                }
-                return
-            }
-
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                DispatchQueue.main.async {
-                    self.isServerReachable = false
-                    self.lastPingLatencyMs = nil
-                }
-                return
-            }
-
-            let latencyMs = Date().timeIntervalSince(start) * 1000.0
-            DispatchQueue.main.async {
-                self.isServerReachable = true
+        guard let client = serverClient else { return }
+        Task {
+            let (reachable, latencyMs) = await client.performHealthCheck()
+            await MainActor.run {
+                self.isServerReachable = reachable
                 self.lastPingLatencyMs = latencyMs
-
                 if self.uploadToServerEnabled && self.pendingUploadsCount > 0 {
                     self.retryPendingUploadsSilently()
                 }
             }
-        }.resume()
+        }
     }
 
     deinit {
@@ -281,7 +215,7 @@ struct ServerSettingsView: View {
                     .keyboardShortcut(.cancelAction)
             }
 
-            // 服务器地址
+            // 服务器地址（推荐配置远程部署的 bog-test-server 地址）
             VStack(alignment: .leading, spacing: 6) {
                 Text(appLanguage.string("server.base_url_label"))
                     .font(.subheadline.weight(.medium))
@@ -299,43 +233,12 @@ struct ServerSettingsView: View {
 
             Divider()
 
-            // 本地服务路径（用于启动/停止）
-            VStack(alignment: .leading, spacing: 6) {
-                Text(appLanguage.string("server.local_path_label"))
-                    .font(.subheadline.weight(.medium))
-                TextField(appLanguage.string("server.local_path_placeholder"), text: $serverSettings.localServerPath)
-                    .textFieldStyle(.roundedBorder)
-                Text(appLanguage.string("server.local_path_hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 12) {
-                Button(appLanguage.string("server.start_server")) {
-                    serverSettings.startLocalServer()
-                }
-                .disabled(serverSettings.localServerPath.trimmingCharacters(in: .whitespaces).isEmpty || serverSettings.isLocalServerRunning)
-
-                Button(appLanguage.string("server.stop_server")) {
-                    serverSettings.stopLocalServer()
-                }
-                .disabled(!serverSettings.isLocalServerRunning)
-
-                if serverSettings.isLocalServerRunning {
-                    Text(appLanguage.string("server.status_running"))
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
-            }
-
-            Divider()
-
             Button(appLanguage.string("server.open_preview")) {
                 serverSettings.openPreviewInBrowser()
             }
             .buttonStyle(.borderedProminent)
         }
         .padding(24)
-        .frame(minWidth: 420, minHeight: 380)
+        .frame(minWidth: 420, minHeight: 300)
     }
 }

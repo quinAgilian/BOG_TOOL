@@ -53,6 +53,7 @@ enum TestResultStatus {
 struct ProductionTestView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverSettings: ServerSettings
+    @EnvironmentObject private var serverClient: ServerClient
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var isRunning = false
@@ -2025,8 +2026,7 @@ struct ProductionTestView: View {
     
     /// 若「上传至服务器」已开启，将本次产测结果 POST 到服务器（使用产测过程中缓存的设备信息，与当前是否连接无关）
     private func uploadProductionTestResultIfNeeded(enabledSteps: [TestStep]) async {
-        guard serverSettings.uploadToServerEnabled,
-              let url = serverSettings.productionTestReportURL else { return }
+        guard serverSettings.uploadToServerEnabled else { return }
         let sn = (capturedDeviceSN ?? ble.deviceSerialNumber)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !sn.isEmpty else {
             self.log("上传跳过：无设备 SN（步骤2 未通过或未执行）", level: .warning)
@@ -2075,65 +2075,29 @@ struct ProductionTestView: View {
         if let v = capturedGasSystemStatus { testDetails["gasSystemStatus"] = v }
         if let v = capturedValveState { testDetails["valveState"] = v }
         if !testDetails.isEmpty { body["testDetails"] = testDetails }
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = jsonData
-        request.timeoutInterval = 30
-        let maxAttempts = 3
-        let retryDelaySeconds: UInt64 = 2
-        self.log("正在上传产测结果至服务器（后台）…", level: .info)
-        for attempt in 1...maxAttempts {
-            do {
-                let (_, response) = try await URLSession.shared.data(for: request)
-                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                    self.log("产测结果已上传至服务器", level: .info)
-                    return
-                }
-                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                // 4xx 视为不可重试，直接落盘并结束
-                if (400..<500).contains(code) {
-                    self.log("上传失败：服务器返回 \(code)（客户端错误），不重试；结果已写入本地，下次启动将自动重传", level: .error)
-                    serverSettings.savePendingUpload(body: body)
-                    return
-                }
-                // 5xx 或其它可重试
-                if attempt < maxAttempts {
-                    self.log("上传服务器返回 \(code)，\(retryDelaySeconds) 秒后重试（\(attempt)/\(maxAttempts)）", level: .warning)
-                    try? await Task.sleep(nanoseconds: retryDelaySeconds * 1_000_000_000)
-                } else {
-                    self.log("上传服务器返回 \(code)，已重试 \(maxAttempts) 次；结果已写入本地，下次启动将自动重传", level: .error)
-                    serverSettings.savePendingUpload(body: body)
-                }
-            } catch {
-                let retriable = Self.isRetriableNetworkError(error)
-                if retriable && attempt < maxAttempts {
-                    self.log("上传失败（\(attempt)/\(maxAttempts)）: \(error.localizedDescription)，\(retryDelaySeconds) 秒后重试", level: .warning)
-                    try? await Task.sleep(nanoseconds: retryDelaySeconds * 1_000_000_000)
-                } else {
-                    if !retriable {
-                        self.log("上传失败（不可重试）: \(error.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
-                    } else {
-                        self.log("上传失败（已重试 \(maxAttempts) 次）: \(error.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
-                    }
-                    serverSettings.savePendingUpload(body: body)
-                    return
-                }
-            }
-        }
-    }
 
-    /// 仅对超时、连接错误等可重试错误返回 true；4xx 由上层根据 statusCode 判断；非 URLError 视为不可重试
-    private static func isRetriableNetworkError(_ error: Error) -> Bool {
-        guard let urlError = error as? URLError else { return false }
-        switch urlError.code {
-        case .timedOut, .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet,
-             .dnsLookupFailed, .cannotFindHost, .secureConnectionFailed, .resourceUnavailable,
-             .internationalRoamingOff, .dataNotAllowed:
-            return true
-        default:
-            return false
+        self.log("正在上传产测结果至服务器（后台）…", level: .info)
+        do {
+            try await serverClient.uploadProductionTest(body: body)
+            self.log("产测结果已上传至服务器", level: .info)
+        } catch let err as ServerClientError {
+            switch err {
+            case .serverError(let code, let retriable):
+                if retriable {
+                    self.log("上传失败：服务器返回 \(code)；结果已写入本地，下次启动将自动重传", level: .error)
+                } else {
+                    self.log("上传失败：服务器返回 \(code)（客户端错误），不重试；结果已写入本地", level: .error)
+                }
+                serverSettings.savePendingUpload(body: body)
+            case .networkError(let e, let retriable):
+                self.log("上传失败: \(e.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
+                if retriable { serverSettings.savePendingUpload(body: body) }
+            case .missingConfiguration, .encodingFailed:
+                self.log("上传失败: \(err.localizedDescription ?? "")", level: .error)
+            }
+        } catch {
+            self.log("上传失败: \(error.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
+            serverSettings.savePendingUpload(body: body)
         }
     }
     

@@ -15,7 +15,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0.3</string>
 	<key>CFBundleVersion</key>
-	<string>44</string>
+	<string>53</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
@@ -24,7 +24,21 @@
 	<dict>
 		<key>NSExceptionDomains</key>
 		<dict>
+			<key>127.0.0.1</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
 			<key>8.129.99.18</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+			<key>localhost</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>

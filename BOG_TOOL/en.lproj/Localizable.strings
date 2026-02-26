@@ -325,16 +325,9 @@
 /* Server */
 "server.settings_title" = "Server Settings";
 "server.base_url_label" = "Server URL";
-"server.base_url_placeholder" = "http://127.0.0.1:8000";
-"server.base_url_hint" = "Base URL for report upload and preview; default localhost:8000";
+"server.base_url_placeholder" = "http://8.129.99.18:8000";
+"server.base_url_hint" = "Base URL for report upload and preview; default production 8.129.99.18:8000 (use :8001 for test)";
 "server.upload_enabled" = "Upload to server";
-"server.local_path_label" = "Local server path";
-"server.local_path_placeholder" = "/path/to/bog-test-server";
-"server.local_path_hint" = "bog-test-server folder (with .venv) for start/stop local server";
-"server.local_service" = "Local server";
-"server.start_server" = "Start server";
-"server.stop_server" = "Stop server";
-"server.status_running" = "Running";
 "server.open_preview" = "Open preview";
 "server.footer_upload_on" = "Upload on";
 "server.footer_upload_off" = "Upload off";

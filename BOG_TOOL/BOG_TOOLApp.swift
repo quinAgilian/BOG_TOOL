@@ -22,9 +22,15 @@ final class AppSettings: ObservableObject {
 struct BOG_TOOLApp: App {
     @StateObject private var appSettings = AppSettings()
     @StateObject private var appLanguage = AppLanguage()
-    @StateObject private var serverSettings = ServerSettings()
+    @StateObject private var serverSettings: ServerSettings
+    @StateObject private var serverClient: ServerClient
 
     init() {
+        let settings = ServerSettings()
+        let client = ServerClient(serverSettings: settings)
+        settings.serverClient = client
+        _serverSettings = StateObject(wrappedValue: settings)
+        _serverClient = StateObject(wrappedValue: client)
         #if DEBUG
         // InjectionIII 热重载：加载后保存 Swift 文件即可在运行中的 App 里看到 UI 更新
         _ = Bundle(path: "/Applications/InjectionIII.app/Contents/Resources/macOSInjection.bundle")?.load()
@@ -37,12 +43,13 @@ struct BOG_TOOLApp: App {
                 .environmentObject(appSettings)
                 .environmentObject(appLanguage)
                 .environmentObject(serverSettings)
+                .environmentObject(serverClient)
                 #if DEBUG
                 .modifier(InjectionObserver())
                 #endif
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 1200, height: 900)
+        .defaultSize(width: 1440, height: 900)
         .commands {
             // 保留系统默认的「新建窗口」(Cmd+N)，便于同进程多窗口；SOP 规则存 UserDefaults，规则变更通过 productionTestRulesDidChange 通知各窗口同步
             CommandGroup(after: .windowList) {
@@ -59,16 +66,6 @@ struct BOG_TOOLApp: App {
                     serverSettings.showServerSettingsSheet = true
                 }
                 .keyboardShortcut(",", modifiers: [.command])
-                Menu(appLanguage.string("server.local_service")) {
-                    Button(appLanguage.string("server.start_server")) {
-                        serverSettings.startLocalServer()
-                    }
-                    .disabled(serverSettings.localServerPath.trimmingCharacters(in: .whitespaces).isEmpty || serverSettings.isLocalServerRunning)
-                    Button(appLanguage.string("server.stop_server")) {
-                        serverSettings.stopLocalServer()
-                    }
-                    .disabled(!serverSettings.isLocalServerRunning)
-                }
                 Divider()
                 Toggle(appLanguage.string("server.upload_enabled"), isOn: $serverSettings.uploadToServerEnabled)
                 Button(appLanguage.string("server.open_preview")) {

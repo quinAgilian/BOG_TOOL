@@ -28,6 +28,8 @@
 		A1000023 /* FirmwareManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000023 /* FirmwareManager.swift */; };
 		A1000024 /* FirmwareManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024 /* FirmwareManagerView.swift */; };
 		A1000025 /* ServerSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025 /* ServerSettings.swift */; };
+		A1000026 /* ServerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* ServerModels.swift */; };
+		A1000027 /* ServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* ServerClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -55,6 +57,8 @@
 		A2000023 /* FirmwareManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareManager.swift; sourceTree = "<group>"; };
 		A2000024 /* FirmwareManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareManagerView.swift; sourceTree = "<group>"; };
 		A2000025 /* ServerSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettings.swift; sourceTree = "<group>"; };
+		A2000026 /* ServerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerModels.swift; sourceTree = "<group>"; };
+		A2000027 /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
 		A3000001 /* BOG Tool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BOG Tool.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -84,6 +88,7 @@
 				A2000017 /* AppLanguage.swift */,
 				A2000025 /* ServerSettings.swift */,
 				A2000022 /* UIDesignSystem.swift */,
+				A5000012 /* Networking */,
 				A5000003 /* Views */,
 				A5000006 /* BLE */,
 				A5000008 /* Config */,
@@ -93,6 +98,15 @@
 				A2000012 /* BOG_TOOL.entitlements */,
 			);
 			path = BOG_TOOL;
+			sourceTree = "<group>";
+		};
+		A5000012 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				A2000026 /* ServerModels.swift */,
+				A2000027 /* ServerClient.swift */,
+			);
+			path = Networking;
 			sourceTree = "<group>";
 		};
 		A5000003 /* Views */ = {
@@ -254,6 +268,8 @@
 				A1000023 /* FirmwareManager.swift in Sources */,
 				A1000024 /* FirmwareManagerView.swift in Sources */,
 				A1000025 /* ServerSettings.swift in Sources */,
+				A1000026 /* ServerModels.swift in Sources */,
+				A1000027 /* ServerClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

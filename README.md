@@ -74,11 +74,20 @@ BLE 协议由 **`BOG_TOOL/Config/GattServices.json`** 定义，运行时由 **`G
 
 ## 项目结构
 
+本仓库主要包含 **macOS SwiftUI APP（BOG_TOOL/）**。  
+产测数据服务 `bog-test-server` 已拆分为独立仓库（例如 `bog-test-server`，请在 GitHub 上按实际仓库名访问）。
+
+**服务端与 APP 隔离**：APP 仅通过 HTTP API 与服务器通信；服务器可部署到远程（如阿里云），APP 在「服务器设置」中配置 base URL（默认 `https://bog-test.generalquin.top`）即可。
+
 ```
 BOG_TOOL/
 ├── BOG_TOOL.xcodeproj
 ├── BOG_TOOL/
 │   ├── BOG_TOOLApp.swift      # 应用入口
+│   ├── Networking/
+│   │   ├── ServerClient.swift # 产测结果上报、健康检查（仅 HTTP）
+│   │   └── ServerModels.swift # API 路径常量
+│   ├── ServerSettings.swift   # 服务器 base URL、上传开关
 │   ├── Config/
 │   │   ├── GattServices.json  # GATT 协议定义（从 Excel 维护）
 │   │   ├── GattMapping.swift  # 加载 JSON，供 BLE 按 key 取 UUID
@@ -96,6 +105,12 @@ BOG_TOOL/
 │   └── Info.plist              # 蓝牙使用说明等
 └── README.md
 ```
+
+## 产测数据上报
+
+产测结束后，若开启「上传至服务器」，APP 会将结果 POST 到远程部署的 `bog-test-server` 服务。  
+- 在 **服务器设置**（菜单 `Server → 服务器设置`）中配置 **base URL**（默认 `https://bog-test.generalquin.top`，也可按需修改）。  
+- 服务器部署说明与自动部署流程见独立的 `bog-test-server` 仓库 README。
 
 ## 固件约定（供参考）
 
