@@ -77,7 +77,7 @@ BLE 协议由 **`BOG_TOOL/Config/GattServices.json`** 定义，运行时由 **`G
 本仓库主要包含 **macOS SwiftUI APP（BOG_TOOL/）**。  
 产测数据服务 `bog-test-server` 已拆分为独立仓库（例如 `bog-test-server`，请在 GitHub 上按实际仓库名访问）。
 
-**服务端与 APP 隔离**：APP 仅通过 HTTP API 与服务器通信；服务器可部署到远程（如阿里云），APP 在「服务器设置」中配置 base URL（默认 `https://bog-test.generalquin.top`）即可。
+**服务端与 APP 隔离**：APP 仅通过 HTTP API 与服务器通信；服务器可部署到远程（如阿里云），APP 在「服务器设置」中配置 base URL（当前默认 `http://8.129.99.18:8000`，测试环境可用 `http://8.129.99.18:8001`，备案完成后亦可改为域名如 `http://bog.generalquin.top`）。
 
 ```
 BOG_TOOL/
@@ -109,7 +109,7 @@ BOG_TOOL/
 ## 产测数据上报
 
 产测结束后，若开启「上传至服务器」，APP 会将结果 POST 到远程部署的 `bog-test-server` 服务。  
-- 在 **服务器设置**（菜单 `Server → 服务器设置`）中配置 **base URL**（默认 `https://bog-test.generalquin.top`，也可按需修改）。  
+- 在 **服务器设置**（菜单 `Server → 服务器设置`）中配置 **base URL**：当前默认 `http://8.129.99.18:8000`（生产环境），测试环境可配置为 `http://8.129.99.18:8001`，后续备案完成后可改用域名（如 `http://bog.generalquin.top`）。  
 - 服务器部署说明与自动部署流程见独立的 `bog-test-server` 仓库 README。
 
 ## 固件约定（供参考）
