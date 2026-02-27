@@ -188,7 +188,7 @@ struct OTASectionView: View {
                     }
                 }
                 
-                // 目标固件：下拉从管理列表选择（Debug OTA）+ 浏览添加
+                // 目标固件：下拉从管理列表选择（Debug OTA）；新固件仅通过菜单「固件 → 固件管理」添加
                 HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                     Text(appLanguage.string("firmware_manager.debug_target"))
                         .font(UIDesignSystem.Typography.caption)
@@ -212,13 +212,6 @@ struct OTASectionView: View {
                             }
                         }
                     }
-                    Button {
-                        ble.browseAndSaveFirmware()
-                    } label: {
-                        Text(appLanguage.string("ota.browse"))
-                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
-                    }
-                    .buttonStyle(.borderedProminent)
                 }
             } else {
                 // 模态模式下：产测 OTA 不显示“选固件”，只显示由产测规则指定的版本；Debug OTA 显示下拉 + 浏览
@@ -257,7 +250,7 @@ struct OTASectionView: View {
                     }
                     
                     if !isProductionTestOTA {
-                        // Debug OTA：目标固件下拉 + 浏览
+                        // Debug OTA：目标固件下拉；新固件仅通过菜单「固件 → 固件管理」添加
                         HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                             Text(appLanguage.string("firmware_manager.debug_target"))
                                 .font(UIDesignSystem.Typography.caption)
@@ -281,8 +274,6 @@ struct OTASectionView: View {
                                     }
                                 }
                             }
-                            Button(appLanguage.string("ota.browse")) { ble.browseAndSaveFirmware() }
-                                .buttonStyle(.borderedProminent)
                         }
                     }
                 }
