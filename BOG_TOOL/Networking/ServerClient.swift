@@ -4,6 +4,7 @@ import Foundation
 /// Owns all server communication; views use this instead of URLSession directly.
 protocol ServerClientProtocol: AnyObject {
     func uploadProductionTest(body: [String: Any]) async throws
+    func uploadFirmwareUpgradeRecord(body: [String: Any]) async throws
     func performHealthCheck() async -> (reachable: Bool, latencyMs: Double?)
 }
 
@@ -22,8 +23,58 @@ final class ServerClient: ObservableObject, ServerClientProtocol {
         return URL(string: base + ServerAPI.productionTest)
     }
 
+    private var firmwareUpgradeURL: URL? {
+        guard let settings = serverSettings else { return nil }
+        let base = settings.effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return URL(string: base + ServerAPI.firmwareUpgradeRecord)
+    }
+
     func uploadProductionTest(body: [String: Any]) async throws {
         guard let url = reportURL else {
+            throw ServerClientError.missingConfiguration
+        }
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
+            throw ServerClientError.encodingFailed
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = jsonData
+        request.timeoutInterval = 30
+
+        for attempt in 1...maxAttempts {
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    return
+                }
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if (400..<500).contains(code) {
+                    throw ServerClientError.serverError(statusCode: code, retriable: false)
+                }
+                if attempt < maxAttempts {
+                    try? await Task.sleep(nanoseconds: retryDelaySeconds * 1_000_000_000)
+                } else {
+                    throw ServerClientError.serverError(statusCode: code, retriable: true)
+                }
+            } catch {
+                let retriable = Self.isRetriableNetworkError(error)
+                if retriable && attempt < maxAttempts {
+                    try? await Task.sleep(nanoseconds: retryDelaySeconds * 1_000_000_000)
+                } else {
+                    if retriable {
+                        throw ServerClientError.networkError(error, retriable: true)
+                    } else {
+                        throw ServerClientError.networkError(error, retriable: false)
+                    }
+                }
+            }
+        }
+    }
+
+    func uploadFirmwareUpgradeRecord(body: [String: Any]) async throws {
+        guard let url = firmwareUpgradeURL else {
             throw ServerClientError.missingConfiguration
         }
         guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {

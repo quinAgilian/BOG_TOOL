@@ -277,6 +277,9 @@ struct ContentView: View {
                 DispatchQueue.main.async { ble.appendLog(msg, level: .info) }
             }
         }
+        .onChange(of: ble.isOTACompletedWaitingReboot) { if $0 { uploadOtaResultToServer(success: true) } }
+        .onChange(of: ble.isOTAFailed) { if $0 { uploadOtaResultToServer(success: false) } }
+        .onChange(of: ble.isOTACancelled) { if $0 { uploadOtaResultToServer(success: false) } }
         .onReceive(NotificationCenter.default.publisher(for: .openFirmwareManager)) { _ in
             showFirmwareManager = true
         }
@@ -293,6 +296,40 @@ struct ContentView: View {
     private func applyWindowFloating(_ floating: Bool) {
         let level: NSWindow.Level = floating ? .floating : .normal
         (NSApp.keyWindow ?? NSApp.mainWindow)?.level = level
+    }
+
+    /// OTA 完成后上报固件升级记录到服务器（成功或失败）；仅当开启上传时执行
+    private func uploadOtaResultToServer(success: Bool) {
+        guard serverSettings.uploadToServerEnabled, let client = serverSettings.serverClient else { return }
+        let currentVersion = ble.currentFirmwareVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "—"
+        guard !currentVersion.isEmpty else { return }
+        var body: [String: Any] = [
+            "currentVersion": currentVersion,
+            "upgradeSuccess": success,
+        ]
+        if let sn = ble.deviceSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines), !sn.isEmpty {
+            body["deviceSerialNumber"] = sn
+        }
+        if success, let newVer = ble.parsedFirmwareVersion, !newVer.isEmpty {
+            body["newVersion"] = newVer
+        }
+        if let dur = ble.otaCompletedDuration {
+            body["durationSeconds"] = dur
+        }
+        if let bytes = ble.otaFirmwareTotalBytes {
+            body["targetFileSizeBytes"] = bytes
+        }
+        Task {
+            do {
+                try await client.uploadFirmwareUpgradeRecord(body: body)
+                await MainActor.run { ble.appendLog("[OTA] 固件升级记录已上报", level: .info) }
+            } catch {
+                await MainActor.run {
+                    serverSettings.savePendingFirmwareUpgrade(body: body)
+                    ble.appendLog("[OTA] 固件升级记录上报失败，已落盘待重传: \(error.localizedDescription)", level: .warning)
+                }
+            }
+        }
     }
 
     /// 将当前显示的完整日志（含 OTA 进度行）复制到剪贴板；因 ForEach 按行渲染，无法 Cmd+A 全选，用此按钮一次性复制全部

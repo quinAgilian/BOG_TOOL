@@ -79,7 +79,7 @@ final class ServerSettings: ObservableObject {
         return dir.appendingPathComponent(Self.pendingUploadsFileName)
     }
 
-    /// 从磁盘读取待重传列表（仅 body 数组）
+    /// 从磁盘读取待重传列表；每项为 ["recordType": "production_test"|"firmware_upgrade", "body": ...]，旧格式无 recordType 则视为 production_test
     private func loadPendingFromFile() -> [[String: Any]] {
         guard let url = pendingUploadsFileURL,
               FileManager.default.fileExists(atPath: url.path),
@@ -99,13 +99,21 @@ final class ServerSettings: ObservableObject {
 
     /// 失败落盘：将当次产测 body 追加到待重传列表
     func savePendingUpload(body: [String: Any]) {
+        savePendingItem(recordType: "production_test", body: body)
+    }
+
+    /// 失败落盘：将 OTA 固件升级记录追加到待重传列表
+    func savePendingFirmwareUpgrade(body: [String: Any]) {
+        savePendingItem(recordType: "firmware_upgrade", body: body)
+    }
+
+    private func savePendingItem(recordType: String, body: [String: Any]) {
         pendingUploadsFileQueue.sync {
             var items = loadPendingFromFile()
-            items.append(body)
+            items.append(["recordType": recordType, "body": body])
             savePendingToFile(items)
         }
         refreshPendingUploadsCount()
-        // 若当前判断服务器可达且已开启上传，则立即尝试重传一次，而不是等下次启动
         if uploadToServerEnabled && isServerReachable {
             retryPendingUploadsSilently()
         }
@@ -137,9 +145,15 @@ final class ServerSettings: ObservableObject {
                 self.retryUploadedCount = 0
             }
             for i in (0..<pending.count).reversed() {
-                let body = pending[i]
+                let item = pending[i]
+                let recordType = item["recordType"] as? String ?? "production_test"
+                let body = (item["body"] as? [String: Any]) ?? item
                 do {
-                    try await client.uploadProductionTest(body: body)
+                    if recordType == "firmware_upgrade" {
+                        try await client.uploadFirmwareUpgradeRecord(body: body)
+                    } else {
+                        try await client.uploadProductionTest(body: body)
+                    }
                     pending.remove(at: i)
                     pendingUploadsFileQueue.sync { savePendingToFile(pending) }
                     sentCount += 1
