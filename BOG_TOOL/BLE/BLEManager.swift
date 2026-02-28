@@ -748,6 +748,7 @@ final class BLEManager: NSObject, ObservableObject {
         isOTACompletedWaitingReboot = false
         isOTAFailed = false
         isOTACancelled = false
+        lastOTAFailureReason = nil
         isOTARebootDisconnected = false
         
         // 设置期待断开标记和时间戳
@@ -772,6 +773,7 @@ final class BLEManager: NSObject, ObservableObject {
         isOTACompletedWaitingReboot = false
         isOTAFailed = false
         isOTACancelled = false
+        lastOTAFailureReason = nil
         otaInitiatedByProductionTest = false
         otaStartTime = nil
         otaFirmwareTotalBytes = nil
@@ -804,6 +806,7 @@ final class BLEManager: NSObject, ObservableObject {
         otaStatus1ReceivedFromDevice = false
         isOTAFailed = false
         isOTACancelled = false
+        lastOTAFailureReason = nil
         isOTAWaitingValidation = false
         isOTACompletedWaitingReboot = false
         isOTAInProgress = false
@@ -855,6 +858,9 @@ final class BLEManager: NSObject, ObservableObject {
     
     /// OTA 是否被用户取消，供 UI 显示取消状态
     @Published var isOTACancelled: Bool = false
+    
+    /// OTA 失败/取消原因（API 格式），供上报固件升级记录；user_cancelled|connection_lost|timeout|checksum_failed|flash_failed|other
+    @Published var lastOTAFailureReason: String?
     
     /// 选择固件文件并保存路径（产测与 Debug 共用，仅此一处调用）；下次打开程序会自动恢复上次选择的固件
     func browseAndSaveFirmware() {
@@ -999,6 +1005,7 @@ final class BLEManager: NSObject, ObservableObject {
         isOTAInProgress = true
         isOTAFailed = false // 重置失败状态
         isOTACancelled = false // 重置取消状态
+        lastOTAFailureReason = nil
         isOTAWaitingValidation = false // 重置等待校验状态
         isOTACompletedWaitingReboot = false
         isOTARebootDisconnected = false
@@ -1062,12 +1069,24 @@ final class BLEManager: NSObject, ObservableObject {
         return startOTA(firmwareURL: url, initiatedByProductionTest: false)
     }
     
+    /// 将内部失败原因映射为 API 的 failureReason 格式
+    private static func mapFailureReasonToAPI(_ reason: String?) -> String? {
+        guard let r = reason?.lowercased() else { return "user_cancelled" }
+        if r.contains("cancel") || r.contains("用户取消") { return "user_cancelled" }
+        if r.contains("连接") || r.contains("connection") || r.contains("disconnect") { return "connection_lost" }
+        if r.contains("timeout") || r.contains("超时") || r.contains("retries") || r.contains("stuck") { return "timeout" }
+        if r.contains("image fail") || r.contains("checksum") || r.contains("校验") { return "checksum_failed" }
+        if r.contains("flash") { return "flash_failed" }
+        return "other"
+    }
+    
     /// 统一的 OTA 错误清理方法：发送 abort (Status=0) 并重置本地状态，确保设备下次可以正常进入 OTA
     /// - Parameter reason: 失败原因（如果为 nil，则标记为取消状态）
     private func abortOtaAndCleanup(reason: String?) {
         // 发送 abort 命令，确保设备状态被重置
         writeOtaStatus(0)
         
+        lastOTAFailureReason = Self.mapFailureReasonToAPI(reason)
         if let reason = reason {
             // 失败状态
             otaFlowState = .failed(reason)

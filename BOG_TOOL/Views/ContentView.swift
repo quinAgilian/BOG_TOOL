@@ -312,6 +312,11 @@ struct ContentView: View {
         }
         if success, let newVer = ble.parsedFirmwareVersion, !newVer.isEmpty {
             body["newVersion"] = newVer
+            body["finalVersion"] = newVer
+        }
+        if !success {
+            body["failureReason"] = ble.lastOTAFailureReason ?? "other"
+            body["finalVersion"] = currentVersion
         }
         if let dur = ble.otaCompletedDuration {
             body["durationSeconds"] = dur
