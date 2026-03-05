@@ -308,10 +308,40 @@ def _require_admin_session(token: Optional[str]) -> None:
             raise HTTPException(status_code=401, detail="Session expired")
 
 
+def _is_admin_authenticated(token: Optional[str]) -> bool:
+    """仅判断是否已登录，不抛异常。"""
+    if not ADMIN_USERNAME or not ADMIN_PASSWORD_SHA256 or not token:
+        return False
+    now_iso = _now_iso()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM admin_sessions WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if not row or row["expires_at"] <= now_iso:
+            return False
+    return True
+
+
 def require_admin(
     session_token: Optional[str] = Cookie(default=None, alias=ADMIN_SESSION_COOKIE_NAME),
 ) -> None:
     _require_admin_session(session_token)
+
+
+def require_admin_or_redirect(
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None, alias=ADMIN_SESSION_COOKIE_NAME),
+) -> Optional[RedirectResponse]:
+    """未登录时：浏览器请求重定向到登录页，API 请求返回 401。"""
+    if not ADMIN_USERNAME or not ADMIN_PASSWORD_SHA256:
+        raise HTTPException(status_code=500, detail="Admin login not configured")
+    if _is_admin_authenticated(session_token):
+        return None
+    accept = (request.headers.get("accept") or "").lower()
+    if request.method == "GET" and "text/html" in accept:
+        return RedirectResponse(url="/admin/login", status_code=302)
+    raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 @app.post("/api/admin/login")
@@ -1513,6 +1543,20 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
     .muted { color: #9ca3af; }
     .link { color: #2563eb; text-decoration: none; }
     .link:hover { text-decoration: underline; }
+    #fw-table { table-layout: fixed; min-width: 900px; }
+    #fw-table th { position: relative; white-space: nowrap; }
+    #fw-table th .resize-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; }
+    #fw-table th .resize-handle:hover { background: rgba(37,99,235,0.2); }
+    #fw-table .col-time { width: 160px; min-width: 100px; }
+    #fw-table .col-usage { width: 120px; min-width: 80px; }
+    #fw-table .col-env { width: 90px; min-width: 70px; }
+    #fw-table .col-version { width: 85px; min-width: 65px; }
+    #fw-table .col-fname { width: 200px; min-width: 120px; }
+    #fw-table .col-size { width: 85px; min-width: 65px; }
+    #fw-table .col-summary { width: 140px; min-width: 90px; }
+    #fw-table .col-dl { width: 65px; min-width: 50px; }
+    #fw-table .col-action { width: 75px; min-width: 60px; }
+    #fw-table td { overflow: hidden; text-overflow: ellipsis; }
   </style>
 </head>
 <body>
@@ -1545,17 +1589,20 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
       <p>按上传时间倒序排列，仅当前用途 / 环境。</p>
       <div style="overflow-x:auto;">
         <table id="fw-table">
+          <colgroup>
+            <col class="col-time" /><col class="col-usage" /><col class="col-env" /><col class="col-version" /><col class="col-fname" /><col class="col-size" /><col class="col-summary" /><col class="col-dl" /><col class="col-action" />
+          </colgroup>
           <thead>
             <tr>
-              <th>时间</th>
-              <th>用途</th>
-              <th>环境</th>
-              <th>版本</th>
-              <th>文件名</th>
-              <th>大小</th>
-              <th>摘要</th>
-              <th>下载</th>
-              <th>操作</th>
+              <th>时间<span class="resize-handle"></span></th>
+              <th>用途<span class="resize-handle"></span></th>
+              <th>环境<span class="resize-handle"></span></th>
+              <th>版本<span class="resize-handle"></span></th>
+              <th>文件名<span class="resize-handle"></span></th>
+              <th>大小<span class="resize-handle"></span></th>
+              <th>摘要<span class="resize-handle"></span></th>
+              <th>下载<span class="resize-handle"></span></th>
+              <th>操作<span class="resize-handle"></span></th>
             </tr>
           </thead>
           <tbody id="fw-tbody">
@@ -1778,11 +1825,46 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
       });
     }
 
+    var admResizeState = null;
+    function initAdmResize(handle) {
+      if (handle._admResizeInit) return;
+      handle._admResizeInit = true;
+      handle.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var th = handle.closest('th');
+        var table = th.closest('table');
+        var colIndex = Array.prototype.indexOf.call(th.parentElement.children, th);
+        var cols = table.querySelectorAll('colgroup col');
+        var col = cols[colIndex];
+        if (!col) return;
+        var startX = e.clientX, startW = th.offsetWidth;
+        admResizeState = { col: col, startX: startX, startW: startW };
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      });
+    }
+    document.addEventListener('mousemove', function (e) {
+      if (!admResizeState) return;
+      var dw = e.clientX - admResizeState.startX;
+      var newW = Math.max(40, admResizeState.startW + dw);
+      admResizeState.col.style.width = newW + 'px';
+      admResizeState.col.style.minWidth = newW + 'px';
+    });
+    document.addEventListener('mouseup', function () {
+      if (admResizeState) {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        admResizeState = null;
+      }
+    });
+
     (function init() {
       bindControls();
       bindUpload();
       bindTableDelete();
       loadFirmware();
+      document.querySelectorAll('#fw-table th .resize-handle').forEach(initAdmResize);
     })();
   </script>
 </body>
@@ -3265,7 +3347,11 @@ def admin_login_page() -> str:
 
 
 @app.get("/admin/firmware", response_class=HTMLResponse)
-def admin_firmware_page(_: None = Depends(require_admin)) -> str:
+def admin_firmware_page(
+    redirect_or_none: Optional[RedirectResponse] = Depends(require_admin_or_redirect),
+) -> Any:
+    if redirect_or_none is not None:
+        return redirect_or_none
     return ADMIN_FIRMWARE_HTML
 
 

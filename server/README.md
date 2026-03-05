@@ -213,9 +213,47 @@ sudo systemctl start bog-test-server
 - **BOG 产测/调试分离**（`/home`、`/bog` 入口）：产测服务监听 **8000**、调试服务监听 **8001**；经 Nginx 对外时产测为 80/8080、调试为 8081。设置 `BOG_PRODUCTION_BASE_URL` 与 `BOG_DEVELOPMENT_BASE_URL` 后，BOG 页「产测」链到生产、「调试」链到开发，数据分离。按实际访问方式配置即可：
   - 经 Nginx 访问：`BOG_PRODUCTION_BASE_URL=http://8.129.99.18:8080`，`BOG_DEVELOPMENT_BASE_URL=http://8.129.99.18:8081`
   - 直连应用端口：`BOG_PRODUCTION_BASE_URL=http://8.129.99.18:8000`，`BOG_DEVELOPMENT_BASE_URL=http://8.129.99.18:8001`
-  - 生产环境也需提供 `/home`、`/bog`、`/bog/production_dashboard` 等路由（合并 `feature/firmware-admin` 到 `main` 并部署即可）。
+- 生产环境需提供 `/home`、`/bog`、`/bog/dashboard` 等路由（部署当前 `main` / `dev` 分支即可，产测与调试通过 `BOG_PRODUCTION_BASE_URL` / `BOG_DEVELOPMENT_BASE_URL` 区分）。
 
 数据库已加入 `.gitignore`，不会被 git 覆盖。
+
+### 3.2.1 固件管理后台登录配置（8000 产测 / 8001 调试）
+
+访问 `/admin/firmware`（固件上传与管理）前，需在对应进程所在机器上配置管理员账号，**产测（8000）与调试（8001）各自配置、互不影响**。与调试环境做法一致，用 systemd 覆盖方式注入环境变量（不把密码写进仓库）。
+
+**1. 生成密码的 SHA256（在本地或服务器执行一次）：**
+```bash
+echo -n "你要设置的登录密码" | sha256sum
+```
+记下输出中的一串十六进制（不含空格和 `-`），例如：`a1b2c3...`。
+
+**2. 在服务器上为对应服务配置环境变量：**
+
+- **产测（8000）**：编辑生产服务
+  ```bash
+  sudo systemctl edit bog-test-server
+  ```
+- **调试（8001）**：编辑开发服务
+  ```bash
+  sudo systemctl edit bog-test-server-dev
+  ```
+
+在打开的编辑器里**仅保留**下面内容（把用户名和哈希换成你自己的），保存退出：
+```ini
+[Service]
+Environment="BOG_ADMIN_USERNAME=admin"
+Environment="BOG_ADMIN_PASSWORD_SHA256=上一步得到的SHA256十六进制"
+```
+
+**3. 重载并重启服务：**
+- 产测：`sudo systemctl daemon-reload && sudo systemctl restart bog-test-server`
+- 调试：`sudo systemctl daemon-reload && sudo systemctl restart bog-test-server-dev`
+
+**4. 验证：**
+- 产测：浏览器打开 `http://你的服务器:8000/admin/login`（或经 Nginx 的 8080/80），用上面设置的用户名和**明文密码**登录，再访问 `http://你的服务器:8000/admin/firmware`。
+- 调试：`http://你的服务器:8001/admin/login` → 登录 → `/admin/firmware`。
+
+未配置时访问 `/admin/firmware` 会提示 `Admin login not configured`；已配置但未登录会跳转到 `/admin/login`。
 
 ### 3.3 域名绑定（generalquin.top，前缀 bog）
 
