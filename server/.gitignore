@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+bog_test.db
+.env
+.env.local
+deploy_key
+deploy_timestamp.txt
