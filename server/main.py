@@ -12,8 +12,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from typing import Any, Dict, List, Optional, Tuple
 
 import hashlib
 from fastapi import (
@@ -64,6 +63,22 @@ def _ensure_firmware_dir(usage_type: str, channel: str) -> Path:
     target_dir = FIRMWARE_ROOT / subdir / channel
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir
+
+
+def _parse_firmware_filename(original_name: str) -> Tuple[str, str]:
+    """从文件名解析用途与版本。返回 (usage_type, version)。不符合则 raise HTTPException。"""
+    if not original_name or not original_name.endswith(".bin"):
+        raise HTTPException(status_code=400, detail="固件文件名须为 .bin 结尾")
+    m = re.fullmatch(r"CO2ControllerFW_combined_(\d+)_(\d+)_(\d+)\.bin", original_name)
+    if m:
+        return "factory_merged", f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+    m = re.fullmatch(r"CO2ControllerFW_(\d+)_(\d+)_(\d+)\.bin", original_name)
+    if m:
+        return "ota_app", f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+    raise HTTPException(
+        status_code=400,
+        detail="文件名须为 CO2ControllerFW_combined_1_1_3.bin（烧录）或 CO2ControllerFW_1_1_3.bin（OTA）",
+    )
 
 
 def _firmware_public_path(file_path: str) -> str:
@@ -226,6 +241,19 @@ def init_db() -> None:
         if "original_file_name" not in fwf_cols:
             try:
                 conn.execute("ALTER TABLE firmware_files ADD COLUMN original_file_name TEXT")
+            except sqlite3.OperationalError:
+                pass
+        if "visible_to_production" not in fwf_cols:
+            try:
+                conn.execute("ALTER TABLE firmware_files ADD COLUMN visible_to_production INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            # 历史数据：原 channel=production 的视为产线可见
+            try:
+                conn.execute(
+                    "UPDATE firmware_files SET visible_to_production = 1 WHERE channel = ?",
+                    ("production",),
+                )
             except sqlite3.OperationalError:
                 pass
         conn.execute(
@@ -793,7 +821,8 @@ def admin_list_firmware(
             f"""
             SELECT id, created_at, usage_type, channel, version,
                    file_name, file_path, file_size_bytes, checksum,
-                   description, is_active, original_file_name
+                   description, is_active, original_file_name,
+                   COALESCE(visible_to_production, 0) AS visible_to_production
             FROM firmware_files
             {where}
             ORDER BY created_at DESC
@@ -817,6 +846,7 @@ def admin_list_firmware(
                 "checksum": r["checksum"],
                 "description": r["description"],
                 "isActive": bool(r["is_active"]),
+                "visibleToProduction": bool(r["visible_to_production"]),
                 "downloadPath": public_path,
                 "downloadUrl": download_url,
             }
@@ -826,45 +856,22 @@ def admin_list_firmware(
 
 @app.post("/api/admin/firmware")
 def admin_upload_firmware(
-    usage_type: str = Form(..., description="factory_merged or ota_app"),
-    channel: str = Form(..., description="production or debugging"),
-    version: str = Form(..., description="Firmware version string"),
+    version: str = Form("", description="可选，可由文件名自动解析"),
     description: str = Form("", description="Optional description"),
     file: UploadFile = File(...),
     _: None = Depends(require_admin),
 ) -> Dict[str, Any]:
-    target_dir = _ensure_firmware_dir(usage_type, channel)
+    """上传固件一律进入调试环境；用途由文件名自动区分（OTA / 烧录）。"""
     original_name = file.filename or "firmware.bin"
-    # 文件名格式校验：
-    # - 合并固件（产线烧录）：CO2ControllerFW_combined_1_1_3.bin
-    # - OTA 应用固件：CO2ControllerFW_1_1_3.bin
-    if usage_type == "factory_merged":
-        m = re.fullmatch(r"CO2ControllerFW_combined_(\d+)_(\d+)_(\d+)\.bin", original_name)
-        if not m:
-            raise HTTPException(
-                status_code=400,
-                detail="合并固件文件名必须类似 CO2ControllerFW_combined_1_1_3.bin",
-            )
-    elif usage_type == "ota_app":
-        m = re.fullmatch(r"CO2ControllerFW_(\d+)_(\d+)_(\d+)\.bin", original_name)
-        if not m:
-            raise HTTPException(
-                status_code=400,
-                detail="OTA 固件文件名必须类似 CO2ControllerFW_1_1_3.bin",
-            )
-    else:
-        # 理论上不会走到这里，_ensure_firmware_dir 已经校验 usage_type
-        raise HTTPException(status_code=400, detail="Invalid usage_type")
-
-    major, minor, patch = m.group(1), m.group(2), m.group(3)
-    version_from_name = f"{major}.{minor}.{patch}"
+    usage_type, version_from_name = _parse_firmware_filename(original_name)
     if version and version.strip() and version.strip() != version_from_name:
         raise HTTPException(
             status_code=400,
-            detail=f"版本号应与文件名中的 1_1_3 一致，即 {version_from_name}",
+            detail=f"版本号应与文件名一致，即 {version_from_name}",
         )
     version_value = version_from_name
-
+    channel = "debugging"
+    target_dir = _ensure_firmware_dir(usage_type, channel)
     ext = Path(original_name).suffix or ".bin"
     safe_stem = f"{usage_type}-{channel}-{version_value}".replace("/", "_").replace(" ", "_")
     filename = f"{safe_stem}-{int(time.time())}{ext}"
@@ -906,6 +913,26 @@ def admin_upload_firmware(
         )
         conn.commit()
     return {"ok": True, "id": fw_id, "createdAt": created_at}
+
+
+@app.patch("/api/admin/firmware/{firmware_id}")
+def admin_patch_firmware(
+    firmware_id: str,
+    visible_to_production: Optional[bool] = Query(None, description="是否对产线客户端可见"),
+    _: None = Depends(require_admin),
+) -> Dict[str, Any]:
+    """勾选/取消「产线可见」。仅调试环境下的固件可被标定。"""
+    if visible_to_production is None:
+        raise HTTPException(status_code=400, detail="请传 visible_to_production=true 或 false")
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE firmware_files SET visible_to_production = ? WHERE id = ?",
+            (1 if visible_to_production else 0, firmware_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Firmware not found")
+    return {"ok": True, "visibleToProduction": visible_to_production}
 
 
 @app.delete("/api/admin/firmware/{firmware_id}")
@@ -969,15 +996,17 @@ def list_firmware(
     usage_type: Optional[str] = Query(None, description="factory_merged|ota_app"),
     channel: Optional[str] = Query(None, description="production|debugging"),
 ) -> Dict[str, Any]:
-    """返回固件列表，结构与 GET /api/admin/firmware 一致，供 App 下拉选择。"""
+    """返回固件列表。channel=production 时仅返回已勾选「产线可见」的固件；channel=debugging 时返回调试环境全部。"""
     conditions: List[str] = []
     params: List[Any] = []
     if usage_type:
         conditions.append("usage_type = ?")
         params.append(usage_type)
-    if channel:
+    if channel == "production":
+        conditions.append("COALESCE(visible_to_production, 0) = 1")
+    elif channel == "debugging":
         conditions.append("channel = ?")
-        params.append(channel)
+        params.append("debugging")
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_db() as conn:
         rows = conn.execute(
@@ -1626,7 +1655,7 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
     #fw-table th .resize-handle:hover { background: rgba(37,99,235,0.2); }
     #fw-table .col-time { width: 160px; min-width: 100px; }
     #fw-table .col-usage { width: 120px; min-width: 80px; }
-    #fw-table .col-env { width: 90px; min-width: 70px; }
+    #fw-table .col-visible { width: 80px; min-width: 70px; }
     #fw-table .col-version { width: 85px; min-width: 65px; }
     #fw-table .col-fname { width: 200px; min-width: 120px; }
     #fw-table .col-size { width: 85px; min-width: 65px; }
@@ -1651,33 +1680,28 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
         <option value="ota_app">应用固件（OTA）</option>
       </select>
     </label>
-    <label>环境：
-      <select id="channel-select">
-        <option value="production">生产环境</option>
-        <option value="debugging">调试 / 内测</option>
-      </select>
-    </label>
+    <span class="muted">（仅显示调试环境固件，勾选「产线可见」后产线客户端才能看到）</span>
     <button class="btn-secondary" id="btn-refresh">刷新列表</button>
   </div>
 
   <div class="layout">
     <div class="panel">
-      <h2>固件列表</h2>
-      <p>按上传时间倒序排列，仅当前用途 / 环境。</p>
+      <h2>固件列表（调试环境）</h2>
+      <p>按上传时间倒序。勾选「产线可见」后，产线端 App 拉取固件列表时才能看到该条。</p>
       <div style="overflow-x:auto;">
         <table id="fw-table">
           <colgroup>
-            <col class="col-time" /><col class="col-usage" /><col class="col-env" /><col class="col-version" /><col class="col-fname" /><col class="col-size" /><col class="col-summary" /><col class="col-dl" /><col class="col-action" />
+            <col class="col-time" /><col class="col-usage" /><col class="col-version" /><col class="col-fname" /><col class="col-size" /><col class="col-summary" /><col class="col-visible" /><col class="col-dl" /><col class="col-action" />
           </colgroup>
           <thead>
             <tr>
               <th>时间<span class="resize-handle"></span></th>
               <th>用途<span class="resize-handle"></span></th>
-              <th>环境<span class="resize-handle"></span></th>
               <th>版本<span class="resize-handle"></span></th>
               <th>文件名<span class="resize-handle"></span></th>
               <th>大小<span class="resize-handle"></span></th>
               <th>摘要<span class="resize-handle"></span></th>
+              <th>产线可见<span class="resize-handle"></span></th>
               <th>下载<span class="resize-handle"></span></th>
               <th>操作<span class="resize-handle"></span></th>
             </tr>
@@ -1691,23 +1715,11 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
 
     <div class="panel">
       <h2>上传新固件</h2>
-      <p>上传合并固件（用于产线烧录）或仅应用固件（用于 OTA 拉取）。</p>
+      <p>一律上传到调试环境；用途根据文件名自动识别（CO2ControllerFW_combined_* 为烧录，CO2ControllerFW_*_*_* 为 OTA）。</p>
       <form id="upload-form">
         <div style="display:flex;flex-direction:column;gap:8px;">
-          <label>固件用途
-            <select name="usage_type" id="form-usage">
-              <option value="factory_merged">产线合并固件（烧录）</option>
-              <option value="ota_app">应用固件（OTA）</option>
-            </select>
-          </label>
-          <label>发布环境
-            <select name="channel" id="form-channel">
-              <option value="production">生产环境</option>
-              <option value="debugging">调试 / 内测</option>
-            </select>
-          </label>
           <label>版本号
-            <input type="text" name="version" placeholder="例如 1.2.3" required />
+            <input type="text" name="version" id="form-version" placeholder="可选，由文件名自动解析" />
           </label>
           <label>备注说明
             <input type="text" name="description" placeholder="可选：适用硬件、变更摘要等" />
@@ -1720,9 +1732,7 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
         </div>
       </form>
       <p class="help">
-        建议：<br />
-        - 合并固件（烧录）：通常包含 bootloader + app + 配置；<br />
-        - 应用固件（OTA）：仅应用区 bin，由客户端按版本号拉取。
+        合并固件（烧录）：CO2ControllerFW_combined_1_1_3.bin；应用固件（OTA）：CO2ControllerFW_1_1_3.bin
       </p>
     </div>
   </div>
@@ -1746,8 +1756,7 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
 
     function currentSelection() {
       var usage = document.getElementById('usage-select').value;
-      var channel = document.getElementById('channel-select').value;
-      return { usage: usage, channel: channel };
+      return { usage: usage, channel: 'debugging' };
     }
 
     function usageLabel(u) {
@@ -1788,20 +1797,18 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
             var badgeUsage = it.usageType === 'factory_merged'
               ? '<span class="badge badge-factory">' + usageLabel(it.usageType) + '</span>'
               : '<span class="badge badge-ota">' + usageLabel(it.usageType) + '</span>';
-            var badgeChannel = it.channel === 'production'
-              ? '<span class="badge badge-prod">' + channelLabel(it.channel) + '</span>'
-              : '<span class="badge badge-debug">' + channelLabel(it.channel) + '</span>';
+            var checked = it.visibleToProduction ? ' checked' : '';
             var dl = it.downloadUrl
               ? '<a class="link" href="' + it.downloadUrl + '" target="_blank">下载</a>'
               : '<span class="muted">-</span>';
             tr.innerHTML =
               '<td>' + (it.createdAt || '') + '</td>' +
               '<td>' + badgeUsage + '</td>' +
-              '<td>' + badgeChannel + '</td>' +
               '<td>' + (it.version || '') + '</td>' +
               '<td title="' + (it.originalFileName || it.fileName || '') + '">' + shorten(it.originalFileName || it.fileName || '', 40) + '</td>' +
               '<td>' + fmtBytes(it.fileSizeBytes) + '</td>' +
               '<td title="' + (it.checksum || '') + '">' + shorten(it.checksum || '', 18) + '</td>' +
+              '<td><input type="checkbox" class="visible-cb" data-id="' + it.id + '"' + checked + ' title="产线客户端可见" /></td>' +
               '<td>' + dl + '</td>' +
               '<td><button class="btn-danger" data-id="' + it.id + '">删除</button></td>';
             tbody.appendChild(tr);
@@ -1817,24 +1824,16 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
       var help = document.getElementById('upload-help');
       var btn = document.getElementById('btn-upload');
       var fileInput = form.querySelector('input[name="file"]');
-      var verInput = form.querySelector('input[name="version"]');
-      var usageSelect = document.getElementById('form-usage');
+      var verInput = document.getElementById('form-version');
 
       if (fileInput && verInput) {
         fileInput.addEventListener('change', function () {
           if (!fileInput.files || !fileInput.files[0]) return;
           var name = fileInput.files[0].name || '';
           var m = name.match(/^CO2ControllerFW_combined_(\d+)_(\d+)_(\d+)\.bin$/);
-          if (m) {
-            verInput.value = m[1] + '.' + m[2] + '.' + m[3];
-            if (usageSelect) usageSelect.value = 'factory_merged';
-            return;
-          }
+          if (m) { verInput.value = m[1] + '.' + m[2] + '.' + m[3]; return; }
           m = name.match(/^CO2ControllerFW_(\d+)_(\d+)_(\d+)\.bin$/);
-          if (m) {
-            verInput.value = m[1] + '.' + m[2] + '.' + m[3];
-            if (usageSelect) usageSelect.value = 'ota_app';
-          }
+          if (m) verInput.value = m[1] + '.' + m[2] + '.' + m[3];
         });
       }
 
@@ -1843,9 +1842,6 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
         help.textContent = '';
         btn.disabled = true;
         var fd = new FormData(form);
-        var sel = currentSelection();
-        fd.set('usage_type', document.getElementById('form-usage').value || sel.usage);
-        fd.set('channel', document.getElementById('form-channel').value || sel.channel);
         fetch('/api/admin/firmware', { method: 'POST', body: fd })
           .then(function (res) {
             if (res.status === 401) {
@@ -1871,6 +1867,24 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
       var tbody = document.getElementById('fw-tbody');
       tbody.addEventListener('click', function (e) {
         var t = e.target;
+        if (t.tagName === 'INPUT' && t.classList.contains('visible-cb') && t.dataset.id) {
+          var id = t.dataset.id;
+          var checked = t.checked;
+          fetch('/api/admin/firmware/' + encodeURIComponent(id) + '?visible_to_production=' + (checked ? 'true' : 'false'), { method: 'PATCH' })
+            .then(function (res) {
+              if (res.status === 401) {
+                window.location.href = '/admin/login';
+                return Promise.reject(new Error('未登录'));
+              }
+              if (!res.ok) throw new Error('更新失败: ' + res.status);
+              return res.json();
+            })
+            .catch(function (e) {
+              alert(e.message || '更新失败');
+              t.checked = !checked;
+            });
+          return;
+        }
         if (t.tagName === 'BUTTON' && t.dataset.id) {
           var id = t.dataset.id;
           if (!confirm('确定要删除该固件吗？仅影响服务器存储。')) return;
@@ -1894,7 +1908,6 @@ ADMIN_FIRMWARE_HTML = """<!DOCTYPE html>
     function bindControls() {
       document.getElementById('btn-refresh').addEventListener('click', loadFirmware);
       document.getElementById('usage-select').addEventListener('change', loadFirmware);
-      document.getElementById('channel-select').addEventListener('change', loadFirmware);
       document.getElementById('btn-logout').addEventListener('click', function () {
         fetch('/api/admin/logout', { method: 'POST' }).finally(function () {
           window.location.href = '/admin/login';
@@ -1983,7 +1996,7 @@ HOME_HTML = """<!DOCTYPE html>
 </html>
 """
 
-# BOG 页模板：产测/调试链接由环境变量决定，指向不同端口则数据分离（产测=生产库，调试=开发库）
+# BOG 页模板：产测/调试链接指向不同 URL 前缀，后端由 Nginx 转发到不同实例（8000=产测库，8001=调试库）
 # CSS 内 { } 已写成 {{ }} 避免 .format() 当作占位符
 BOG_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2012,7 +2025,7 @@ BOG_HTML_TEMPLATE = """<!DOCTYPE html>
   <ul>
     <li><a href="{production_dashboard_url}">产测 Dashboard</a> — 产线/正式环境数据概览</li>
     <li><a href="{development_dashboard_url}">调试 Dashboard</a> — 开发/内测环境数据概览</li>
-    <li><a href="/admin/firmware">固件管理后台</a> — 固件上传与管理</li>
+    <li><a href="/bog/firmware">固件管理后台</a> — 固件上传与管理</li>
   </ul>
   <div class="icp-footer">
     <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2026022047号-1</a>
@@ -2122,11 +2135,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .burn-table th { position: relative; }
     th .resize-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; }
     th .resize-handle:hover { background: rgba(0,120,200,0.2); }
+    .env-badge { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; margin-left: 8px; }
+    .env-badge.prod { background: #e6f4ea; color: #137333; }
+    .env-badge.dev { background: #fef7e0; color: #b06000; }
   </style>
 </head>
 <body>
   <div style="display:flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 8px;">
     <h1 style="margin: 0;" id="page-title">Production Test Overview</h1>
+    <span id="env-badge" class="env-badge" style="display:none;"></span>
     <span class="lang-switch" id="lang-switch"><a id="lang-en" href="javascript:void(0)">EN</a> | <a id="lang-zh" href="javascript:void(0)">中文</a></span>
     <span id="clear-data-wrap" style="display:none;"><button type="button" id="btn-clear-data" onclick="clearTestData()" style="background:#c00;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:13px;"><span id="label-clear-data">Clear Test Data</span></button></span>
   </div>
@@ -2150,7 +2167,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button onclick="loadRecords()" id="btn-query">Query</button>
     <button onclick="resetFilterProduction()" id="btn-reset" type="button"><span id="label-reset">Reset</span></button>
     <label><input type="checkbox" id="filter-dedup" /> <span id="label-dedup">Dedup by device</span></label>
-    <a href="/api/export" id="export-link" target="_blank"><span id="label-export">Export CSV</span></a>
+    <a href="#" id="export-link" target="_blank"><span id="label-export">Export CSV</span></a>
   </div>
   <div class="table-wrap">
   <table>
@@ -2261,6 +2278,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+    (function() {
+      var p = window.location.pathname || '';
+      window.BOG_API_BASE = (p.indexOf('/bog/dev/') === 0) ? '/bog/dev' : (p.indexOf('/bog/prod/') === 0) ? '/bog/prod' : '';
+    })();
+    var BOG_API_BASE = window.BOG_API_BASE || '';
     const T = {
       en: {
         title: 'Production Test Overview',
@@ -2552,7 +2574,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let lastSummary = null;
     async function loadSnList() {
       try {
-        const list = await fetch('/api/sn-list').then(r => r.json());
+        const list = await fetch(BOG_API_BASE + '/api/sn-list').then(r => r.json());
         const dl = document.getElementById('sn-datalist');
         const sel = document.getElementById('filter-sn-select');
         if (dl) {
@@ -2588,7 +2610,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       return fetch(url, opts2).finally(function() { clearTimeout(t); });
     }
     async function getSummary(sn, dateFrom, dateTo) {
-      let url = '/api/summary';
+      let url = BOG_API_BASE + '/api/summary';
       const params = [];
       if (sn) params.push('sn=' + encodeURIComponent(sn));
       if (dateFrom) params.push('date_from=' + encodeURIComponent(dateFrom));
@@ -2602,7 +2624,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const sn = document.getElementById('filter-sn').value.trim();
       const from = document.getElementById('filter-from').value || undefined;
       const to = document.getElementById('filter-to').value || undefined;
-      let url = '/api/records?limit=50';
+      let url = BOG_API_BASE + '/api/records?limit=50';
       if (sn) url += '&sn=' + encodeURIComponent(sn);
       if (from) url += '&date_from=' + encodeURIComponent(from);
       if (to) url += '&date_to=' + encodeURIComponent(to);
@@ -2857,7 +2879,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         return;
       }
       const link = document.getElementById('export-link');
-      let href = '/api/export';
+      let href = BOG_API_BASE + '/api/export';
       const snVal = document.getElementById('filter-sn').value.trim();
       const fromVal = document.getElementById('filter-from').value;
       const toVal = document.getElementById('filter-to').value;
@@ -2957,7 +2979,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     };
     async function loadBurnBinList() {
       try {
-        const list = await fetch('/api/burn-bin-list').then(r => r.json());
+        const list = await fetch(BOG_API_BASE + '/api/burn-bin-list').then(r => r.json());
         const sel = document.getElementById('burn-filter-bin');
         if (!sel) return;
         var v = sel.value;
@@ -2981,7 +3003,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const testResult = document.getElementById('burn-filter-test').value || undefined;
       const flowType = document.getElementById('burn-filter-flow') ? document.getElementById('burn-filter-flow').value : undefined;
       const binFile = document.getElementById('burn-filter-bin').value || undefined;
-      let url = '/api/burn-records?limit=200';
+      let url = BOG_API_BASE + '/api/burn-records?limit=200';
       if (sn) url += '&sn=' + encodeURIComponent(sn);
       if (mac) url += '&mac=' + encodeURIComponent(mac);
       if (from) url += '&date_from=' + encodeURIComponent(from);
@@ -3109,7 +3131,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const from = document.getElementById('fw-filter-from').value || undefined;
       const to = document.getElementById('fw-filter-to').value || undefined;
       const type = document.getElementById('fw-filter-type').value || undefined;
-      let url = '/api/firmware-history?limit=200';
+      let url = BOG_API_BASE + '/api/firmware-history?limit=200';
       if (sn) url += '&sn=' + encodeURIComponent(sn);
       if (mac) url += '&mac=' + encodeURIComponent(mac);
       if (from) url += '&date_from=' + encodeURIComponent(from);
@@ -3274,7 +3296,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     })();
     function updateViewerCount() {
-      fetch('/api/viewers').then(function(r) { return r.json(); }).then(function(data) {
+      fetch(BOG_API_BASE + '/api/viewers').then(function(r) { return r.json(); }).then(function(data) {
         var el = document.getElementById('viewer-count-text');
         var hint = t('viewersIpsHint');
         var ipsText = (data.ips && data.ips.length) ? hint + data.ips.join(', ') : '';
@@ -3285,7 +3307,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }).catch(function() {});
     }
     function showVisitorModal() {
-      fetch('/api/viewers').then(function(r) { return r.json(); }).then(function(data) {
+      fetch(BOG_API_BASE + '/api/viewers').then(function(r) { return r.json(); }).then(function(data) {
         var overlay = document.getElementById('visitor-modal-overlay');
         var titleEl = document.getElementById('visitor-modal-title');
         var bodyEl = document.getElementById('visitor-modal-body');
@@ -3312,7 +3334,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     document.getElementById('visitor-modal-close').addEventListener('click', hideVisitorModal);
     document.getElementById('visitor-modal-overlay').addEventListener('click', function(e) { if (e.target === this) hideVisitorModal(); });
     function updateDeployTime() {
-      fetch('/api/deploy-info').then(function(r) { return r.json(); }).then(function(data) {
+      fetch(BOG_API_BASE + '/api/deploy-info').then(function(r) { return r.json(); }).then(function(data) {
         var el = document.getElementById('deploy-time-text');
         if (el) {
           if (data.deployTime) {
@@ -3324,6 +3346,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             el.textContent = '';
           }
         }
+        var envBadge = document.getElementById('env-badge');
+        if (envBadge) {
+          envBadge.style.display = 'inline';
+          envBadge.textContent = data.isDev ? '\u8c03\u8bd5\u73af\u5883' : '\u4ea7\u6d4b\u73af\u5883';
+          envBadge.className = 'env-badge ' + (data.isDev ? 'dev' : 'prod');
+        }
         var wrap = document.getElementById('clear-data-wrap');
         if (wrap && data.isDev) {
           wrap.style.display = 'inline';
@@ -3334,7 +3362,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
     function clearTestData() {
       if (!confirm(t('clearTestDataConfirm'))) return;
-      fetch('/api/clear-test-data', { method: 'DELETE' }).then(function(r) {
+      fetch(BOG_API_BASE + '/api/clear-test-data', { method: 'DELETE' }).then(function(r) {
         if (r.ok) {
           loadRecords();
           loadBurnOrPcbaRecords();
@@ -3352,7 +3380,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       return cb ? cb.checked : true;
     }
     function connectSSE() {
-      var es = new EventSource('/api/events');
+      var es = new EventSource(BOG_API_BASE + '/api/events');
       es.onmessage = function(e) {
         if (!isAutoRefreshEnabled() || document.visibilityState !== 'visible') return;
         try {
@@ -3401,46 +3429,11 @@ def home_page() -> str:
 
 
 @app.get("/bog", response_class=HTMLResponse)
-def bog_page(request: Request) -> str:
-    """BOG 项目入口：产测链到生产环境、调试链到开发环境，实现数据分离。
+def bog_page() -> str:
+    """BOG 项目入口：产测/调试链接指向不同 URL 前缀，由 Nginx 转发到不同实例实现数据分离。"""
 
-    为避免页面上写死后端 IP，这里会优先使用当前请求的域名，结合环境变量中的端口信息生成链接：
-    - BOG_PRODUCTION_BASE_URL / BOG_DEVELOPMENT_BASE_URL 只用来提供端口或完整 URL 的参考
-    - 如果能解析出端口，则使用「当前域名 + 该端口」，否则回退到原始 URL 或相对路径
-    """
-
-    prod_base_env = (os.environ.get("BOG_PRODUCTION_BASE_URL") or "").rstrip("/")
-    dev_base_env = (os.environ.get("BOG_DEVELOPMENT_BASE_URL") or "").rstrip("/")
-
-    host_header = request.headers.get("host", "")
-    hostname = host_header.split(":")[0] if host_header else ""
-    # 在反向代理（Tengine/Nginx）后优先使用 X-Forwarded-Proto 判断外部协议
-    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
-
-    def _build_dashboard_url(env_url: str) -> str:
-        if not env_url:
-            return "/bog/dashboard"
-
-        parsed = urlparse(env_url)
-        port = parsed.port
-
-        if hostname:
-            # 仅在直接 HTTP 访问时保留端口；在 HTTPS 场景下始终使用默认 443，不拼端口
-            if port and scheme == "http":
-                base = f"{scheme}://{hostname}:{port}"
-            else:
-                base = f"{scheme}://{hostname}"
-        else:
-            base = env_url.rstrip("/")
-
-        return f"{base}/bog/dashboard"
-
-    if prod_base_env and dev_base_env:
-        production_dashboard_url = _build_dashboard_url(prod_base_env)
-        development_dashboard_url = _build_dashboard_url(dev_base_env)
-    else:
-        production_dashboard_url = "/bog/dashboard"
-        development_dashboard_url = "/bog/dashboard"
+    production_dashboard_url = "/bog/prod/dashboard"
+    development_dashboard_url = "/bog/dev/dashboard"
 
     return BOG_HTML_TEMPLATE.format(
         production_dashboard_url=production_dashboard_url,
@@ -3473,6 +3466,12 @@ def admin_firmware_page(
     if redirect_or_none is not None:
         return redirect_or_none
     return ADMIN_FIRMWARE_HTML
+
+
+@app.get("/bog/firmware", include_in_schema=False)
+def bog_firmware_entry() -> RedirectResponse:
+    """BOG 页面入口：跳转到需要登录的固件管理后台。"""
+    return RedirectResponse(url="/admin/firmware", status_code=302)
 
 
 if __name__ == "__main__":

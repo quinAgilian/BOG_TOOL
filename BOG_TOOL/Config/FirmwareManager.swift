@@ -32,8 +32,10 @@ final class FirmwareManager: ObservableObject {
     private static let firmwareCacheSubdir = "firmware_cache"
 
     @Published private(set) var entries: [FirmwareEntry] = []
-    /// 从服务器拉取的固件列表（下拉框数据源）
-    @Published private(set) var serverItems: [ServerFirmwareItem] = []
+    /// Debug 模式：从服务器拉取的全部 OTA 固件（channel=debugging）
+    @Published private(set) var serverItemsForDebug: [ServerFirmwareItem] = []
+    /// 产测模式：从服务器拉取的产线可见 OTA 固件（channel=production）
+    @Published private(set) var serverItemsForProduction: [ServerFirmwareItem] = []
     @Published private(set) var serverItemsLoading = false
     /// 服务器固件相关错误提示（可由视图设置）
     @Published var serverItemsError: String?
@@ -78,16 +80,26 @@ final class FirmwareManager: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
-    /// 从服务器拉取固件列表（usage_type=ota_app），供下拉框使用
+    /// 从服务器拉取 OTA 固件列表（usage_type=ota_app）
+    /// - Parameter channel: "debugging" = 全部固件（Debug OTA）；"production" = 仅产线可见（产测规则/产测 OTA）
     @MainActor
-    func fetchServerFirmware(serverClient: ServerClientProtocol) async {
+    func fetchServerFirmware(serverClient: ServerClientProtocol, channel: String) async {
         serverItemsLoading = true
         serverItemsError = nil
         defer { serverItemsLoading = false }
         do {
-            serverItems = try await serverClient.listFirmware(usageType: "ota_app", channel: nil)
+            let items = try await serverClient.listFirmware(usageType: "ota_app", channel: channel)
+            if channel == "production" {
+                serverItemsForProduction = items
+            } else {
+                serverItemsForDebug = items
+            }
         } catch {
-            serverItems = []
+            if channel == "production" {
+                serverItemsForProduction = []
+            } else {
+                serverItemsForDebug = []
+            }
             serverItemsError = error.localizedDescription
         }
     }

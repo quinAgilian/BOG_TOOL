@@ -30,6 +30,11 @@ struct OTASectionView: View {
     private var firmwareDisplayName: String {
         ble.selectedFirmwareURL?.lastPathComponent ?? appLanguage.string("ota.not_selected")
     }
+
+    /// 当前上下文使用的服务器固件列表：Debug = 全部，产测 = 仅产线可见
+    private var currentServerFirmwareItems: [ServerFirmwareItem] {
+        isProductionTestOTA ? firmwareManager.serverItemsForProduction : firmwareManager.serverItemsForDebug
+    }
     
     /// 将秒数格式化为 "00:00"（两位分、两位秒，整体长度固定）
     private static func formatOTATime(_ sec: TimeInterval) -> String {
@@ -198,7 +203,7 @@ struct OTASectionView: View {
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Picker("", selection: $pickerChoice) {
                         Text(appLanguage.string("ota.not_selected")).tag(FirmwarePickerChoice.none)
-                        ForEach(firmwareManager.serverItems) { item in
+                        ForEach(currentServerFirmwareItems) { item in
                             Text(serverFirmwareItemLabel(item))
                                 .tag(FirmwarePickerChoice.server(id: item.id))
                         }
@@ -271,7 +276,7 @@ struct OTASectionView: View {
                                 .foregroundStyle(UIDesignSystem.Foreground.secondary)
                             Picker("", selection: $pickerChoice) {
                                 Text(appLanguage.string("ota.not_selected")).tag(FirmwarePickerChoice.none)
-                                ForEach(firmwareManager.serverItems) { item in
+                                ForEach(currentServerFirmwareItems) { item in
                                     Text(serverFirmwareItemLabel(item))
                                         .tag(FirmwarePickerChoice.server(id: item.id))
                                 }
@@ -395,24 +400,26 @@ struct OTASectionView: View {
             }
         }
         .onAppear {
-            if firmwareManager.serverItems.isEmpty && !firmwareManager.serverItemsLoading {
+            let listEmpty = isProductionTestOTA ? firmwareManager.serverItemsForProduction.isEmpty : firmwareManager.serverItemsForDebug.isEmpty
+            if listEmpty && !firmwareManager.serverItemsLoading {
                 refreshServerFirmwareList()
             }
             syncDebugFirmwareSelection()
         }
-        .onChange(of: firmwareManager.serverItems.count, perform: { _ in syncDebugFirmwareSelection() })
+        .onChange(of: isProductionTestOTA ? firmwareManager.serverItemsForProduction.count : firmwareManager.serverItemsForDebug.count, perform: { _ in syncDebugFirmwareSelection() })
     }
 
-    /// 从服务器拉取固件列表，并在日志区输出成功/失败信息
+    /// 从服务器拉取固件列表：Debug = 全部，产测 = 仅产线可见
     private func refreshServerFirmwareList() {
+        let channel = isProductionTestOTA ? "production" : "debugging"
         ble.appendLog("[OTA] 从服务器拉取固件列表…", level: .info)
         Task {
-            await firmwareManager.fetchServerFirmware(serverClient: serverClient)
+            await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: channel)
             await MainActor.run {
                 if let err = firmwareManager.serverItemsError {
                     ble.appendLog("[OTA] 从服务器拉取固件列表失败：\(err)", level: .error)
                 } else {
-                    let count = firmwareManager.serverItems.count
+                    let count = currentServerFirmwareItems.count
                     let lvl: BLEManager.LogLevel = count > 0 ? .info : .warning
                     ble.appendLog("[OTA] 固件列表已更新，共 \(count) 条", level: lvl)
                 }
@@ -433,14 +440,14 @@ struct OTASectionView: View {
             resolvingSelection = false
             return
         case .server(let id):
-            guard let item = firmwareManager.serverItems.first(where: { $0.id == id }) else { return }
+            guard let item = currentServerFirmwareItems.first(where: { $0.id == id }) else { return }
             UserDefaults.standard.set(id, forKey: Self.debugSelectedServerFirmwareIdKey)
             resolvingSelection = true
             Task {
                 do {
                     let url = try await firmwareManager.resolveLocalURL(for: item, serverClient: serverClient)
                     await MainActor.run {
-                        ble.selectFirmware(url: url)
+                        ble.selectFirmware(url: url, version: item.version)
                         resolvingSelection = false
                     }
                 } catch {
@@ -456,7 +463,7 @@ struct OTASectionView: View {
     /// Debug 模式：固件默认选第一个；若曾选择过则从 UserDefaults 恢复并解析到本地 URL
     private func syncDebugFirmwareSelection() {
         guard !isProductionTestOTA else { return }
-        let items = firmwareManager.serverItems
+        let items = firmwareManager.serverItemsForDebug
         if items.isEmpty {
             pickerChoice = .none
             return

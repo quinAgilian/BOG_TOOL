@@ -301,8 +301,9 @@ struct ContentView: View {
     /// OTA 完成后上报固件升级记录到服务器（成功或失败）；仅当开启上传时执行
     private func uploadOtaResultToServer(success: Bool) {
         guard serverSettings.uploadToServerEnabled, let client = serverSettings.serverClient else { return }
-        let currentVersion = ble.currentFirmwareVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "—"
-        guard !currentVersion.isEmpty else { return }
+        let rawCurrentVersion = ble.currentFirmwareVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "—"
+        guard !rawCurrentVersion.isEmpty else { return }
+        let currentVersion = sanitizedVersionString(rawCurrentVersion) ?? rawCurrentVersion
         var body: [String: Any] = [
             "currentVersion": currentVersion,
             "upgradeSuccess": success,
@@ -310,9 +311,9 @@ struct ContentView: View {
         if let sn = ble.deviceSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines), !sn.isEmpty {
             body["deviceSerialNumber"] = sn
         }
-        if success, let newVer = ble.parsedFirmwareVersion, !newVer.isEmpty {
-            body["newVersion"] = newVer
-            body["finalVersion"] = newVer
+        if success, let safeNewVersion = sanitizedVersionString(ble.parsedFirmwareVersion), !safeNewVersion.isEmpty {
+            body["newVersion"] = safeNewVersion
+            body["finalVersion"] = safeNewVersion
         }
         if !success {
             body["failureReason"] = ble.lastOTAFailureReason ?? "other"
@@ -327,14 +328,48 @@ struct ContentView: View {
         Task {
             do {
                 try await client.uploadFirmwareUpgradeRecord(body: body)
-                await MainActor.run { ble.appendLog("[OTA] 固件升级记录已上报", level: .info) }
+                // 将实际上传的内容记录到日志，便于排查
+                let payloadString: String
+                if let data = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted]),
+                   let json = String(data: data, encoding: .utf8) {
+                    payloadString = json
+                } else {
+                    payloadString = String(describing: body)
+                }
+                await MainActor.run {
+                    ble.appendLog("[OTA] 固件升级记录已上报", level: .info)
+                    ble.appendLog("[OTA] 固件升级记录内容: \(payloadString)", level: .debug)
+                }
             } catch {
                 await MainActor.run {
                     serverSettings.savePendingFirmwareUpgrade(body: body)
                     ble.appendLog("[OTA] 固件升级记录上报失败，已落盘待重传: \(error.localizedDescription)", level: .warning)
+                    let payloadString: String
+                    if let data = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted]),
+                       let json = String(data: data, encoding: .utf8) {
+                        payloadString = json
+                    } else {
+                        payloadString = String(describing: body)
+                    }
+                    ble.appendLog("[OTA] 固件升级记录内容: \(payloadString)", level: .debug)
                 }
             }
         }
+    }
+    
+    /// 版本号清洗：过滤看起来像 UUID 的字符串，避免误上传为 newVersion/finalVersion
+    private func sanitizedVersionString(_ raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        // 简单 UUID 形状检测：8-4-4-4-12 共 36 个字符
+        if raw.count == 36 {
+            let parts = raw.split(separator: "-")
+            let uuidPatternLengths = [8, 4, 4, 4, 12]
+            if parts.count == uuidPatternLengths.count,
+               zip(parts, uuidPatternLengths).allSatisfy({ $0.0.count == $0.1 }) {
+                return nil
+            }
+        }
+        return raw
     }
 
     /// 将当前显示的完整日志（含 OTA 进度行）复制到剪贴板；因 ForEach 按行渲染，无法 Cmd+A 全选，用此按钮一次性复制全部

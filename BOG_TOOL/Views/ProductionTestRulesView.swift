@@ -346,9 +346,9 @@ struct ProductionTestRulesView: View {
         }
     }
     
-    /// 产测可选固件列表：从服务器固件列表中过滤；当恢复出厂/重启启用时仅包含支持该命令的版本（>=1.1.2 或 0.x>0.4.1），否则为全部
+    /// 产测可选固件列表：仅产线可见的 OTA 固件；当恢复出厂/重启启用时仅包含支持该命令的版本（>=1.1.2 或 0.x>0.4.1），否则为全部
     private var productionTestAllowedFirmwareEntries: [ServerFirmwareItem] {
-        let items = firmwareManager.serverItems
+        let items = firmwareManager.serverItemsForProduction
         if productionTestRequiresFirmwareSupportForRebootSteps {
             return items.filter { Self.firmwareVersionSupportsRebootAndFactoryReset($0.version) }
         }
@@ -804,7 +804,7 @@ struct ProductionTestRulesView: View {
                         .foregroundStyle(.secondary)
                         .padding(.leading, 112)
                     
-                    if firmwareManager.serverItems.isEmpty {
+                    if firmwareManager.serverItemsForProduction.isEmpty {
                         HStack(spacing: 4) {
                             Image(systemName: "info.circle.fill")
                                 .font(.caption2)
@@ -856,9 +856,9 @@ struct ProductionTestRulesView: View {
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                         }
                     }
-                    // 若服务器列表尚为空，则触发一次拉取
-                    if firmwareManager.serverItems.isEmpty && !firmwareManager.serverItemsLoading {
-                        Task { await firmwareManager.fetchServerFirmware(serverClient: serverClient) }
+                    // 若产线可见固件列表尚为空，则触发一次拉取（channel=production）
+                    if firmwareManager.serverItemsForProduction.isEmpty && !firmwareManager.serverItemsLoading {
+                        Task { await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: "production") }
                     }
                 }
                 

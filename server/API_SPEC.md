@@ -1,6 +1,15 @@
 # BOG 产测服务 API 规范（供其他工程/Agent 集成）
 
-**Base URL**：`http://{服务器IP}:8080`（生产）或 `http://{服务器IP}:8081`（测试）。对应应用端口：产测 8000、调试 8001；经 Nginx 对外时为 8080/8081（或生产 80）。
+**Base URL（推荐）**：
+
+- 通过 HTTPS 反向代理访问（推荐）：
+  - 产测 / 正式环境 Dashboard：`https://generalquin.top/bog/prod/dashboard`
+  - 调试 / 内测环境 Dashboard：`https://generalquin.top/bog/dev/dashboard`
+- 直接按端口访问后端应用（仅供测试）：
+  - 产测服务：`http://{服务器IP}:8000`
+  - 调试服务：`http://{服务器IP}:8001`
+
+所有 API 路径均以应用根目录为基准，例如：`/api/production-test`、`/api/burn-record` 等。
 
 **数据存储原则**：烧录与 PCBA 测试记录**优先按 MAC 地址**存储和显示。MAC 为设备主标识。
 
@@ -16,6 +25,8 @@
   - [2.2 PCBA 测试记录](#22-pcba-测试记录pcba-test-record)
   - [2.3 设备固件升级记录](#23-设备固件升级记录firmware-upgrade-record)
   - [2.4 设备固件历史](#24-设备固件历史firmware-history)
+  - [2.5 只读固件列表与下载](#25-只读固件列表与下载供-bog_tool-app-下拉选择与-ota)
+  - [2.6 固件管理后台 API](#26-固件管理后台-api管理员鉴权)
 - [响应格式](#响应格式)
 - [时间戳上传规则](#时间戳上传规则给-agent--烧录端)
 - [集成提示](#集成提示给-agent)
@@ -228,10 +239,41 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/firmware` | 固件列表。Query：`usage_type`（可选，factory_merged \| ota_app）、`channel`（可选，production \| debugging） |
+| GET | `/api/firmware` | 固件列表。Query：`usage_type`（可选，factory_merged \| ota_app）、`channel`（可选，见下） |
 | GET | `/api/firmware/{firmware_id}/download` | 下载固件文件（二进制流） |
 
-**列表响应**：`{"items": [{"id", "version", "fileName", "fileSizeBytes", "downloadUrl", ...}]}`，其中 `downloadUrl` 为相对路径，如 `/api/firmware/{id}/download`。客户端需拼接 base URL 后请求下载。
+**channel 语义**：
+
+- `production`：仅返回管理员在后台勾选「产线可见」的固件（产线/正式环境客户端使用）。
+- `debugging`：返回调试环境下的全部固件（调试/内测客户端使用）。
+
+**文件名约定**：烧录用合并固件 `CO2ControllerFW_combined_1_1_3.bin`；OTA 用应用固件 `CO2ControllerFW_1_1_3.bin`。
+
+**列表响应**：`{"items": [{"id", "version", "usageType", "fileName", "fileSizeBytes", "downloadUrl", ...}]}`，其中 `downloadUrl` 为相对路径。客户端需拼接 base URL 后请求下载。
+
+---
+
+### 2.6 固件管理后台 API（管理员鉴权）
+
+需先通过 `/api/admin/login` 登录，请求带 Cookie。固件**一律上传到调试环境**；管理员在后台勾选「产线可见」后，产线端 `GET /api/firmware?channel=production` 才能看到该条。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/admin/firmware` | 固件列表。Query：`usage_type`（可选）、`channel`（可选，默认仅看调试可传 `debugging`） |
+| POST | `/api/admin/firmware` | 上传固件（multipart/form-data）。**仅支持上传到调试环境**；用途由文件名自动识别。 |
+| PATCH | `/api/admin/firmware/{firmware_id}` | 设置产线可见。Query：`visible_to_production=true` 或 `false` |
+| DELETE | `/api/admin/firmware/{firmware_id}` | 删除固件记录及文件 |
+| GET | `/api/admin/firmware/{firmware_id}/download` | 下载固件文件 |
+
+**POST 上传表单字段**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `file` | file | ✓ | 固件文件。文件名须为 `CO2ControllerFW_combined_1_1_3.bin`（烧录）或 `CO2ControllerFW_1_1_3.bin`（OTA） |
+| `version` | string | | 可选，须与文件名中的版本一致 |
+| `description` | string | | 备注 |
+
+**列表响应**：每项含 `visibleToProduction`（是否对产线可见）、`usageType`、`channel`、`downloadUrl` 等。
 
 ---
 ## 响应格式

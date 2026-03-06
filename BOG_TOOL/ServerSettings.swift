@@ -7,8 +7,50 @@ import AppKit
 private enum ServerSettingsKeys {
     static let baseURL = "server_base_url"
     static let uploadEnabled = "server_upload_enabled"
-    /// 默认服务器地址；推荐部署远程服务器后在此配置，或首次启动时由用户输入
-    static let defaultBaseURL = "http://8.129.99.18:8000"
+    /// 默认服务器地址；生产经 Nginx 对外为 80（境外）或 8080（国内），当前 8080 不可达时使用 80
+    static let defaultBaseURL = "http://bog.generalquin.top"
+}
+
+/// 固定服务器环境枚举，禁止用户随意输入 URL
+private enum ServerEnvironment: String, CaseIterable, Identifiable {
+    case production
+    case testing
+    case local
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .production:
+            return "Production (80)"
+        case .testing:
+            return "Testing (8081)"
+        case .local:
+            return "Local (localhost:8000)"
+        }
+    }
+
+    var baseURL: String {
+        switch self {
+        case .production:
+            return "http://bog.generalquin.top"
+        case .testing:
+            return "http://bog.generalquin.top:8081"
+        case .local:
+            return "http://localhost:8000"
+        }
+    }
+
+    static func from(baseURL: String) -> ServerEnvironment {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        for env in ServerEnvironment.allCases {
+            if env.baseURL == trimmed {
+                return env
+            }
+        }
+        // 兜底：未知配置则默认视为 production
+        return .production
+    }
 }
 
 /// 产测服务器配置（仅支持远程服务器）
@@ -18,7 +60,7 @@ final class ServerSettings: ObservableObject {
     @Published var serverBaseURL: String {
         didSet {
             let v = serverBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            UserDefaults.standard.set(v.isEmpty ? Self.defaultBaseURL : v, forKey: ServerSettingsKeys.baseURL)
+            UserDefaults.standard.set(v.isEmpty ? ServerSettingsKeys.defaultBaseURL : v, forKey: ServerSettingsKeys.baseURL)
         }
     }
 
@@ -46,7 +88,25 @@ final class ServerSettings: ObservableObject {
     static let defaultBaseURL = ServerSettingsKeys.defaultBaseURL
 
     init() {
-        self.serverBaseURL = UserDefaults.standard.string(forKey: ServerSettingsKeys.baseURL) ?? Self.defaultBaseURL
+        let stored = UserDefaults.standard.string(forKey: ServerSettingsKeys.baseURL)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBaseURL: String
+        if let s = stored {
+            let v = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            // 兼容旧版本：历史上使用过 IP/端口 的配置，统一映射到新的域名与可用端口
+            if v.contains("8.129.99.18:8080") || v.contains("bog.generalquin.top:8080") || v == "http://bog.generalquin.top" {
+                resolvedBaseURL = ServerEnvironment.production.baseURL
+            } else if v.contains("8.129.99.18:8081") {
+                resolvedBaseURL = ServerEnvironment.testing.baseURL
+            } else if v.contains("127.0.0.1:8000") {
+                resolvedBaseURL = ServerEnvironment.local.baseURL
+            } else {
+                resolvedBaseURL = v.isEmpty ? ServerSettingsKeys.defaultBaseURL : v
+            }
+        } else {
+            resolvedBaseURL = ServerSettingsKeys.defaultBaseURL
+        }
+        self.serverBaseURL = resolvedBaseURL
+        UserDefaults.standard.set(resolvedBaseURL, forKey: ServerSettingsKeys.baseURL)
         self.uploadToServerEnabled = UserDefaults.standard.object(forKey: ServerSettingsKeys.uploadEnabled) as? Bool ?? false
         DispatchQueue.main.async { [weak self] in self?.refreshPendingUploadsCount() }
         startNetworkHealthTimer()
@@ -61,7 +121,8 @@ final class ServerSettings: ObservableObject {
 
     /// 在默认浏览器中打开数据概览页
     func openPreviewInBrowser() {
-        guard let url = URL(string: effectiveBaseURL) else { return }
+        // 预览入口统一指向外部站点，由站点内再区分产测/调试/固件管理
+        guard let url = URL(string: "https://generalquin.top/bog") else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -167,9 +228,10 @@ final class ServerSettings: ObservableObject {
                     await MainActor.run { log("重传失败: \(error.localizedDescription)") }
                 }
             }
+            let finalSent = sentCount
             await MainActor.run {
-                if sentCount > 0 {
-                    log("本次启动共重传 \(sentCount) 条产测结果")
+                if finalSent > 0 {
+                    log("本次启动共重传 \(finalSent) 条产测结果")
                 }
                 self.retryUploadedCount = 0
                 self.retryTotalCount = 0
@@ -191,6 +253,11 @@ final class ServerSettings: ObservableObject {
         networkTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.performNetworkHealthCheck()
         }
+    }
+
+    /// 供外部在注入 serverClient 后立即触发一次健康检查，避免首屏长时间显示 offline
+    func triggerHealthCheck() {
+        performNetworkHealthCheck()
     }
 
     private func performNetworkHealthCheck() {
@@ -219,6 +286,13 @@ struct ServerSettingsView: View {
     @ObservedObject var serverSettings: ServerSettings
     @Environment(\.dismiss) private var dismiss
 
+    @State private var selectedEnvironment: ServerEnvironment
+
+    init(serverSettings: ServerSettings) {
+        self.serverSettings = serverSettings
+        _selectedEnvironment = State(initialValue: ServerEnvironment.from(baseURL: serverSettings.effectiveBaseURL))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -229,14 +303,21 @@ struct ServerSettingsView: View {
                     .keyboardShortcut(.cancelAction)
             }
 
-            // 服务器地址（推荐配置远程部署的 bog-test-server 地址）
+            // 服务器环境（固定枚举，禁止手动输入）
             VStack(alignment: .leading, spacing: 6) {
                 Text(appLanguage.string("server.base_url_label"))
                     .font(.subheadline.weight(.medium))
-                TextField(appLanguage.string("server.base_url_placeholder"), text: $serverSettings.serverBaseURL)
-                    .textFieldStyle(.roundedBorder)
-                Text(appLanguage.string("server.base_url_hint"))
-                    .font(.caption)
+                Picker("", selection: $selectedEnvironment) {
+                    ForEach(ServerEnvironment.allCases) { env in
+                        Text(env.displayName).tag(env)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .onChange(of: selectedEnvironment) { newValue in
+                    serverSettings.serverBaseURL = newValue.baseURL
+                }
+                Text(serverSettings.effectiveBaseURL)
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
 

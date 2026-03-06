@@ -29,6 +29,7 @@ struct BOG_TOOLApp: App {
         let settings = ServerSettings()
         let client = ServerClient(serverSettings: settings)
         settings.serverClient = client
+        settings.triggerHealthCheck()
         _serverSettings = StateObject(wrappedValue: settings)
         _serverClient = StateObject(wrappedValue: client)
         #if DEBUG

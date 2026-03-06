@@ -49,8 +49,13 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var lastOtaStatusValue: UInt8?
     /// 当前选择的固件 URL（持久化到 UserDefaults）
     @Published var selectedFirmwareURL: URL?
-    /// 从当前选择的固件文件名解析出的版本号（如 1.0.5），供 OTA 区域显示
+    /// 当前选择固件的版本号（若可解析/已知），优先于从文件名解析的结果
+    @Published var selectedFirmwareVersion: String?
+    /// 供 OTA 区域和服务器上报使用的固件版本号
     var parsedFirmwareVersion: String? {
+        if let v = selectedFirmwareVersion, !v.isEmpty {
+            return v
+        }
         guard let url = selectedFirmwareURL else { return nil }
         return BLEManager.parseFirmwareVersion(from: url)
     }
@@ -903,6 +908,13 @@ final class BLEManager: NSObject, ObservableObject {
 
     /// 设置当前目标固件（固件管理下拉选择或产测按版本解析后调用）；释放旧的安全作用域、保存书签、更新 selectedFirmwareURL
     func selectFirmware(url: URL) {
+        let version = BLEManager.parseFirmwareVersion(from: url)
+        selectFirmware(url: url, version: version)
+    }
+    
+    /// 设置当前目标固件（可显式指定版本号，以覆盖从文件名解析的结果）
+    func selectFirmware(url: URL, version: String?) {
+        selectedFirmwareVersion = version
         applySelectedFirmwareURL(url)
     }
     
