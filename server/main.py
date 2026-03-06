@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import hashlib
 from fastapi import (
@@ -1965,6 +1966,9 @@ HOME_HTML = """<!DOCTYPE html>
     li { margin: 12px 0; }
     a { color: #2563eb; text-decoration: none; font-size: 18px; }
     a:hover { text-decoration: underline; }
+    .icp-footer { margin-top: 40px; font-size: 12px; color: #999; }
+    .icp-footer a { color: inherit; text-decoration: none; }
+    .icp-footer a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -1972,6 +1976,9 @@ HOME_HTML = """<!DOCTYPE html>
   <ul>
     <li><a href="/bog">BOG</a> — 产测与固件管理项目</li>
   </ul>
+  <div class="icp-footer">
+    <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2026022047号-1</a>
+  </div>
 </body>
 </html>
 """
@@ -1993,6 +2000,9 @@ BOG_HTML_TEMPLATE = """<!DOCTYPE html>
     a {{ color: #2563eb; text-decoration: none; font-size: 18px; }}
     a:hover {{ text-decoration: underline; }}
     .back {{ font-size: 14px; color: #666; margin-bottom: 24px; }}
+    .icp-footer {{ margin-top: 40px; font-size: 12px; color: #999; }}
+    .icp-footer a {{ color: inherit; text-decoration: none; }}
+    .icp-footer a:hover {{ text-decoration: underline; }}
   </style>
 </head>
 <body>
@@ -2004,6 +2014,9 @@ BOG_HTML_TEMPLATE = """<!DOCTYPE html>
     <li><a href="{development_dashboard_url}">调试 Dashboard</a> — 开发/内测环境数据概览</li>
     <li><a href="/admin/firmware">固件管理后台</a> — 固件上传与管理</li>
   </ul>
+  <div class="icp-footer">
+    <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2026022047号-1</a>
+  </div>
 </body>
 </html>
 """
@@ -3388,16 +3401,47 @@ def home_page() -> str:
 
 
 @app.get("/bog", response_class=HTMLResponse)
-def bog_page() -> str:
-    """BOG 项目入口：产测链到生产环境、调试链到开发环境，实现数据分离。"""
-    prod_base = (os.environ.get("BOG_PRODUCTION_BASE_URL") or "").rstrip("/")
-    dev_base = (os.environ.get("BOG_DEVELOPMENT_BASE_URL") or "").rstrip("/")
-    if prod_base and dev_base:
-        production_dashboard_url = f"{prod_base}/bog/dashboard"
-        development_dashboard_url = f"{dev_base}/bog/dashboard"
+def bog_page(request: Request) -> str:
+    """BOG 项目入口：产测链到生产环境、调试链到开发环境，实现数据分离。
+
+    为避免页面上写死后端 IP，这里会优先使用当前请求的域名，结合环境变量中的端口信息生成链接：
+    - BOG_PRODUCTION_BASE_URL / BOG_DEVELOPMENT_BASE_URL 只用来提供端口或完整 URL 的参考
+    - 如果能解析出端口，则使用「当前域名 + 该端口」，否则回退到原始 URL 或相对路径
+    """
+
+    prod_base_env = (os.environ.get("BOG_PRODUCTION_BASE_URL") or "").rstrip("/")
+    dev_base_env = (os.environ.get("BOG_DEVELOPMENT_BASE_URL") or "").rstrip("/")
+
+    host_header = request.headers.get("host", "")
+    hostname = host_header.split(":")[0] if host_header else ""
+    # 在反向代理（Tengine/Nginx）后优先使用 X-Forwarded-Proto 判断外部协议
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+
+    def _build_dashboard_url(env_url: str) -> str:
+        if not env_url:
+            return "/bog/dashboard"
+
+        parsed = urlparse(env_url)
+        port = parsed.port
+
+        if hostname:
+            # 仅在直接 HTTP 访问时保留端口；在 HTTPS 场景下始终使用默认 443，不拼端口
+            if port and scheme == "http":
+                base = f"{scheme}://{hostname}:{port}"
+            else:
+                base = f"{scheme}://{hostname}"
+        else:
+            base = env_url.rstrip("/")
+
+        return f"{base}/bog/dashboard"
+
+    if prod_base_env and dev_base_env:
+        production_dashboard_url = _build_dashboard_url(prod_base_env)
+        development_dashboard_url = _build_dashboard_url(dev_base_env)
     else:
         production_dashboard_url = "/bog/dashboard"
         development_dashboard_url = "/bog/dashboard"
+
     return BOG_HTML_TEMPLATE.format(
         production_dashboard_url=production_dashboard_url,
         development_dashboard_url=development_dashboard_url,

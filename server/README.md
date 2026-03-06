@@ -92,13 +92,18 @@ curl -X POST http://127.0.0.1:8000/api/production-test \
 | GET  | `/api/pcba-test-records` | PCBA 测试记录查询（支持 `mac`、`date_from`、`date_to`、`test_result`、`limit`），返回 `records`、`totalCount` |
 | GET  | `/api/pcba-mac-list` | PCBA 记录中不重复的 MAC 地址列表 |
 | GET  | `/api/firmware-history` | 固件历史（烧录/升级）查询 |
+| GET  | `/api/firmware` | 只读固件列表（按用途与渠道筛选，供客户端下拉选择） |
+| GET  | `/api/firmware/{firmware_id}/download` | 固件下载（二进制流，供 OTA / 烧录工具使用） |
 | GET  | `/api/records` | 分页记录（支持 `sn`、`date_from`、`date_to`、`limit`、`offset`） |
 | GET  | `/api/sn-list` | 设备 SN 列表（供下拉建议） |
 | GET  | `/api/export` | 导出 CSV |
 | GET  | `/api/viewers` | 当前预览观众数（心跳） |
 | GET  | `/api/deploy-info` | 最近部署时间 |
 | DELETE | `/api/clear-test-data` | 清空测试数据（仅 dev 环境） |
-| GET  | `/` | 数据概览页（Dashboard） |
+| GET  | `/home` | Home 页面（入口，链接到 BOG 等项目） |
+| GET  | `/bog` | BOG 入口页：产测/调试 Dashboard 与固件管理导航 |
+| GET  | `/bog/dashboard` | 数据概览 Dashboard 页面（图表与统计） |
+| GET  | `/admin/firmware` | 固件管理后台（需管理员登录） |
 
 ### POST 请求体（`/api/production-test`）
 
