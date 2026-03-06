@@ -128,6 +128,39 @@
 "debug.reboot_hint" = "重启设备（先解锁再写 0x00000001；需固件 1.1.2+）";
 "debug.device_actions" = "设备";
 
+/* 气体泄漏检测 */
+"debug.gas_leak_detection" = "气体泄漏检测";
+"debug.gas_leak_duration" = "持续时间";
+"debug.gas_leak_interval" = "读取间隔";
+"debug.gas_leak_alarm_threshold" = "报警阈值（超过时提示音）";
+"debug.gas_leak_duration_unit" = "秒";
+"debug.gas_leak_start" = "开始检测";
+"debug.gas_leak_stop" = "停止检测";
+"debug.gas_leak_elapsed" = "已运行";
+"debug.gas_leak_current_pressure" = "当前压力";
+"debug.gas_leak_result" = "检测结果";
+"debug.gas_leak_result_insufficient" = "采样不足";
+"debug.gas_leak_result_leak" = "泄漏";
+"debug.gas_leak_result_ok" = "无泄漏";
+"debug.gas_leak_chart_time" = "时间";
+"debug.gas_leak_chart_pressure" = "压力";
+"debug.gas_leak_chart_pressure_close" = "关阀压力";
+"debug.gas_leak_chart_pressure_open" = "开阀压力";
+"debug.gas_leak_chart_time_label" = "时间 (s)";
+"debug.gas_leak_chart_pressure_label" = "压力 (bar)";
+"debug.gas_leak_chart_legend_valve" = "竖线：阀门状态变化";
+"debug.gas_leak_chart_legend_gas" = "虚线：Gas status 变化";
+"debug.gas_leak_chart_show" = "显示";
+"debug.gas_leak_chart_show_full" = "全部";
+"debug.gas_leak_chart_show_last_10s" = "最后 10 s";
+"debug.gas_leak_chart_show_last_30s" = "最后 30 s";
+"debug.gas_leak_chart_show_last_60s" = "最后 1 分钟";
+"debug.gas_leak_chart_show_last_120s" = "最后 2 分钟";
+"debug.gas_leak_chart_show_last_300s" = "最后 5 分钟";
+"debug.gas_leak_chart_show_last_600s" = "最后 10 分钟";
+"debug.gas_leak_chart_lock" = "锁定视图";
+"debug.gas_leak_chart_unlock" = "解锁视图";
+
 /* UUID 调试（按特征读写） */
 "debug.uuid_title" = "UUID 读写";
 "debug.uuid_write" = "写";
