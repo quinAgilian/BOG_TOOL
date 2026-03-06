@@ -64,6 +64,8 @@ struct DebugModeView: View {
     /// 总时长、读取间隔的手动输入文案（与 Stepper 双向同步）
     @State private var leakTestDurationInput: String = "300"
     @State private var leakTestIntervalInput: String = "0.5"
+    /// 图表纵轴：是否自动缩放（默认关闭，固定 0～1.5 bar）
+    @State private var leakTestAutoYScale: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
@@ -611,7 +613,14 @@ struct DebugModeView: View {
             let start = max(0, currentEnd - Double(n))
             return (start, max(start + 1, currentEnd))
         }
-        return (0, max(duration, 1))
+        // leakTestDurationSeconds == 0 表示「不限制时长」，此时按当前最大时间决定横轴上限
+        let baseMax: Double
+        if leakTestDurationSeconds <= 0 {
+            baseMax = max(currentEnd, 1)
+        } else {
+            baseMax = max(duration, 1)
+        }
+        return (0, baseMax)
     }
 
     /// 当前图表横轴刻度步长（秒），随可见范围长度变化
@@ -634,6 +643,33 @@ struct DebugModeView: View {
         let timeKey = appLanguage.string("debug.gas_leak_chart_time")
         let closeKey = appLanguage.string("debug.gas_leak_chart_pressure_close")
         let openKey = appLanguage.string("debug.gas_leak_chart_pressure_open")
+
+        // 纵轴范围：默认固定 0～1.5 bar；开启自动缩放时按当前采样数据计算包络
+        let yDomain: ClosedRange<Double>
+        if leakTestAutoYScale, !leakTestSamples.isEmpty {
+            var minP = leakTestSamples.first!.pressure
+            var maxP = leakTestSamples.first!.pressure
+            for s in leakTestSamples {
+                minP = min(minP, s.pressure)
+                maxP = max(maxP, s.pressure)
+                if let o = s.pressureOpen {
+                    minP = min(minP, o)
+                    maxP = max(maxP, o)
+                }
+            }
+            if minP == maxP {
+                // 单点时给一个小范围，避免 flat 线导致纵轴为常数
+                minP -= 0.05
+                maxP += 0.05
+            }
+            let padding = (maxP - minP) * 0.1
+            let lo = max(0, minP - padding)
+            let hi = max(lo + 0.1, maxP + padding)
+            yDomain = lo...hi
+        } else {
+            yDomain = 0...1.5
+        }
+
         return Chart {
             ForEach(leakTestSamples) { sample in
                 LineMark(
@@ -675,7 +711,7 @@ struct DebugModeView: View {
         ])
         .chartLegend(position: .top, alignment: .leading, spacing: 8)
         .chartXScale(domain: xMin ... xMax)
-        .chartYScale(domain: 0 ... 1.5)
+        .chartYScale(domain: yDomain)
         .chartXAxis {
             AxisMarks(values: .stride(by: step)) { value in
                 AxisGridLine()
@@ -700,11 +736,12 @@ struct DebugModeView: View {
     /// 启动气体泄漏检测：轮询在后台执行，仅 BLE 与状态更新上主线程，避免连续读取时主线程被占导致手动改时长等操作卡死
     private func startLeakTestPolling() {
         let duration = Double(leakTestDurationSeconds)
+        let infinite = leakTestDurationSeconds == 0
         let interval = leakTestIntervalSec
         let afterReadWaitNs: UInt64 = 600_000_000
         leakTestTask = Task {
             var elapsed: Double = 0
-            while elapsed <= duration, !Task.isCancelled {
+            while !Task.isCancelled && (infinite || elapsed <= duration) {
                 let connected: Bool = await MainActor.run { ble.isConnected && ble.areCharacteristicsReady }
                 if !connected { break }
                 await MainActor.run { leakTestElapsedSec = elapsed }
@@ -744,7 +781,7 @@ struct DebugModeView: View {
                     }
                 }
                 elapsed += interval
-                if elapsed <= duration, !Task.isCancelled {
+                if !Task.isCancelled && !infinite && elapsed <= duration {
                     let remainingSec = interval - 0.6
                     let remainingNs = UInt64(max(0, remainingSec) * 1_000_000_000)
                     if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
@@ -783,6 +820,40 @@ struct DebugModeView: View {
             leakTestResultMessage = appLanguage.string("debug.gas_leak_result_leak") + " (Δ\(String(format: "%.3f", delta)) bar)"
         } else {
             leakTestResultMessage = appLanguage.string("debug.gas_leak_result_ok") + " (Δ\(String(format: "%.3f", delta)) bar)"
+        }
+    }
+
+    /// 导出当前泄漏检测的采样数据为 CSV：time, close/open 压力, 阀门状态, Gas system status
+    @MainActor
+    private func exportLeakTestCSV() {
+        guard !leakTestSamples.isEmpty else { return }
+        var csv = "time_s,pressure_close_bar,pressure_open_bar,valve_state,gas_system_status\n"
+        for s in leakTestSamples {
+            let t = String(format: "%.3f", s.time)
+            let closeStr = String(format: "%.5f", s.pressure)
+            let openStr = s.pressureOpen.map { String(format: "%.5f", $0) } ?? ""
+            let valve = s.valveState ?? ""
+            let gas = s.gasSystemStatus ?? ""
+            // 简单转义双引号
+            let escapedValve = valve.replacingOccurrences(of: "\"", with: "\"\"")
+            let escapedGas = gas.replacingOccurrences(of: "\"", with: "\"\"")
+            csv.append("\(t),\(closeStr),\(openStr),\"\(escapedValve)\",\"\(escapedGas)\"\n")
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedFileTypes = ["csv"]
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        let ts = formatter.string(from: Date())
+        panel.nameFieldStringValue = "gas_leak_\(ts).csv"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            do {
+                try csv.data(using: .utf8)?.write(to: url)
+            } catch {
+                // 简单处理：在日志中记录错误
+                ble.appendLog("[DBG][GasLeak] 导出 CSV 失败: \(error.localizedDescription)", level: .error)
+            }
         }
     }
     
@@ -839,14 +910,15 @@ struct DebugModeView: View {
                         .multilineTextAlignment(.trailing)
                         .onSubmit {
                             let v = Int(leakTestDurationInput.trimmingCharacters(in: .whitespaces)) ?? leakTestDurationSeconds
-                            let clamped = min(3600, max(10, v))
+                            // 0 表示“无限时长”，允许 0～3600
+                            let clamped = min(3600, max(0, v))
                             leakTestDurationSeconds = clamped
                             leakTestDurationInput = "\(clamped)"
                         }
                     Text(appLanguage.string("debug.gas_leak_duration_unit"))
                         .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    Stepper("", value: $leakTestDurationSeconds, in: 10...3600, step: 10)
+                    Stepper("", value: $leakTestDurationSeconds, in: 0...3600, step: 10)
                         .labelsHidden()
                         .onChange(of: leakTestDurationSeconds, perform: { leakTestDurationInput = "\($0)" })
                 }
@@ -886,7 +958,7 @@ struct DebugModeView: View {
                 .disabled(isLeakTestRunning)
             }
 
-            // 显示范围 + 锁定 同一行
+            // 显示范围 + 锁定 + 纵轴缩放 同一行
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
                 Text(appLanguage.string("debug.gas_leak_chart_show"))
                     .font(UIDesignSystem.Typography.caption)
@@ -917,6 +989,13 @@ struct DebugModeView: View {
                         .font(UIDesignSystem.Typography.caption)
                 }
                 .buttonStyle(.bordered)
+                Spacer()
+                Toggle("", isOn: $leakTestAutoYScale)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                Text(appLanguage.string("debug.gas_leak_chart_auto_y"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
 
             gasLeakChart
@@ -935,6 +1014,13 @@ struct DebugModeView: View {
                         .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 }
+                Spacer()
+                Button(appLanguage.string("debug.gas_leak_export_csv")) {
+                    exportLeakTestCSV()
+                }
+                .buttonStyle(.bordered)
+                .font(UIDesignSystem.Typography.caption)
+                .disabled(leakTestSamples.isEmpty)
             }
 
             // 已运行 · 关阀 · 开阀 · 结果 同一行

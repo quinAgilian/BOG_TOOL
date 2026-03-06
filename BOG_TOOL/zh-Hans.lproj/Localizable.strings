@@ -150,6 +150,7 @@
 "debug.gas_leak_chart_pressure_label" = "压力 (bar)";
 "debug.gas_leak_chart_legend_valve" = "竖线：阀门状态变化";
 "debug.gas_leak_chart_legend_gas" = "虚线：Gas status 变化";
+"debug.gas_leak_export_csv" = "导出 CSV";
 "debug.gas_leak_chart_show" = "显示";
 "debug.gas_leak_chart_show_full" = "全部";
 "debug.gas_leak_chart_show_last_10s" = "最后 10 s";
@@ -160,6 +161,7 @@
 "debug.gas_leak_chart_show_last_600s" = "最后 10 分钟";
 "debug.gas_leak_chart_lock" = "锁定视图";
 "debug.gas_leak_chart_unlock" = "解锁视图";
+"debug.gas_leak_chart_auto_y" = "自动纵轴";
 
 /* UUID 调试（按特征读写） */
 "debug.uuid_title" = "UUID 读写";
@@ -196,6 +198,8 @@
 "production_test.sn_invalid" = "SN无效";
 "production_test.bootloader_too_old" = "Bootloader 版本过低（要求 ≥ 2）";
 "production_test.bootloader_unreadable" = "无法读取 Bootloader 版本";
+"production_test.bootloader_version_mismatch" = "Bootloader 版本不匹配（请检查 SOP 配置与设备版本）";
+"production_test.hardware_version_mismatch" = "HW 版本不匹配（请检查 SOP 配置与设备版本）";
 "production_test_rules.summary" = "测试规则摘要";
 "production_test.test_result_summary" = "测试结果摘要";
 "production_test.test_results" = "测试结果";
@@ -307,6 +311,8 @@
 "ota.unknown" = "未知";
 "ota.browse" = "选择固件";
 "ota.not_selected" = "未选择";
+"ota.refresh_firmware_list" = "刷新";
+"ota.resolving_firmware" = "正在准备固件（使用缓存或下载）…";
 "ota.start" = "启动 OTA";
 "ota.cancel" = "取消 OTA";
 "ota.reboot" = "重启";

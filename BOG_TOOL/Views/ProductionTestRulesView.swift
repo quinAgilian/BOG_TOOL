@@ -33,6 +33,7 @@ struct TestStep: Identifiable, Equatable {
 /// 产测规则视图：定义产测SOP（标准操作程序）
 struct ProductionTestRulesView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
+    @EnvironmentObject private var serverClient: ServerClient
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var bootloaderVersion: String = {
@@ -42,7 +43,7 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? "1.0.5"
     }()
     @State private var hardwareVersion: String = {
-        UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? "P02V02R00"
+        UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? "P02V02R01"
     }()
     // 固件版本升级开关
     @State private var firmwareUpgradeEnabled: Bool = {
@@ -270,18 +271,24 @@ struct ProductionTestRulesView: View {
             Text(appLanguage.string("production_test_rules.global_step_delay_section"))
                 .font(.headline)
                 .foregroundStyle(.primary)
-            
-            thresholdIntRow(
-                label: appLanguage.string("production_test_rules.step_interval_ms"),
-                value: $stepIntervalMs,
-                key: "production_test_step_interval_ms"
-            )
-            thresholdRow(
-                label: appLanguage.string("production_test_rules.bluetooth_permission_wait_seconds"),
-                value: $bluetoothPermissionWaitSeconds,
-                unit: appLanguage.string("production_test_rules.unit_seconds"),
-                key: "production_test_bluetooth_permission_wait_seconds"
-            )
+
+            // 步骤间延时（ms）与蓝牙权限等待（s）放在同一行，提升布局利用率
+            HStack(alignment: .center, spacing: 24) {
+                thresholdIntRow(
+                    label: appLanguage.string("production_test_rules.step_interval_ms"),
+                    value: $stepIntervalMs,
+                    key: "production_test_step_interval_ms"
+                )
+                .frame(maxWidth: 260, alignment: .leading)
+
+                thresholdRow(
+                    label: appLanguage.string("production_test_rules.bluetooth_permission_wait_seconds"),
+                    value: $bluetoothPermissionWaitSeconds,
+                    unit: appLanguage.string("production_test_rules.unit_seconds"),
+                    key: "production_test_bluetooth_permission_wait_seconds"
+                )
+                .frame(maxWidth: 260, alignment: .leading)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -339,12 +346,13 @@ struct ProductionTestRulesView: View {
         }
     }
     
-    /// 产测可选固件列表：当恢复出厂/重启启用时仅包含支持该命令的版本（>=1.1.2 或 0.x>0.4.1），否则为全部
-    private var productionTestAllowedFirmwareEntries: [FirmwareEntry] {
+    /// 产测可选固件列表：从服务器固件列表中过滤；当恢复出厂/重启启用时仅包含支持该命令的版本（>=1.1.2 或 0.x>0.4.1），否则为全部
+    private var productionTestAllowedFirmwareEntries: [ServerFirmwareItem] {
+        let items = firmwareManager.serverItems
         if productionTestRequiresFirmwareSupportForRebootSteps {
-            return firmwareManager.entries.filter { Self.firmwareVersionSupportsRebootAndFactoryReset($0.parsedVersion) }
+            return items.filter { Self.firmwareVersionSupportsRebootAndFactoryReset($0.version) }
         }
-        return firmwareManager.entries
+        return items
     }
     
     private var testStepsSection: some View {
@@ -760,7 +768,7 @@ struct ProductionTestRulesView: View {
                     }
                 }
                 
-                // FW 版本：从固件管理下拉选择，产测 OTA 步骤直接使用此版本；当恢复出厂/重启启用时仅允许选择支持该命令的版本（>=1.1.2 或 0.x>0.4.1）
+                // FW 版本：从服务器可用固件列表下拉选择，产测 OTA 步骤直接使用此版本；当恢复出厂/重启启用时仅允许选择支持该命令的版本（>=1.1.2 或 0.x>0.4.1）
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 12) {
                         Text(appLanguage.string("production_test_rules.firmware_version_label"))
@@ -771,8 +779,8 @@ struct ProductionTestRulesView: View {
                         Picker("", selection: $firmwareVersion) {
                             Text(appLanguage.string("ota.not_selected")).tag("")
                             ForEach(productionTestAllowedFirmwareEntries) { e in
-                                Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
-                                    .tag(e.parsedVersion)
+                                Text("\(e.version) – \((e.originalFileName ?? e.fileName) as String)")
+                                    .tag(e.version)
                             }
                         }
                         .pickerStyle(.menu)
@@ -796,7 +804,7 @@ struct ProductionTestRulesView: View {
                         .foregroundStyle(.secondary)
                         .padding(.leading, 112)
                     
-                    if firmwareManager.entries.isEmpty {
+                    if firmwareManager.serverItems.isEmpty {
                         HStack(spacing: 4) {
                             Image(systemName: "info.circle.fill")
                                 .font(.caption2)
@@ -831,21 +839,26 @@ struct ProductionTestRulesView: View {
                 .onChange(of: productionTestRequiresFirmwareSupportForRebootSteps) { requires in
                     if requires {
                         let allowed = productionTestAllowedFirmwareEntries
-                        if !allowed.contains(where: { $0.parsedVersion == firmwareVersion }) {
-                            firmwareVersion = allowed.first?.parsedVersion ?? ""
+                        if !allowed.contains(where: { $0.version == firmwareVersion }) {
+                            firmwareVersion = allowed.first?.version ?? ""
                             UserDefaults.standard.set(firmwareVersion, forKey: "production_test_firmware_version")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                         }
                     }
                 }
                 .onAppear {
+                    // 首次进入时，如需支持 reboot/恢复出厂，自动将版本收紧到支持该命令的服务器固件列表中
                     if productionTestRequiresFirmwareSupportForRebootSteps {
                         let allowed = productionTestAllowedFirmwareEntries
-                        if !allowed.contains(where: { $0.parsedVersion == firmwareVersion }) {
-                            firmwareVersion = allowed.first?.parsedVersion ?? ""
+                        if !allowed.contains(where: { $0.version == firmwareVersion }) {
+                            firmwareVersion = allowed.first?.version ?? ""
                             UserDefaults.standard.set(firmwareVersion, forKey: "production_test_firmware_version")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                         }
+                    }
+                    // 若服务器列表尚为空，则触发一次拉取
+                    if firmwareManager.serverItems.isEmpty && !firmwareManager.serverItemsLoading {
+                        Task { await firmwareManager.fetchServerFirmware(serverClient: serverClient) }
                     }
                 }
                 

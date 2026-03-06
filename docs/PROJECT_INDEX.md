@@ -25,7 +25,8 @@ BOG_TOOL/
 ├── VERSION                      # 版本号
 ├── docs/                        # 文档
 │   ├── PROJECT_INDEX.md         # 本索引
-│   └── FIRMWARE_LOADING_LOGIC.md # 固件加载与 FirmwareManager 逻辑
+│   ├── FIRMWARE_LOADING_LOGIC.md # 固件加载与 FirmwareManager 逻辑
+│   └── FIRMWARE_FROM_SERVER.md   # 固件从服务器拉取改造方案（feature/firmware-from-server）
 ├── BOG_TOOL.xcodeproj/          # Xcode 工程
 ├── BOG_TOOL/                    # macOS SwiftUI 应用源码
 ├── server/                      # 产测数据服务（Git 子模块）

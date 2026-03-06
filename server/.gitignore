@@ -7,3 +7,4 @@ bog_test.db
 .env.local
 deploy_key
 deploy_timestamp.txt
+firmware_files/ota/production/ota_app-production-1.1.3-1772729775.bin

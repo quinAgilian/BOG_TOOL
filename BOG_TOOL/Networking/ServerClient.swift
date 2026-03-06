@@ -6,6 +6,8 @@ protocol ServerClientProtocol: AnyObject {
     func uploadProductionTest(body: [String: Any]) async throws
     func uploadFirmwareUpgradeRecord(body: [String: Any]) async throws
     func performHealthCheck() async -> (reachable: Bool, latencyMs: Double?)
+    func listFirmware(usageType: String?, channel: String?) async throws -> [ServerFirmwareItem]
+    func downloadFirmware(id: String) async throws -> Data
 }
 
 final class ServerClient: ObservableObject, ServerClientProtocol {
@@ -27,6 +29,23 @@ final class ServerClient: ObservableObject, ServerClientProtocol {
         guard let settings = serverSettings else { return nil }
         let base = settings.effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return URL(string: base + ServerAPI.firmwareUpgradeRecord)
+    }
+
+    private func firmwareListURL(usageType: String?, channel: String?) -> URL? {
+        guard let settings = serverSettings else { return nil }
+        let base = settings.effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var comp = URLComponents(string: base + ServerAPI.firmwareList)
+        var query: [URLQueryItem] = []
+        if let u = usageType, !u.isEmpty { query.append(URLQueryItem(name: "usage_type", value: u)) }
+        if let c = channel, !c.isEmpty { query.append(URLQueryItem(name: "channel", value: c)) }
+        if !query.isEmpty { comp?.queryItems = query }
+        return comp?.url
+    }
+
+    private func firmwareDownloadURL(id: String) -> URL? {
+        guard let settings = serverSettings else { return nil }
+        let base = settings.effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return URL(string: base + ServerAPI.firmwareDownload(id: id))
     }
 
     func uploadProductionTest(body: [String: Any]) async throws {
@@ -136,6 +155,37 @@ final class ServerClient: ObservableObject, ServerClientProtocol {
         } catch {
             return (false, nil)
         }
+    }
+
+    func listFirmware(usageType: String?, channel: String?) async throws -> [ServerFirmwareItem] {
+        guard let url = firmwareListURL(usageType: usageType, channel: channel) else {
+            throw ServerClientError.missingConfiguration
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw ServerClientError.serverError(statusCode: code, retriable: (500...599).contains(code))
+        }
+        let decoded = try JSONDecoder().decode(ServerFirmwareListResponse.self, from: data)
+        return decoded.items
+    }
+
+    func downloadFirmware(id: String) async throws -> Data {
+        guard let url = firmwareDownloadURL(id: id) else {
+            throw ServerClientError.missingConfiguration
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 120
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw ServerClientError.serverError(statusCode: code, retriable: (500...599).contains(code))
+        }
+        return data
     }
 
     static func isRetriableNetworkError(_ error: Error) -> Bool {

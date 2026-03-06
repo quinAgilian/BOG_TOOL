@@ -959,6 +959,82 @@ def admin_download_firmware(
     )
 
 
+# ---------------------------------------------------------------------------
+# 只读固件 API（供 BOG_TOOL App 拉取列表与下载，无需 admin 鉴权）
+# ---------------------------------------------------------------------------
+
+@app.get("/api/firmware")
+def list_firmware(
+    usage_type: Optional[str] = Query(None, description="factory_merged|ota_app"),
+    channel: Optional[str] = Query(None, description="production|debugging"),
+) -> Dict[str, Any]:
+    """返回固件列表，结构与 GET /api/admin/firmware 一致，供 App 下拉选择。"""
+    conditions: List[str] = []
+    params: List[Any] = []
+    if usage_type:
+        conditions.append("usage_type = ?")
+        params.append(usage_type)
+    if channel:
+        conditions.append("channel = ?")
+        params.append(channel)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, created_at, usage_type, channel, version,
+                   file_name, file_path, file_size_bytes, checksum,
+                   description, is_active, original_file_name
+            FROM firmware_files
+            {where}
+            ORDER BY created_at DESC
+            """,
+            tuple(params),
+        ).fetchall()
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        download_url = f"/api/firmware/{r['id']}/download"
+        items.append(
+            {
+                "id": r["id"],
+                "createdAt": r["created_at"],
+                "usageType": r["usage_type"],
+                "channel": r["channel"],
+                "version": r["version"],
+                "fileName": r["file_name"],
+                "originalFileName": r["original_file_name"],
+                "fileSizeBytes": r["file_size_bytes"],
+                "checksum": r["checksum"],
+                "description": r["description"],
+                "isActive": bool(r["is_active"]),
+                "downloadUrl": download_url,
+            }
+        )
+    return {"items": items}
+
+
+@app.get("/api/firmware/{firmware_id}/download")
+def download_firmware(firmware_id: str):
+    """下载固件文件，供 App OTA 使用。无需鉴权。"""
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT file_path, COALESCE(original_file_name, file_name) AS download_name
+            FROM firmware_files WHERE id = ?
+            """,
+            (firmware_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Firmware not found")
+    path = Path(row["file_path"])
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return FileResponse(
+        path,
+        filename=row["download_name"],
+        media_type="application/octet-stream",
+    )
+
+
 @app.get("/api/debug/burn-timestamps")
 def debug_burn_timestamps(limit: int = Query(20, ge=1, le=100)) -> Dict[str, Any]:
     """调试：检查 device_written_timestamp 在 DB 中的存储情况。"""

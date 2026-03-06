@@ -1,24 +1,27 @@
 import SwiftUI
 
-/// 下拉选项：未选择或某条固件 id（用于 Picker）
+/// 下拉选项：未选择或某条服务器固件 id（用于 Picker，固件从服务器拉取）
 private enum FirmwarePickerChoice: Hashable {
     case none
-    case managed(UUID)
+    case server(id: String)
 }
 
-/// OTA 区域：产测与 Debug 共用，逻辑统一在 BLEManager 中；Debug 时下拉选择目标固件，产测按 SOP 版本解析
+/// OTA 区域：产测与 Debug 共用，逻辑统一在 BLEManager 中；Debug 时下拉从服务器选择目标固件，触发 OTA 时本地有缓存则直接用否则下载
 struct OTASectionView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
+    @EnvironmentObject private var serverClient: ServerClient
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     /// 是否为模态模式（用于OTA进行中的独占窗口）
     var isModal: Bool = false
     /// 是否为产测触发的 OTA（模态下不显示“目标固件 Debug OTA”选择，只显示由产测规则指定的版本）
     var isProductionTestOTA: Bool = false
-    /// 下拉当前选中的管理固件 id（仅 Debug 下拉用）
+    /// 下拉当前选中的服务器固件 id（仅 Debug 下拉用）
     @State private var pickerChoice: FirmwarePickerChoice = .none
-    /// Debug 下记住的固件选择（UserDefaults key）
-    private static let debugSelectedFirmwareIdKey = "debug_ota_selected_firmware_id"
+    /// 正在解析/下载所选固件到本地（用于禁用 OTA 按钮或显示提示）
+    @State private var resolvingSelection = false
+    /// Debug 下记住的固件选择（UserDefaults key，存服务器固件 id）
+    private static let debugSelectedServerFirmwareIdKey = "debug_ota_selected_server_firmware_id"
     /// 等待用户确认重启时的倒计时剩余秒数（30s 后自动执行 reboot）
     @State private var rebootCountdownRemaining: Int = 0
     
@@ -188,30 +191,41 @@ struct OTASectionView: View {
                     }
                 }
                 
-                // 目标固件：下拉从管理列表选择（Debug OTA）；新固件仅通过菜单「固件 → 固件管理」添加
+                // 目标固件：下拉从服务器拉取列表；选择后触发 OTA 时若本地已有缓存则直接用，否则下载
                 HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                     Text(appLanguage.string("firmware_manager.debug_target"))
                         .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Picker("", selection: $pickerChoice) {
                         Text(appLanguage.string("ota.not_selected")).tag(FirmwarePickerChoice.none)
-                        ForEach(firmwareManager.entries) { e in
-                            Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
-                                .tag(FirmwarePickerChoice.managed(e.id))
+                        ForEach(firmwareManager.serverItems) { item in
+                            Text(serverFirmwareItemLabel(item))
+                                .tag(FirmwarePickerChoice.server(id: item.id))
                         }
                     }
                     .pickerStyle(.menu)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .onChange(of: pickerChoice) { new in
-                        switch new {
-                        case .none: break
-                        case .managed(let id):
-                            if let url = firmwareManager.url(forId: id) {
-                                ble.selectFirmware(url: url)
-                                UserDefaults.standard.set(id.uuidString, forKey: Self.debugSelectedFirmwareIdKey)
-                            }
+                    .disabled(firmwareManager.serverItemsLoading)
+                    .onChange(of: pickerChoice, perform: { new in applyServerFirmwareSelection(new) })
+                    if firmwareManager.serverItemsLoading {
+                        ProgressView().scaleEffect(0.7)
+                    } else {
+                        Button(appLanguage.string("ota.refresh_firmware_list")) {
+                            refreshServerFirmwareList()
                         }
+                        .buttonStyle(.borderless)
+                        .font(UIDesignSystem.Typography.caption)
                     }
+                }
+                if resolvingSelection {
+                    Text(appLanguage.string("ota.resolving_firmware"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
+                if let err = firmwareManager.serverItemsError {
+                    Text(err)
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(.red)
                 }
             } else {
                 // 模态模式下：产测 OTA 不显示“选固件”，只显示由产测规则指定的版本；Debug OTA 显示下拉 + 浏览
@@ -250,30 +264,36 @@ struct OTASectionView: View {
                     }
                     
                     if !isProductionTestOTA {
-                        // Debug OTA：目标固件下拉；新固件仅通过菜单「固件 → 固件管理」添加
+                        // Debug OTA：目标固件下拉（从服务器）；选择后 OTA 时本地有缓存则直接用否则下载
                         HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                             Text(appLanguage.string("firmware_manager.debug_target"))
                                 .font(UIDesignSystem.Typography.caption)
                                 .foregroundStyle(UIDesignSystem.Foreground.secondary)
                             Picker("", selection: $pickerChoice) {
                                 Text(appLanguage.string("ota.not_selected")).tag(FirmwarePickerChoice.none)
-                                ForEach(firmwareManager.entries) { e in
-                                    Text("\(e.parsedVersion) – \((e.pathDisplay as NSString).lastPathComponent)")
-                                        .tag(FirmwarePickerChoice.managed(e.id))
+                                ForEach(firmwareManager.serverItems) { item in
+                                    Text(serverFirmwareItemLabel(item))
+                                        .tag(FirmwarePickerChoice.server(id: item.id))
                                 }
                             }
                             .pickerStyle(.menu)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .onChange(of: pickerChoice) { new in
-                                switch new {
-                                case .none: break
-                                case .managed(let id):
-                                    if let url = firmwareManager.url(forId: id) {
-                                        ble.selectFirmware(url: url)
-                                        UserDefaults.standard.set(id.uuidString, forKey: Self.debugSelectedFirmwareIdKey)
-                                    }
+                            .disabled(firmwareManager.serverItemsLoading)
+                            .onChange(of: pickerChoice, perform: { applyServerFirmwareSelection($0) })
+                            if firmwareManager.serverItemsLoading {
+                                ProgressView().scaleEffect(0.7)
+                            } else {
+                                Button(appLanguage.string("ota.refresh_firmware_list")) {
+                                    refreshServerFirmwareList()
                                 }
+                                .buttonStyle(.borderless)
+                                .font(UIDesignSystem.Typography.caption)
                             }
+                        }
+                        if resolvingSelection {
+                            Text(appLanguage.string("ota.resolving_firmware"))
+                                .font(UIDesignSystem.Typography.caption)
+                                .foregroundStyle(UIDesignSystem.Foreground.secondary)
                         }
                     }
                 }
@@ -331,14 +351,13 @@ struct OTASectionView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(isModal ? .large : .regular)
                 .disabled(
-                    // reboot 断开、失败或取消时允许点击 Close 按钮（即使设备已断开）
-                    // 产测弹窗下「等待重启」时按钮仅显示「正在重启...」不响应点击
-                    // 其他情况：需要连接且满足 OTA 条件
                     (ble.isOTARebootDisconnected || ble.isOTAFailed || ble.isOTACancelled)
                         ? false
                         : (isProductionTestOTA && ble.isOTACompletedWaitingReboot)
                             ? true
-                            : (!ble.isConnected || (!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
+                            : resolvingSelection
+                                ? true
+                                : (!ble.isConnected || (!ble.isOTAInProgress && !ble.isOTACompletedWaitingReboot && (ble.selectedFirmwareURL == nil || !ble.isOtaAvailable)))
                 )
             }
             
@@ -375,33 +394,83 @@ struct OTASectionView: View {
                 ble.sendReboot()
             }
         }
-        .onAppear { syncDebugFirmwareSelection() }
-        .onChange(of: firmwareManager.entries.count) { _ in syncDebugFirmwareSelection() }
+        .onAppear {
+            if firmwareManager.serverItems.isEmpty && !firmwareManager.serverItemsLoading {
+                refreshServerFirmwareList()
+            }
+            syncDebugFirmwareSelection()
+        }
+        .onChange(of: firmwareManager.serverItems.count, perform: { _ in syncDebugFirmwareSelection() })
     }
-    
-    /// Debug 模式：固件默认选第一个；若曾选择过则从 UserDefaults 恢复并维持
+
+    /// 从服务器拉取固件列表，并在日志区输出成功/失败信息
+    private func refreshServerFirmwareList() {
+        ble.appendLog("[OTA] 从服务器拉取固件列表…", level: .info)
+        Task {
+            await firmwareManager.fetchServerFirmware(serverClient: serverClient)
+            await MainActor.run {
+                if let err = firmwareManager.serverItemsError {
+                    ble.appendLog("[OTA] 从服务器拉取固件列表失败：\(err)", level: .error)
+                } else {
+                    let count = firmwareManager.serverItems.count
+                    let lvl: BLEManager.LogLevel = count > 0 ? .info : .warning
+                    ble.appendLog("[OTA] 固件列表已更新，共 \(count) 条", level: lvl)
+                }
+            }
+        }
+    }
+
+    private func serverFirmwareItemLabel(_ item: ServerFirmwareItem) -> String {
+        let sizeStr = (item.fileSizeBytes).map { String(format: "%.1f KB", Double($0) / 1024) } ?? ""
+        if sizeStr.isEmpty { return "\(item.version) – \(item.fileName)" }
+        return "\(item.version) – \(item.fileName) (\(sizeStr))"
+    }
+
+    /// 选择服务器固件后：若本地已有缓存则直接用，否则下载再设置
+    private func applyServerFirmwareSelection(_ choice: FirmwarePickerChoice) {
+        switch choice {
+        case .none:
+            resolvingSelection = false
+            return
+        case .server(let id):
+            guard let item = firmwareManager.serverItems.first(where: { $0.id == id }) else { return }
+            UserDefaults.standard.set(id, forKey: Self.debugSelectedServerFirmwareIdKey)
+            resolvingSelection = true
+            Task {
+                do {
+                    let url = try await firmwareManager.resolveLocalURL(for: item, serverClient: serverClient)
+                    await MainActor.run {
+                        ble.selectFirmware(url: url)
+                        resolvingSelection = false
+                    }
+                } catch {
+                    await MainActor.run {
+                        resolvingSelection = false
+                        firmwareManager.serverItemsError = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    /// Debug 模式：固件默认选第一个；若曾选择过则从 UserDefaults 恢复并解析到本地 URL
     private func syncDebugFirmwareSelection() {
         guard !isProductionTestOTA else { return }
-        let entries = firmwareManager.entries
-        if entries.isEmpty {
+        let items = firmwareManager.serverItems
+        if items.isEmpty {
             pickerChoice = .none
             return
         }
-        if let savedIdStr = UserDefaults.standard.string(forKey: Self.debugSelectedFirmwareIdKey),
-           let savedId = UUID(uuidString: savedIdStr),
-           entries.contains(where: { $0.id == savedId }) {
-            pickerChoice = .managed(savedId)
-            if let url = firmwareManager.url(forId: savedId) {
-                ble.selectFirmware(url: url)
-            }
+        if let savedId = UserDefaults.standard.string(forKey: Self.debugSelectedServerFirmwareIdKey),
+           items.contains(where: { $0.id == savedId }) {
+            pickerChoice = .server(id: savedId)
+            applyServerFirmwareSelection(.server(id: savedId))
             return
         }
-        let firstId = entries[0].id
-        pickerChoice = .managed(firstId)
-        if let url = firmwareManager.url(forId: firstId) {
-            ble.selectFirmware(url: url)
-        }
-        UserDefaults.standard.set(firstId.uuidString, forKey: Self.debugSelectedFirmwareIdKey)
+        let first = items[0]
+        pickerChoice = .server(id: first.id)
+        UserDefaults.standard.set(first.id, forKey: Self.debugSelectedServerFirmwareIdKey)
+        applyServerFirmwareSelection(.server(id: first.id))
     }
     
     /// 未启动：正常；失败：红；取消：橙；进行中：蓝色呼吸灯；完成：绿

@@ -150,6 +150,7 @@
 "debug.gas_leak_chart_pressure_label" = "Pressure (bar)";
 "debug.gas_leak_chart_legend_valve" = "Vertical: valve state change";
 "debug.gas_leak_chart_legend_gas" = "Dashed: Gas status change";
+"debug.gas_leak_export_csv" = "Export CSV";
 "debug.gas_leak_chart_show" = "Show";
 "debug.gas_leak_chart_show_full" = "Full";
 "debug.gas_leak_chart_show_last_10s" = "Last 10 s";
@@ -160,6 +161,7 @@
 "debug.gas_leak_chart_show_last_600s" = "Last 10 min";
 "debug.gas_leak_chart_lock" = "Lock view";
 "debug.gas_leak_chart_unlock" = "Unlock view";
+"debug.gas_leak_chart_auto_y" = "Auto Y-axis";
 
 /* UUID debug (read/write by characteristic) */
 "debug.uuid_title" = "UUID Read/Write";
@@ -196,6 +198,8 @@
 "production_test.sn_invalid" = "SN Invalid";
 "production_test.bootloader_too_old" = "Bootloader version too old (required ≥ 2)";
 "production_test.bootloader_unreadable" = "Cannot read Bootloader version";
+"production_test.bootloader_version_mismatch" = "Bootloader version mismatch (please check SOP vs device)";
+"production_test.hardware_version_mismatch" = "HW version mismatch (please check SOP vs device)";
 "production_test_rules.summary" = "Test Rules Summary";
 "production_test.test_result_summary" = "Test Result Summary";
 "production_test.test_results" = "Test Results";
@@ -307,6 +311,8 @@
 "ota.unknown" = "Unknown";
 "ota.browse" = "Browse firmware";
 "ota.not_selected" = "Not selected";
+"ota.refresh_firmware_list" = "Refresh";
+"ota.resolving_firmware" = "Preparing firmware (cache or download)…";
 "ota.start" = "Start OTA";
 "ota.cancel" = "Cancel OTA";
 "ota.reboot" = "Reboot";

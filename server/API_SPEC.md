@@ -223,6 +223,19 @@
 
 ---
 
+### 2.5 只读固件列表与下载（供 BOG_TOOL App 下拉选择与 OTA）
+
+无需鉴权，供客户端拉取可用固件并下载。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/firmware` | 固件列表。Query：`usage_type`（可选，factory_merged \| ota_app）、`channel`（可选，production \| debugging） |
+| GET | `/api/firmware/{firmware_id}/download` | 下载固件文件（二进制流） |
+
+**列表响应**：`{"items": [{"id", "version", "fileName", "fileSizeBytes", "downloadUrl", ...}]}`，其中 `downloadUrl` 为相对路径，如 `/api/firmware/{id}/download`。客户端需拼接 base URL 后请求下载。
+
+---
+
 ## 响应格式
 
 单条成功：`{"ok": true, "id": "uuid", "createdAt": "..."}`  

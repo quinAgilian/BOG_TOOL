@@ -1395,27 +1395,56 @@ struct ProductionTestView: View {
                         return
                     }
                     
-                    // 验证 Bootloader 版本（小于 2 直接报错）
+                    // 验证 Bootloader 版本：
+                    // - 若 SOP 中配置了 bootloaderVersion（如 "1" 或 "1,2"），则仅允许在该集合内，否则报错
+                    // - 若未配置，则沿用旧逻辑：版本 < 2 报错，其余仅记录实际版本
                     if let blVersionStr = ble.bootloaderVersion {
-                        let blNum = Int(blVersionStr.trimmingCharacters(in: .whitespaces))
-                        if let num = blNum, num < 2 {
-                            self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
-                            stepStatuses[step.id] = .failed
-                            stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
-                            await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
-                            isRunning = false
-                            currentStepId = nil
-                            return
-                        }
-                        if !rules.bootloaderVersion.isEmpty {
-                            if blVersionStr == rules.bootloaderVersion {
-                                self.log("✓ Bootloader 版本验证通过: \(blVersionStr)", level: .info)
-                                resultMessages.append("BL: \(blVersionStr)")
+                        let trimmed = blVersionStr.trimmingCharacters(in: .whitespaces)
+                        let blNum = Int(trimmed)
+                        let ruleString = rules.bootloaderVersion.trimmingCharacters(in: .whitespaces)
+
+                        if !ruleString.isEmpty, let num = blNum {
+                            // 解析 SOP 中允许的 Bootloader 版本列表，例如 "1,2" → [1,2]
+                            let allowedNums: [Int] = ruleString
+                                .split(whereSeparator: { $0 == "," || $0 == "，" || $0.isWhitespace })
+                                .compactMap { Int($0) }
+                            if !allowedNums.isEmpty {
+                                if allowedNums.contains(num) {
+                                    self.log("✓ Bootloader 版本验证通过: \(blVersionStr)（允许列表: \(rules.bootloaderVersion)）", level: .info)
+                                    resultMessages.append("BL: \(blVersionStr)")
+                                } else {
+                                    self.log("错误：Bootloader 版本不匹配（期望: \(rules.bootloaderVersion), 实际: \(blVersionStr)）", level: .error)
+                                    stepStatuses[step.id] = .failed
+                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_version_mismatch")
+                                    await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
+                                    isRunning = false
+                                    currentStepId = nil
+                                    return
+                                }
                             } else {
-                                self.log("警告：Bootloader 版本不匹配（期望: \(rules.bootloaderVersion), 实际: \(blVersionStr)）", level: .warning)
-                                resultMessages.append("BL: ⚠️")
+                                // 规则解析不到有效数字时，退回旧逻辑
+                                if let num = blNum, num < 2 {
+                                    self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
+                                    stepStatuses[step.id] = .failed
+                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
+                                    await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
+                                    isRunning = false
+                                    currentStepId = nil
+                                    return
+                                }
+                                resultMessages.append("BL: \(blVersionStr)")
                             }
                         } else {
+                            // 未配置规则：仅做“<2 报错”的最低版本检查
+                            if let num = blNum, num < 2 {
+                                self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
+                                stepStatuses[step.id] = .failed
+                                stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
+                                await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
+                                isRunning = false
+                                currentStepId = nil
+                                return
+                            }
                             resultMessages.append("BL: \(blVersionStr)")
                         }
                     } else {
@@ -1460,14 +1489,24 @@ struct ProductionTestView: View {
                         resultMessages.append("FW: ⚠️")
                     }
                     
-                    // 验证 HW 版本
+                    // 验证 HW 版本：若 SOP 中配置了 hardwareVersion，则设备必须完全匹配，否则测试失败；未配置时仅记录实际值
                     if let hwVersion = ble.deviceHardwareRevision {
-                        if hwVersion == rules.hardwareVersion {
-                            self.log("✓ HW 版本验证通过: \(hwVersion)", level: .info)
-                            resultMessages.append("HW: \(hwVersion) ✓")
+                        let ruleHW = rules.hardwareVersion.trimmingCharacters(in: .whitespaces)
+                        if !ruleHW.isEmpty {
+                            if hwVersion == ruleHW {
+                                self.log("✓ HW 版本验证通过: \(hwVersion)", level: .info)
+                                resultMessages.append("HW: \(hwVersion) ✓")
+                            } else {
+                                self.log("错误：HW 版本不匹配（期望: \(ruleHW), 实际: \(hwVersion)）", level: .error)
+                                stepStatuses[step.id] = .failed
+                                stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.hardware_version_mismatch")
+                                await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
+                                isRunning = false
+                                currentStepId = nil
+                                return
+                            }
                         } else {
-                            self.log("警告：HW 版本不匹配（期望: \(rules.hardwareVersion), 实际: \(hwVersion)）", level: .warning)
-                            resultMessages.append("HW: \(hwVersion) ⚠️")
+                            resultMessages.append("HW: \(hwVersion)")
                         }
                     } else {
                         // HW 为可选：设备若未实现 GATT 2A27（Hardware Revision String）则无法读取，属正常
