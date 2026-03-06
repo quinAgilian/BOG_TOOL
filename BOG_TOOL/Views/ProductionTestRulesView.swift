@@ -895,30 +895,39 @@ struct ProductionTestRulesView: View {
                 Divider()
                     .padding(.vertical, 4)
                 
-                // 超时配置（步骤2：设备信息/OTA/重连等）
+                // 超时配置（步骤2：设备信息/OTA/重连等）——两行紧凑布局，避免横向被截断
                 Text(appLanguage.string("production_test_rules.timeouts"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
                 
-                thresholdRow(
-                    label: appLanguage.string("production_test_rules.device_info_timeout"),
-                    value: $deviceInfoReadTimeout,
-                    unit: appLanguage.string("production_test_rules.unit_seconds"),
-                    key: "production_test_device_info_timeout"
-                )
-                thresholdRow(
-                    label: appLanguage.string("production_test_rules.ota_start_timeout"),
-                    value: $otaStartWaitTimeout,
-                    unit: appLanguage.string("production_test_rules.unit_seconds"),
-                    key: "production_test_ota_start_timeout"
-                )
-                thresholdRow(
-                    label: appLanguage.string("production_test_rules.reconnect_timeout"),
-                    value: $deviceReconnectTimeout,
-                    unit: appLanguage.string("production_test_rules.unit_seconds"),
-                    key: "production_test_reconnect_timeout"
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .center, spacing: 24) {
+                        thresholdRow(
+                            label: appLanguage.string("production_test_rules.device_info_timeout"),
+                            value: $deviceInfoReadTimeout,
+                            unit: appLanguage.string("production_test_rules.unit_seconds"),
+                            key: "production_test_device_info_timeout"
+                        )
+                        
+                        thresholdRow(
+                            label: appLanguage.string("production_test_rules.ota_start_timeout"),
+                            value: $otaStartWaitTimeout,
+                            unit: appLanguage.string("production_test_rules.unit_seconds"),
+                            key: "production_test_ota_start_timeout"
+                        )
+                    }
+                    
+                    HStack(alignment: .center, spacing: 24) {
+                        thresholdRow(
+                            label: appLanguage.string("production_test_rules.reconnect_timeout"),
+                            value: $deviceReconnectTimeout,
+                            unit: appLanguage.string("production_test_rules.unit_seconds"),
+                            key: "production_test_reconnect_timeout"
+                        )
+                        Spacer()
+                    }
+                }
             }
         }
         .padding(8)
