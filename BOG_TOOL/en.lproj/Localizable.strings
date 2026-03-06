@@ -162,6 +162,7 @@
 "debug.gas_leak_chart_lock" = "Lock view";
 "debug.gas_leak_chart_unlock" = "Unlock view";
 "debug.gas_leak_chart_auto_y" = "Auto Y-axis";
+"debug.gas_leak_chart_locked_range" = "Locked window";
 
 /* UUID debug (read/write by characteristic) */
 "debug.uuid_title" = "UUID Read/Write";

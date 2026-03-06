@@ -61,11 +61,16 @@ struct DebugModeView: View {
     /// 锁定时的横轴范围 [min, max]（秒）
     @State private var leakTestLockedXMin: Double = 0
     @State private var leakTestLockedXMax: Double = 300
+    /// 锁定视图时的窗口长度（秒），用于滑块拖动时保持区间长度不变
+    @State private var leakTestLockedWindowLength: Double = 0
     /// 总时长、读取间隔的手动输入文案（与 Stepper 双向同步）
     @State private var leakTestDurationInput: String = "300"
     @State private var leakTestIntervalInput: String = "0.5"
     /// 图表纵轴：是否自动缩放（默认关闭，固定 0～1.5 bar）
     @State private var leakTestAutoYScale: Bool = false
+    /// 图表 hover 高亮的样本点与位置（用于鼠标悬停时显示时间、压力与状态）
+    @State private var leakTestHoverSample: LeakTestSample?
+    @State private var leakTestHoverPosition: CGPoint?
 
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
@@ -637,13 +642,58 @@ struct DebugModeView: View {
         return 600
     }
 
+    /// 查找与给定时间最近的采样点
+    private func nearestLeakTestSample(to time: Double) -> LeakTestSample? {
+        guard !leakTestSamples.isEmpty else { return nil }
+        var best = leakTestSamples[0]
+        var bestDiff = abs(best.time - time)
+        for s in leakTestSamples.dropFirst() {
+            let d = abs(s.time - time)
+            if d < bestDiff {
+                bestDiff = d
+                best = s
+            }
+        }
+        return best
+    }
+
+    /// 锁定视图时可回放的总时间上限（秒）
+    private func leakTestLockedTotalMax() -> Double {
+        let lastSample = leakTestSamples.last?.time ?? 0
+        let elapsed = leakTestElapsedSec
+        let configured = Double(max(leakTestDurationSeconds, 0))
+        let lockedMax = leakTestLockedXMax
+        return max(lastSample, elapsed, configured, lockedMax, 1)
+    }
+
+    /// 锁定视图时滑块可用的起始位置上限（秒）
+    private var leakTestLockedSliderMaxStart: Double {
+        let totalMax = leakTestLockedTotalMax()
+        let window = max(leakTestLockedWindowLength, 0)
+        return max(0, totalMax - window)
+    }
+
+    /// 锁定视图时滑块绑定：控制当前显示区间起点
+    private var leakTestLockedSliderBinding: Binding<Double> {
+        Binding(
+            get: { leakTestLockedXMin },
+            set: { newValue in
+                let maxStart = leakTestLockedSliderMaxStart
+                guard maxStart > 0 else { return }
+                let clamped = min(max(0, newValue), maxStart)
+                leakTestLockedXMin = clamped
+                leakTestLockedXMax = clamped + leakTestLockedWindowLength
+            }
+        )
+    }
+
     private var gasLeakChart: some View {
         let (xMin, xMax) = leakTestChartDomain(ignoreLock: false)
         let step = leakTestChartXStride
         let timeKey = appLanguage.string("debug.gas_leak_chart_time")
         let closeKey = appLanguage.string("debug.gas_leak_chart_pressure_close")
         let openKey = appLanguage.string("debug.gas_leak_chart_pressure_open")
-
+        
         // 纵轴范围：默认固定 0～1.5 bar；开启自动缩放时按当前采样数据计算包络
         let yDomain: ClosedRange<Double>
         if leakTestAutoYScale, !leakTestSamples.isEmpty {
@@ -669,8 +719,8 @@ struct DebugModeView: View {
         } else {
             yDomain = 0...1.5
         }
-
-        return Chart {
+        
+        let baseChart = Chart {
             ForEach(leakTestSamples) { sample in
                 LineMark(
                     x: .value(timeKey, sample.time),
@@ -705,32 +755,138 @@ struct DebugModeView: View {
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: ev.kind == "valve" ? [] : [4, 2]))
             }
         }
-        .chartForegroundStyleScale([
-            closeKey: Color.blue,
-            openKey: Color.green
-        ])
-        .chartLegend(position: .top, alignment: .leading, spacing: 8)
-        .chartXScale(domain: xMin ... xMax)
-        .chartYScale(domain: yDomain)
-        .chartXAxis {
-            AxisMarks(values: .stride(by: step)) { value in
-                AxisGridLine()
-                if let v = value.as(Double.self) {
-                    AxisValueLabel("\(Int(v))")
+        
+        return baseChart
+            .chartForegroundStyleScale([
+                closeKey: Color.blue,
+                openKey: Color.green
+            ])
+            .chartLegend(position: .top, alignment: .leading, spacing: 8)
+            .chartXScale(domain: xMin ... xMax)
+            .chartYScale(domain: yDomain)
+            .chartXAxis {
+                AxisMarks(values: .stride(by: step)) { value in
+                    AxisGridLine()
+                    if let v = value.as(Double.self) {
+                        AxisValueLabel("\(Int(v))")
+                    }
                 }
             }
-        }
-        .chartYAxis {
-            AxisMarks(values: [0, 0.5, 1.0, 1.5]) { value in
-                AxisGridLine()
-                if let v = value.as(Double.self) {
-                    let label = v == 0 ? "0 bar" : (v == 1 ? "1 bar" : String(format: "%.1f bar", v))
-                    AxisValueLabel(label)
+            .chartYAxis {
+                AxisMarks(values: [0, 0.5, 1.0, 1.5]) { value in
+                    AxisGridLine()
+                    if let v = value.as(Double.self) {
+                        let label = v == 0 ? "0 bar" : (v == 1 ? "1 bar" : String(format: "%.1f bar", v))
+                        AxisValueLabel(label)
+                    }
                 }
             }
+            .chartYAxisLabel { Text(appLanguage.string("debug.gas_leak_chart_pressure_label")) }
+            .chartXAxisLabel { Text(appLanguage.string("debug.gas_leak_chart_time_label")) }
+            .chartOverlay { proxy in
+                gasLeakHoverOverlay(proxy: proxy, timeKey: timeKey, closeKey: closeKey, openKey: openKey)
+            }
+    }
+
+    @ViewBuilder
+    private func gasLeakHoverOverlay(proxy: ChartProxy, timeKey: String, closeKey: String, openKey: String) -> some View {
+        GeometryReader { geo in
+            let plotFrame = geo[proxy.plotAreaFrame]
+
+            // 鼠标悬停时，根据 X 坐标反查时间与最近采样点
+            Rectangle()
+                .fill(.clear)
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        guard plotFrame.contains(location) else {
+                            leakTestHoverSample = nil
+                            leakTestHoverPosition = nil
+                            return
+                        }
+                        guard let t: Double = proxy.value(atX: location.x, as: Double.self),
+                              let sample = nearestLeakTestSample(to: t) else {
+                            leakTestHoverSample = nil
+                            leakTestHoverPosition = nil
+                            return
+                        }
+                        leakTestHoverSample = sample
+                        if let xInPlot = proxy.position(forX: sample.time) {
+                            // Charts 1.0 返回的是横坐标 CGFloat，而非 CGPoint；纵坐标用绘图区上方固定位置
+                            let x = xInPlot + plotFrame.origin.x
+                            let y = plotFrame.minY + 24
+                            leakTestHoverPosition = CGPoint(x: x, y: y)
+                        } else {
+                            leakTestHoverPosition = nil
+                        }
+                    case .ended:
+                        leakTestHoverSample = nil
+                        leakTestHoverPosition = nil
+                    }
+                }
+
+            if let sample = leakTestHoverSample,
+               let pt = leakTestHoverPosition {
+                // 垂直参考线
+                Path { path in
+                    path.move(to: CGPoint(x: pt.x, y: plotFrame.minY))
+                    path.addLine(to: CGPoint(x: pt.x, y: plotFrame.maxY))
+                }
+                .stroke(Color.gray.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4, 2]))
+
+                // tooltip 尺寸与位置，尽量保持在绘图区内
+                let tooltipWidth: CGFloat = 210
+                let tooltipHeight: CGFloat = 80
+                let halfW = tooltipWidth / 2
+                let halfH = tooltipHeight / 2
+                let rawX = pt.x + 10
+                let rawY = pt.y - halfH - 8
+                let clampedX = min(max(plotFrame.minX + halfW + 4, rawX), plotFrame.maxX - halfW - 4)
+                let clampedY = min(max(plotFrame.minY + halfH + 4, rawY), plotFrame.maxY - halfH - 4)
+
+                let valveLabel: String = {
+                    guard let v = sample.valveState else {
+                        return "--"
+                    }
+                    switch v {
+                    case "open":
+                        return appLanguage.string("debug.valve_open")
+                    case "closed":
+                        return appLanguage.string("debug.valve_close")
+                    default:
+                        return v
+                    }
+                }()
+
+                let gasLabel = sample.gasSystemStatus?.isEmpty == false ? sample.gasSystemStatus! : "--"
+                let timeText = String(format: "%.2f s", sample.time)
+                let closeText = String(format: "%.4f bar", sample.pressure)
+                let openText = sample.pressureOpen.map { String(format: "%.4f bar", $0) } ?? "--"
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(timeKey + ": " + timeText)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                    Text(closeKey + ": " + closeText)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                    Text(openKey + ": " + openText)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                    HStack(spacing: 8) {
+                        Text(appLanguage.string("debug.valve_state") + ": " + valveLabel)
+                        Text("Gas: " + gasLabel)
+                    }
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                }
+                .padding(8)
+                .background(.thinMaterial)
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
+                )
+                .position(x: clampedX, y: clampedY)
+            }
         }
-        .chartYAxisLabel { Text(appLanguage.string("debug.gas_leak_chart_pressure_label")) }
-        .chartXAxisLabel { Text(appLanguage.string("debug.gas_leak_chart_time_label")) }
     }
 
     /// 启动气体泄漏检测：轮询在后台执行，仅 BLE 与状态更新上主线程，避免连续读取时主线程被占导致手动改时长等操作卡死
@@ -982,6 +1138,7 @@ struct DebugModeView: View {
                         let d = leakTestChartDomain(ignoreLock: true)
                         leakTestLockedXMin = d.min
                         leakTestLockedXMax = d.max
+                        leakTestLockedWindowLength = max(d.max - d.min, 1)
                         leakTestChartLocked = true
                     }
                 } label: {
@@ -1001,6 +1158,19 @@ struct DebugModeView: View {
             gasLeakChart
                 .frame(height: 200)
                 .padding(.vertical, UIDesignSystem.Padding.xs)
+            
+            // 锁定视图时，在底部显示滑块用于拖动当前可见时间区间
+            if leakTestChartLocked && leakTestLockedWindowLength > 0 && leakTestLockedSliderMaxStart > 0 {
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
+                    Text(appLanguage.string("debug.gas_leak_chart_locked_range"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Slider(value: leakTestLockedSliderBinding, in: 0...leakTestLockedSliderMaxStart)
+                    Text(String(format: "%.1f–%.1f s", leakTestLockedXMin, leakTestLockedXMax))
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .frame(width: 120, alignment: .trailing)
+                }
+            }
             HStack(spacing: UIDesignSystem.Spacing.sm) {
                 HStack(spacing: 4) {
                     RoundedRectangle(cornerRadius: 1).fill(Color.blue.opacity(0.5)).frame(width: 8, height: 8)

@@ -162,6 +162,7 @@
 "debug.gas_leak_chart_lock" = "锁定视图";
 "debug.gas_leak_chart_unlock" = "解锁视图";
 "debug.gas_leak_chart_auto_y" = "自动纵轴";
+"debug.gas_leak_chart_locked_range" = "锁定区间";
 
 /* UUID 调试（按特征读写） */
 "debug.uuid_title" = "UUID 读写";
