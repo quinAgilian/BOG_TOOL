@@ -128,6 +128,39 @@
 "debug.reboot_hint" = "Reboot device (unlock then write 0x00000001; requires firmware 1.1.2+)";
 "debug.device_actions" = "Device";
 
+/* Gas leak detection */
+"debug.gas_leak_detection" = "Gas leak detection";
+"debug.gas_leak_duration" = "Duration";
+"debug.gas_leak_interval" = "Read interval";
+"debug.gas_leak_alarm_threshold" = "Alarm threshold (beep when exceeded)";
+"debug.gas_leak_duration_unit" = "s";
+"debug.gas_leak_start" = "Start";
+"debug.gas_leak_stop" = "Stop";
+"debug.gas_leak_elapsed" = "Elapsed";
+"debug.gas_leak_current_pressure" = "Current pressure";
+"debug.gas_leak_result" = "Result";
+"debug.gas_leak_result_insufficient" = "Insufficient samples";
+"debug.gas_leak_result_leak" = "Leak";
+"debug.gas_leak_result_ok" = "OK (no leak)";
+"debug.gas_leak_chart_time" = "Time";
+"debug.gas_leak_chart_pressure" = "Pressure";
+"debug.gas_leak_chart_pressure_close" = "Close";
+"debug.gas_leak_chart_pressure_open" = "Open";
+"debug.gas_leak_chart_time_label" = "Time (s)";
+"debug.gas_leak_chart_pressure_label" = "Pressure (bar)";
+"debug.gas_leak_chart_legend_valve" = "Vertical: valve state change";
+"debug.gas_leak_chart_legend_gas" = "Dashed: Gas status change";
+"debug.gas_leak_chart_show" = "Show";
+"debug.gas_leak_chart_show_full" = "Full";
+"debug.gas_leak_chart_show_last_10s" = "Last 10 s";
+"debug.gas_leak_chart_show_last_30s" = "Last 30 s";
+"debug.gas_leak_chart_show_last_60s" = "Last 1 min";
+"debug.gas_leak_chart_show_last_120s" = "Last 2 min";
+"debug.gas_leak_chart_show_last_300s" = "Last 5 min";
+"debug.gas_leak_chart_show_last_600s" = "Last 10 min";
+"debug.gas_leak_chart_lock" = "Lock view";
+"debug.gas_leak_chart_unlock" = "Unlock view";
+
 /* UUID debug (read/write by characteristic) */
 "debug.uuid_title" = "UUID Read/Write";
 "debug.uuid_write" = "Write";
