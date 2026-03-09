@@ -2,10 +2,57 @@ import SwiftUI
 import Charts
 import AppKit
 
+private enum LeakTestPhase: String, CaseIterable {
+    case beforeClose
+    case afterClose
+}
+
+private enum LeakTestFlowState: String {
+    case idle
+    case waitingPipelineReadyConfirm
+    case samplingBeforeClose
+    case waitingValveCloseConfirm
+    case samplingAfterClose
+    case completed
+    case cancelled
+}
+
+private enum LeakTestJudgementSource: String, CaseIterable, Identifiable {
+    case closed
+    case open
+
+    var id: String { rawValue }
+}
+
+private enum LeakTestPrompt: String, Identifiable {
+    case pipelineReady
+    case valveClosed
+
+    var id: String { rawValue }
+}
+
+private enum LeakTestSessionType {
+    case continuous
+    case guided
+}
+
+private enum LeakTestKeys {
+    static let judgementSource = "debug_gas_leak_judgement_source"
+    static let preCloseDuration = "debug_gas_leak_pre_close_duration_seconds"
+    static let postCloseDuration = "debug_gas_leak_post_close_duration_seconds"
+    static let interval = "debug_gas_leak_interval_seconds"
+    static let dropThresholdMbar = "debug_gas_leak_drop_threshold_mbar"
+    static let alarmEnabled = "debug_gas_leak_alarm_enabled"
+    static let alarmThresholdBar = "debug_gas_leak_alarm_threshold_bar"
+    static let requirePipelineReadyConfirm = "debug_gas_leak_require_pipeline_ready_confirm"
+    static let requireValveClosedConfirm = "debug_gas_leak_require_valve_closed_confirm"
+}
+
 /// 气体泄漏检测单次采样点（时间秒，关阀/开阀压力 bar，阀门状态与 gas status 用于图中标定）
-struct LeakTestSample: Identifiable {
+private struct LeakTestSample: Identifiable {
     let id = UUID()
     let time: Double
+    let phase: LeakTestPhase
     /// 关阀压力 (bar)
     let pressure: Double
     /// 开阀压力 (bar)，可选
@@ -30,12 +77,34 @@ struct DebugModeView: View {
     @State private var isManualMode: Bool = false
     /// 是否正在设置阀门（用于阻塞UI）
     @State private var isSettingValve: Bool = false
-    /// 气体泄漏检测：持续时间（秒），可调，默认 5 分钟
+    /// 当前/最近一次压力测试会话类型，用于决定哪个 UI 区域展示图表与结果
+    @State private var leakTestSessionType: LeakTestSessionType = .continuous
+    /// 原始连续读取：总时长（秒），0 表示无限时长
     @State private var leakTestDurationSeconds: Int = 300
-    /// 气体泄漏检测：压力读取间隔（秒），0.1～3.0，步长 0.1，默认 0.5 s
-    @State private var leakTestIntervalSec: Double = 0.5
+    /// 原始连续读取：总时长输入框
+    @State private var leakTestDurationInput: String = "300"
+    /// 连续压力测试：判定采用的压力源（关阀/开阀）
+    @State private var leakTestJudgementSource: LeakTestJudgementSource = {
+        LeakTestJudgementSource(rawValue: UserDefaults.standard.string(forKey: LeakTestKeys.judgementSource) ?? "") ?? .closed
+    }()
+    /// 阶段1：用户关闭入口阀门前的采样时长（秒）
+    @State private var leakTestPreCloseDurationSeconds: Int = {
+        UserDefaults.standard.object(forKey: LeakTestKeys.preCloseDuration) as? Int ?? 10
+    }()
+    /// 阶段2：用户关闭入口阀门后的采样时长（秒）
+    @State private var leakTestPostCloseDurationSeconds: Int = {
+        UserDefaults.standard.object(forKey: LeakTestKeys.postCloseDuration) as? Int ?? 15
+    }()
+    /// 连续压力测试：压力读取间隔（秒），0.1～3.0，步长 0.1，默认 0.5 s
+    @State private var leakTestIntervalSec: Double = {
+        UserDefaults.standard.object(forKey: LeakTestKeys.interval) as? Double ?? 0.5
+    }()
     /// 气体泄漏检测：是否正在检测中
     @State private var isLeakTestRunning: Bool = false
+    /// 连续压力测试：当前流程状态
+    @State private var leakTestFlowState: LeakTestFlowState = .idle
+    /// 连续压力测试：当前待显示的用户确认弹窗
+    @State private var leakTestPendingPrompt: LeakTestPrompt?
     /// 气体泄漏检测：已采样的 (时间 s, 压力 bar) 点，用于绘图
     @State private var leakTestSamples: [LeakTestSample] = []
     /// 气体泄漏检测：周期读取任务的取消句柄
@@ -48,10 +117,28 @@ struct DebugModeView: View {
     @State private var leakTestCurrentPressureOpenBar: Double?
     /// 气体泄漏检测：结果文案（"--" / "检测中" / "无泄漏" / "泄漏" 等，公式可后续替换）
     @State private var leakTestResultMessage: String = ""
+    /// 连续压力测试：结果明细（采用压力源、两阶段末值、压降、阈值）
+    @State private var leakTestResultDetails: String = ""
     /// 气体泄漏检测：是否启用超过阈值时提示音
-    @State private var leakTestAlarmEnabled: Bool = true
+    @State private var leakTestAlarmEnabled: Bool = {
+        UserDefaults.standard.object(forKey: LeakTestKeys.alarmEnabled) as? Bool ?? true
+    }()
     /// 气体泄漏检测：报警阈值 (bar)，压力从该值以下升到以上时响提示音
-    @State private var leakTestAlarmThresholdBar: Double = 1.2
+    @State private var leakTestAlarmThresholdBar: Double = {
+        UserDefaults.standard.object(forKey: LeakTestKeys.alarmThresholdBar) as? Double ?? 1.2
+    }()
+    /// 连续压力测试：判定阈值（mbar），压降大于该值则失败
+    @State private var leakTestPressureDropThresholdMbar: Double = {
+        UserDefaults.standard.object(forKey: LeakTestKeys.dropThresholdMbar) as? Double ?? 15
+    }()
+    /// 连续压力测试：开始前是否需要确认“气路已经连接好”
+    @State private var leakTestRequirePipelineReadyConfirm: Bool = {
+        UserDefaults.standard.object(forKey: LeakTestKeys.requirePipelineReadyConfirm) as? Bool ?? true
+    }()
+    /// 连续压力测试：阶段切换前是否需要确认“入口阀门已经关闭”
+    @State private var leakTestRequireValveClosedConfirm: Bool = {
+        UserDefaults.standard.object(forKey: LeakTestKeys.requireValveClosedConfirm) as? Bool ?? true
+    }()
     /// 气体泄漏检测：上一拍关阀压力，用于检测“从低于阈值升到高于阈值”
     @State private var leakTestLastPressureForAlarm: Double?
     /// 图表横轴：nil = 显示全部，否则仅显示最后 N 秒
@@ -63,9 +150,11 @@ struct DebugModeView: View {
     @State private var leakTestLockedXMax: Double = 300
     /// 锁定视图时的窗口长度（秒），用于滑块拖动时保持区间长度不变
     @State private var leakTestLockedWindowLength: Double = 0
-    /// 总时长、读取间隔的手动输入文案（与 Stepper 双向同步）
-    @State private var leakTestDurationInput: String = "300"
-    @State private var leakTestIntervalInput: String = "0.5"
+    /// 规则参数手动输入文案（与 Stepper 双向同步）
+    @State private var leakTestPreCloseDurationInput: String = "\(UserDefaults.standard.object(forKey: LeakTestKeys.preCloseDuration) as? Int ?? 10)"
+    @State private var leakTestPostCloseDurationInput: String = "\(UserDefaults.standard.object(forKey: LeakTestKeys.postCloseDuration) as? Int ?? 15)"
+    @State private var leakTestIntervalInput: String = String(format: "%.2f", UserDefaults.standard.object(forKey: LeakTestKeys.interval) as? Double ?? 0.5)
+    @State private var leakTestPressureDropThresholdInput: String = String(format: "%.1f", UserDefaults.standard.object(forKey: LeakTestKeys.dropThresholdMbar) as? Double ?? 15)
     /// 图表纵轴：是否自动缩放（默认关闭，固定 0～1.5 bar）
     @State private var leakTestAutoYScale: Bool = false
     /// 图表 hover 高亮的样本点与位置（用于鼠标悬停时显示时间、压力与状态）
@@ -86,7 +175,8 @@ struct DebugModeView: View {
             rtcSection
             valveSection
             pressureSection
-            gasLeakDetectionSection
+            continuousPressureReadSection
+            guidedLeakTestSection
             gasSystemStatusSection
             co2PressureLimitsSection
             // 谁调用的 OTA 谁管理：产测 OTA 进行中时 Debug 区不随动，仅提示切回产测
@@ -567,6 +657,374 @@ struct DebugModeView: View {
         return Double(first)
     }
 
+    private var leakTestConfiguredTotalDurationSeconds: Int {
+        max(0, leakTestPreCloseDurationSeconds) + max(0, leakTestPostCloseDurationSeconds)
+    }
+
+    private var isLeakTestWorkflowActive: Bool {
+        leakTestSessionType == .guided && (isLeakTestRunning || leakTestPendingPrompt != nil || leakTestFlowState == .waitingPipelineReadyConfirm || leakTestFlowState == .waitingValveCloseConfirm)
+    }
+
+    private var isContinuousPressureReadActive: Bool {
+        leakTestSessionType == .continuous && isLeakTestRunning
+    }
+
+    private func leakTestPhaseTitle(_ phase: LeakTestPhase) -> String {
+        switch phase {
+        case .beforeClose:
+            return appLanguage.string("debug.gas_leak_phase_before_close")
+        case .afterClose:
+            return appLanguage.string("debug.gas_leak_phase_after_close")
+        }
+    }
+
+    private func leakTestPressureSourceLabel(_ source: LeakTestJudgementSource) -> String {
+        switch source {
+        case .closed:
+            return appLanguage.string("debug.gas_leak_pressure_source_closed")
+        case .open:
+            return appLanguage.string("debug.gas_leak_pressure_source_open")
+        }
+    }
+
+    private func leakTestSamples(for phase: LeakTestPhase) -> [LeakTestSample] {
+        leakTestSamples.filter { $0.phase == phase }
+    }
+
+    private func leakTestPressureValue(for sample: LeakTestSample, source: LeakTestJudgementSource) -> Double? {
+        switch source {
+        case .closed:
+            return sample.pressure
+        case .open:
+            return sample.pressureOpen
+        }
+    }
+
+    private func leakTestPhasePressureValues(for phase: LeakTestPhase, source: LeakTestJudgementSource) -> [Double] {
+        leakTestSamples(for: phase).compactMap { leakTestPressureValue(for: $0, source: source) }
+    }
+
+    private func leakTestAveragePressure(for phase: LeakTestPhase, source: LeakTestJudgementSource) -> Double? {
+        let values = leakTestPhasePressureValues(for: phase, source: source)
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    private func leakTestMinimumPressure(for phase: LeakTestPhase, source: LeakTestJudgementSource) -> Double? {
+        leakTestPhasePressureValues(for: phase, source: source).min()
+    }
+
+    private var leakTestShouldShowReferenceLines: Bool {
+        guard leakTestSessionType == .guided else { return false }
+        guard leakTestPressureDropThresholdMbar > 0 else { return false }
+        guard leakTestAveragePressure(for: .beforeClose, source: leakTestJudgementSource) != nil else { return false }
+        return leakTestElapsedSec >= Double(leakTestPreCloseDurationSeconds)
+    }
+
+    private var leakTestAverageLineBar: Double? {
+        guard leakTestShouldShowReferenceLines else { return nil }
+        return leakTestAveragePressure(for: .beforeClose, source: leakTestJudgementSource)
+    }
+
+    private var leakTestFailureLineBar: Double? {
+        guard leakTestShouldShowReferenceLines,
+              let phaseOneAverage = leakTestAveragePressure(for: .beforeClose, source: leakTestJudgementSource)
+        else { return nil }
+        return phaseOneAverage - leakTestPressureDropThresholdMbar / 1000.0
+    }
+
+    private var leakTestAverageLineColor: Color {
+        switch leakTestJudgementSource {
+        case .closed:
+            return .blue
+        case .open:
+            return .green
+        }
+    }
+
+    private func appendLeakTestStepLog(_ step: Int, _ message: String, level: BLEManager.LogLevel = .info) {
+        ble.appendLog("[DBG][GasLeak][Step \(step)] \(message)", level: level)
+    }
+
+    private func persistLeakTestRuleValues() {
+        UserDefaults.standard.set(leakTestJudgementSource.rawValue, forKey: LeakTestKeys.judgementSource)
+        UserDefaults.standard.set(leakTestPreCloseDurationSeconds, forKey: LeakTestKeys.preCloseDuration)
+        UserDefaults.standard.set(leakTestPostCloseDurationSeconds, forKey: LeakTestKeys.postCloseDuration)
+        UserDefaults.standard.set(leakTestIntervalSec, forKey: LeakTestKeys.interval)
+        UserDefaults.standard.set(leakTestPressureDropThresholdMbar, forKey: LeakTestKeys.dropThresholdMbar)
+        UserDefaults.standard.set(leakTestAlarmEnabled, forKey: LeakTestKeys.alarmEnabled)
+        UserDefaults.standard.set(leakTestAlarmThresholdBar, forKey: LeakTestKeys.alarmThresholdBar)
+        UserDefaults.standard.set(leakTestRequirePipelineReadyConfirm, forKey: LeakTestKeys.requirePipelineReadyConfirm)
+        UserDefaults.standard.set(leakTestRequireValveClosedConfirm, forKey: LeakTestKeys.requireValveClosedConfirm)
+    }
+
+    private func syncValveStateForLeakJudgementSource(reason: String, completion: @escaping (Bool) -> Void = { _ in }) {
+        let targetOpen = leakTestJudgementSource == .open
+        let targetState = targetOpen ? "open" : "closed"
+        let targetLabel = targetOpen ? appLanguage.string("debug.valve_open") : appLanguage.string("debug.valve_close")
+
+        guard ble.isConnected, ble.areCharacteristicsReady, !ble.isOTAInProgress else {
+            ble.appendLog("[DBG][GasLeak] \(reason)：设备未就绪，暂不切换电磁阀到\(targetLabel)", level: .info)
+            completion(false)
+            return
+        }
+
+        if ble.lastValveStateValue == targetState {
+            ble.appendLog("[DBG][GasLeak] \(reason)：电磁阀已是\(targetLabel)状态", level: .info)
+            completion(true)
+            return
+        }
+
+        ble.appendLog("[DBG][GasLeak] \(reason)：正在将电磁阀切换为\(targetLabel)", level: .info)
+        setValveWithBlocking(open: targetOpen) { success in
+            if success {
+                ble.appendLog("[DBG][GasLeak] \(reason)：已确认电磁阀为\(targetLabel)状态", level: .info)
+            } else {
+                ble.appendLog("[DBG][GasLeak] \(reason)：电磁阀未能确认切换为\(targetLabel)状态", level: .error)
+            }
+            completion(success)
+        }
+    }
+
+    private func performLeakTestStartupValveProbe(completion: @escaping (Bool) -> Void) {
+        let targetOpen = leakTestJudgementSource == .open
+        let targetState = targetOpen ? "open" : "closed"
+        let targetLabel = targetOpen ? appLanguage.string("debug.valve_open") : appLanguage.string("debug.valve_close")
+        let pressureLabel = leakTestPressureSourceLabel(leakTestJudgementSource)
+
+        guard ble.isConnected, ble.areCharacteristicsReady, !ble.isOTAInProgress else {
+            appendLeakTestStepLog(1, "Start 预动作失败：设备未就绪，无法执行电磁阀动作与回读", level: .error)
+            completion(false)
+            return
+        }
+
+        appendLeakTestStepLog(1, "执行 Start 预动作：切换电磁阀到\(targetLabel)，等待 1 秒后回读阀门状态和压力")
+        ble.setValve(open: targetOpen)
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            guard ble.isConnected, ble.areCharacteristicsReady else {
+                appendLeakTestStepLog(1, "Start 预动作失败：回读前连接已断开", level: .error)
+                completion(false)
+                return
+            }
+
+            ble.readValveState()
+            ble.readPressure(silent: true)
+            ble.readPressureOpen(silent: true)
+
+            try? await Task.sleep(nanoseconds: 700_000_000)
+
+            let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
+            let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+            leakTestCurrentPressureBar = closeBar
+            leakTestCurrentPressureOpenBar = openBar
+
+            let actualState = ble.lastValveStateValue
+            let targetPressure = targetOpen ? openBar : closeBar
+            let pressureText = targetPressure.map { String(format: "%.3f bar", $0) } ?? "--"
+
+            if actualState == targetState {
+                appendLeakTestStepLog(1, "Start 预动作完成：阀门状态=\(actualState)，\(pressureLabel)=\(pressureText)")
+                completion(true)
+            } else {
+                appendLeakTestStepLog(1, "Start 预动作失败：期望阀门=\(targetLabel)，实际=\(actualState)，\(pressureLabel)=\(pressureText)", level: .error)
+                completion(false)
+            }
+        }
+    }
+
+    private func resetLeakTestSession() {
+        leakTestSamples = []
+        leakTestElapsedSec = 0
+        leakTestCurrentPressureBar = nil
+        leakTestCurrentPressureOpenBar = nil
+        leakTestLastPressureForAlarm = nil
+        leakTestResultMessage = ""
+        leakTestResultDetails = ""
+        leakTestChartLocked = false
+        leakTestPendingPrompt = nil
+        leakTestFlowState = .idle
+    }
+
+    private func startContinuousPressureRead() {
+        leakTestSessionType = .continuous
+        resetLeakTestSession()
+        let clampedDuration = max(0, leakTestDurationSeconds)
+        leakTestDurationSeconds = clampedDuration
+        leakTestDurationInput = "\(clampedDuration)"
+        ble.appendLog(
+            "[DBG][Continuous] 开始连续读取：时长=\(clampedDuration == 0 ? "无限" : "\(clampedDuration)s")，间隔=\(String(format: "%.2f", leakTestIntervalSec))s",
+            level: .info
+        )
+        isLeakTestRunning = true
+        startContinuousPressureReadPolling()
+    }
+
+    private func startGuidedLeakTest() {
+        leakTestSessionType = .guided
+        resetLeakTestSession()
+        persistLeakTestRuleValues()
+        appendLeakTestStepLog(
+            0,
+            "开始连续压力测试：判定压力=\(leakTestPressureSourceLabel(leakTestJudgementSource))，阶段1=\(leakTestPreCloseDurationSeconds)s，阶段2=\(leakTestPostCloseDurationSeconds)s，阈值=\(String(format: "%.1f", leakTestPressureDropThresholdMbar)) mbar"
+        )
+        performLeakTestStartupValveProbe { success in
+            guard success else {
+                finishLeakTest(reason: appLanguage.string("debug.gas_leak_stop_reason_valve_sync_failed"))
+                return
+            }
+            if leakTestRequirePipelineReadyConfirm {
+                leakTestFlowState = .waitingPipelineReadyConfirm
+                leakTestPendingPrompt = .pipelineReady
+                appendLeakTestStepLog(2, "等待用户确认气路已连接")
+            } else {
+                appendLeakTestStepLog(2, "跳过气路确认，直接进入阶段1采样")
+                beginLeakTestPhase(.beforeClose, startOffset: 0)
+            }
+        }
+    }
+
+    private func startContinuousPressureReadPolling() {
+        let duration = Double(leakTestDurationSeconds)
+        let infinite = leakTestDurationSeconds == 0
+        let interval = leakTestIntervalSec
+        let afterReadWaitNs: UInt64 = 600_000_000
+        leakTestTask = Task {
+            var elapsed: Double = 0
+            var stopReason = "任务结束"
+            while !Task.isCancelled && (infinite || elapsed <= duration) {
+                let connected: Bool = await MainActor.run { ble.isConnected && ble.areCharacteristicsReady }
+                if !connected {
+                    stopReason = await MainActor.run {
+                        if !ble.isConnected {
+                            return appLanguage.string("debug.gas_leak_stop_reason_disconnected")
+                        }
+                        if !ble.areCharacteristicsReady {
+                            return appLanguage.string("debug.gas_leak_stop_reason_gatt_not_ready")
+                        }
+                        return appLanguage.string("debug.gas_leak_stop_reason_state_invalid")
+                    }
+                    break
+                }
+                await MainActor.run { leakTestElapsedSec = elapsed }
+                await MainActor.run {
+                    ble.readPressure(silent: true)
+                    ble.readPressureOpen(silent: true)
+                    ble.readValveMode()
+                    ble.readValveState()
+                    ble.readGasSystemStatus(silent: true)
+                }
+                try? await Task.sleep(nanoseconds: afterReadWaitNs)
+                if Task.isCancelled { break }
+                let (closeBar, openBar, valveStr, gasStr): (Double?, Double?, String?, String?) = await MainActor.run {
+                    (
+                        Self.parseBarFromPressureString(ble.lastPressureValue),
+                        Self.parseBarFromPressureString(ble.lastPressureOpenValue),
+                        ble.lastValveStateValue.isEmpty ? nil : ble.lastValveStateValue,
+                        ble.lastGasSystemStatusValue.isEmpty ? nil : ble.lastGasSystemStatusValue
+                    )
+                }
+                await MainActor.run {
+                    leakTestCurrentPressureBar = closeBar
+                    leakTestCurrentPressureOpenBar = openBar
+                    if let bar = closeBar {
+                        if leakTestAlarmEnabled, let last = leakTestLastPressureForAlarm,
+                           last < leakTestAlarmThresholdBar, bar >= leakTestAlarmThresholdBar {
+                            Self.playAlarmSound()
+                        }
+                        leakTestLastPressureForAlarm = bar
+                        leakTestSamples.append(LeakTestSample(
+                            time: elapsed,
+                            phase: .beforeClose,
+                            pressure: bar,
+                            pressureOpen: openBar,
+                            valveState: valveStr,
+                            gasSystemStatus: gasStr
+                        ))
+                    }
+                }
+                elapsed += interval
+                if !Task.isCancelled && (infinite || elapsed <= duration) {
+                    let remainingSec = interval - 0.6
+                    let remainingNs = UInt64(max(0, remainingSec) * 1_000_000_000)
+                    if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
+                }
+            }
+            if !Task.isCancelled {
+                await MainActor.run {
+                    if !infinite && elapsed > duration {
+                        stopReason = String(
+                            format: appLanguage.string("debug.continuous_pressure_stop_reason_duration"),
+                            Int(duration)
+                        )
+                    }
+                    finishLeakTest(reason: stopReason)
+                }
+            }
+        }
+    }
+
+    private func continueLeakTestAfterPrompt(_ prompt: LeakTestPrompt) {
+        leakTestPendingPrompt = nil
+        switch prompt {
+        case .pipelineReady:
+            appendLeakTestStepLog(2, "用户已确认气路连接完成")
+            beginLeakTestPhase(.beforeClose, startOffset: 0)
+        case .valveClosed:
+            appendLeakTestStepLog(4, "用户已确认入口阀门关闭")
+            let startOffset = max(leakTestElapsedSec, Double(leakTestPreCloseDurationSeconds))
+            beginLeakTestPhase(.afterClose, startOffset: startOffset)
+        }
+    }
+
+    private func cancelLeakTestPrompt(_ prompt: LeakTestPrompt) {
+        leakTestPendingPrompt = nil
+        switch prompt {
+        case .pipelineReady:
+            appendLeakTestStepLog(2, "用户取消：未确认气路已连接", level: .error)
+            finishLeakTest(reason: appLanguage.string("debug.gas_leak_stop_reason_pipeline_not_confirmed"))
+        case .valveClosed:
+            appendLeakTestStepLog(4, "用户取消：未确认入口阀门已关闭", level: .error)
+            finishLeakTest(reason: appLanguage.string("debug.gas_leak_stop_reason_valve_not_confirmed"))
+        }
+    }
+
+    private func beginLeakTestPhase(_ phase: LeakTestPhase, startOffset: Double) {
+        let duration = phase == .beforeClose ? Double(leakTestPreCloseDurationSeconds) : Double(leakTestPostCloseDurationSeconds)
+        leakTestFlowState = phase == .beforeClose ? .samplingBeforeClose : .samplingAfterClose
+        isLeakTestRunning = true
+        let step = phase == .beforeClose ? 3 : 5
+        appendLeakTestStepLog(step, "开始\(leakTestPhaseTitle(phase))采样，持续 \(Int(duration)) 秒")
+        startLeakTestPolling(phase: phase, startOffset: startOffset, duration: duration)
+    }
+
+    private func handleLeakTestPhaseCompletion(_ phase: LeakTestPhase, stopReason: String, reachedDuration: Bool, endElapsed: Double) {
+        isLeakTestRunning = false
+        leakTestElapsedSec = endElapsed
+        if !reachedDuration {
+            finishLeakTest(reason: stopReason)
+            return
+        }
+        switch phase {
+        case .beforeClose:
+            appendLeakTestStepLog(3, "\(leakTestPhaseTitle(phase))采样完成")
+            if leakTestRequireValveClosedConfirm {
+                leakTestFlowState = .waitingValveCloseConfirm
+                leakTestPendingPrompt = .valveClosed
+                appendLeakTestStepLog(4, "等待用户确认入口阀门已关闭")
+            } else {
+                appendLeakTestStepLog(4, "跳过关阀确认，直接进入阶段2采样")
+                beginLeakTestPhase(.afterClose, startOffset: endElapsed)
+            }
+        case .afterClose:
+            leakTestFlowState = .completed
+            appendLeakTestStepLog(5, "\(leakTestPhaseTitle(phase))采样完成")
+            finishLeakTest(reason: appLanguage.string("debug.gas_leak_stop_reason_completed"))
+        }
+    }
+
     /// 横轴时间刻度步长（秒），根据所选时长取整到 10/15/20/30/60/120
     private static func leakChartTimeStride(durationSeconds: Int) -> Double {
         let d = Double(durationSeconds)
@@ -610,7 +1068,7 @@ struct DebugModeView: View {
         if !ignoreLock && leakTestChartLocked {
             return (leakTestLockedXMin, leakTestLockedXMax)
         }
-        let duration = Double(leakTestDurationSeconds)
+        let duration = Double(leakTestConfiguredTotalDurationSeconds)
         let currentEnd: Double = isLeakTestRunning
             ? leakTestElapsedSec
             : (leakTestSamples.last?.time ?? duration)
@@ -618,13 +1076,7 @@ struct DebugModeView: View {
             let start = max(0, currentEnd - Double(n))
             return (start, max(start + 1, currentEnd))
         }
-        // leakTestDurationSeconds == 0 表示「不限制时长」，此时按当前最大时间决定横轴上限
-        let baseMax: Double
-        if leakTestDurationSeconds <= 0 {
-            baseMax = max(currentEnd, 1)
-        } else {
-            baseMax = max(duration, 1)
-        }
+        let baseMax = max(duration, currentEnd, 1)
         return (0, baseMax)
     }
 
@@ -661,7 +1113,7 @@ struct DebugModeView: View {
     private func leakTestLockedTotalMax() -> Double {
         let lastSample = leakTestSamples.last?.time ?? 0
         let elapsed = leakTestElapsedSec
-        let configured = Double(max(leakTestDurationSeconds, 0))
+        let configured = Double(max(leakTestConfiguredTotalDurationSeconds, 0))
         let lockedMax = leakTestLockedXMax
         return max(lastSample, elapsed, configured, lockedMax, 1)
     }
@@ -706,6 +1158,14 @@ struct DebugModeView: View {
                     minP = min(minP, o)
                     maxP = max(maxP, o)
                 }
+            }
+            if let avgLine = leakTestAverageLineBar {
+                minP = min(minP, avgLine)
+                maxP = max(maxP, avgLine)
+            }
+            if let failLine = leakTestFailureLineBar {
+                minP = min(minP, failLine)
+                maxP = max(maxP, failLine)
             }
             if minP == maxP {
                 // 单点时给一个小范围，避免 flat 线导致纵轴为常数
@@ -754,6 +1214,21 @@ struct DebugModeView: View {
                     .foregroundStyle(ev.kind == "valve" ? Color.blue.opacity(0.5) : Color.orange.opacity(0.6))
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: ev.kind == "valve" ? [] : [4, 2]))
             }
+            if let avgLine = leakTestAverageLineBar {
+                RuleMark(y: .value(appLanguage.string("debug.gas_leak_chart_average_line"), avgLine))
+                    .foregroundStyle(leakTestAverageLineColor.opacity(0.85))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [8, 3]))
+                    .annotation(position: .top, alignment: .leading) {
+                        Text(appLanguage.string("debug.gas_leak_chart_average_line"))
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(leakTestAverageLineColor)
+                    }
+            }
+            if let failLine = leakTestFailureLineBar {
+                RuleMark(y: .value(appLanguage.string("debug.gas_leak_chart_fail_line"), failLine))
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+            }
         }
         
         return baseChart
@@ -784,12 +1259,24 @@ struct DebugModeView: View {
             .chartYAxisLabel { Text(appLanguage.string("debug.gas_leak_chart_pressure_label")) }
             .chartXAxisLabel { Text(appLanguage.string("debug.gas_leak_chart_time_label")) }
             .chartOverlay { proxy in
-                gasLeakHoverOverlay(proxy: proxy, timeKey: timeKey, closeKey: closeKey, openKey: openKey)
+                gasLeakHoverOverlay(
+                    proxy: proxy,
+                    timeKey: timeKey,
+                    closeKey: closeKey,
+                    openKey: openKey,
+                    failLine: leakTestFailureLineBar
+                )
             }
     }
 
     @ViewBuilder
-    private func gasLeakHoverOverlay(proxy: ChartProxy, timeKey: String, closeKey: String, openKey: String) -> some View {
+    private func gasLeakHoverOverlay(
+        proxy: ChartProxy,
+        timeKey: String,
+        closeKey: String,
+        openKey: String,
+        failLine: Double?
+    ) -> some View {
         GeometryReader { geo in
             let plotFrame = geo[proxy.plotAreaFrame]
 
@@ -825,6 +1312,30 @@ struct DebugModeView: View {
                         leakTestHoverPosition = nil
                     }
                 }
+
+            if let failLine,
+               let yInPlot = proxy.position(forY: failLine) {
+                let labelWidth: CGFloat = 72
+                let labelHeight: CGFloat = 20
+                let x = plotFrame.maxX - labelWidth / 2 - 8
+                let y = min(
+                    max(plotFrame.minY + labelHeight / 2 + 4, yInPlot + plotFrame.origin.y),
+                    plotFrame.maxY - labelHeight / 2 - 4
+                )
+
+                Text(appLanguage.string("debug.gas_leak_chart_fail_line"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(Color.red)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.thinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.red.opacity(0.7), lineWidth: 1)
+                    )
+                    .cornerRadius(6)
+                    .position(x: x, y: y)
+            }
 
             if let sample = leakTestHoverSample,
                let pt = leakTestHoverPosition {
@@ -889,30 +1400,28 @@ struct DebugModeView: View {
         }
     }
 
-    /// 启动气体泄漏检测：轮询在后台执行，仅 BLE 与状态更新上主线程，避免连续读取时主线程被占导致手动改时长等操作卡死
-    private func startLeakTestPolling() {
-        let duration = Double(leakTestDurationSeconds)
-        let infinite = leakTestDurationSeconds == 0
+    /// 启动连续压力测试的单个采样阶段：轮询在后台执行，仅 BLE 与状态更新上主线程
+    private func startLeakTestPolling(phase: LeakTestPhase, startOffset: Double, duration: Double) {
         let interval = leakTestIntervalSec
         let afterReadWaitNs: UInt64 = 600_000_000
         leakTestTask = Task {
-            var elapsed: Double = 0
+            var phaseElapsed: Double = 0
             var stopReason = "任务结束"
-            while !Task.isCancelled && (infinite || elapsed <= duration) {
+            while !Task.isCancelled && phaseElapsed <= duration {
                 let connected: Bool = await MainActor.run { ble.isConnected && ble.areCharacteristicsReady }
                 if !connected {
                     stopReason = await MainActor.run {
                         if !ble.isConnected {
-                            return "蓝牙连接已断开"
+                            return appLanguage.string("debug.gas_leak_stop_reason_disconnected")
                         }
                         if !ble.areCharacteristicsReady {
-                            return "GATT 特征未就绪"
+                            return appLanguage.string("debug.gas_leak_stop_reason_gatt_not_ready")
                         }
-                        return "设备连接状态异常"
+                        return appLanguage.string("debug.gas_leak_stop_reason_state_invalid")
                     }
                     break
                 }
-                await MainActor.run { leakTestElapsedSec = elapsed }
+                await MainActor.run { leakTestElapsedSec = startOffset + phaseElapsed }
                 await MainActor.run {
                     ble.readPressure(silent: true)
                     ble.readPressureOpen(silent: true)
@@ -940,7 +1449,8 @@ struct DebugModeView: View {
                         }
                         leakTestLastPressureForAlarm = bar
                         leakTestSamples.append(LeakTestSample(
-                            time: elapsed,
+                            time: startOffset + phaseElapsed,
+                            phase: phase,
                             pressure: bar,
                             pressureOpen: openBar,
                             valveState: valveStr,
@@ -948,8 +1458,8 @@ struct DebugModeView: View {
                         ))
                     }
                 }
-                elapsed += interval
-                if !Task.isCancelled && !infinite && elapsed <= duration {
+                phaseElapsed += interval
+                if !Task.isCancelled && phaseElapsed <= duration {
                     let remainingSec = interval - 0.6
                     let remainingNs = UInt64(max(0, remainingSec) * 1_000_000_000)
                     if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
@@ -957,10 +1467,13 @@ struct DebugModeView: View {
             }
             if !Task.isCancelled {
                 await MainActor.run {
-                    if !infinite && elapsed > duration {
-                        stopReason = "达到设定时长 \(Int(duration)) 秒"
-                    }
-                    finishLeakTest(reason: stopReason)
+                    let reachedDuration = phaseElapsed > duration
+                    handleLeakTestPhaseCompletion(
+                        phase,
+                        stopReason: stopReason,
+                        reachedDuration: reachedDuration,
+                        endElapsed: startOffset + min(phaseElapsed, duration)
+                    )
                 }
             }
         }
@@ -972,8 +1485,18 @@ struct DebugModeView: View {
         leakTestTask?.cancel()
         leakTestTask = nil
         isLeakTestRunning = false
-        ble.appendLog("[DBG][GasLeak] 连续读取已停止：\(reason)", level: .info)
-        evaluateLeakResultFromSamples()
+        leakTestPendingPrompt = nil
+        if leakTestSessionType == .guided {
+            if leakTestFlowState != .completed {
+                leakTestFlowState = .cancelled
+            }
+            appendLeakTestStepLog(7, "流程结束：\(reason)")
+            evaluateLeakResultFromSamples()
+        } else {
+            leakTestFlowState = .idle
+            ble.appendLog("[DBG][Continuous] 连续读取已停止：\(reason)", level: .info)
+            evaluateContinuousPressureReadResult()
+        }
     }
 
     /// 连接断开时停止气体泄漏检测，避免反复打「未连接或特征不可用」日志
@@ -981,39 +1504,81 @@ struct DebugModeView: View {
         guard isLeakTestRunning, (!ble.isConnected || !ble.areCharacteristicsReady) else { return }
         let reason: String
         if !ble.isConnected {
-            reason = "蓝牙连接已断开"
+            reason = appLanguage.string("debug.gas_leak_stop_reason_disconnected")
         } else if !ble.areCharacteristicsReady {
-            reason = "GATT 特征未就绪"
+            reason = appLanguage.string("debug.gas_leak_stop_reason_gatt_not_ready")
         } else {
-            reason = "设备连接状态异常"
+            reason = appLanguage.string("debug.gas_leak_stop_reason_state_invalid")
         }
         finishLeakTest(reason: reason)
     }
 
-    /// 根据采样点计算泄漏结果（占位：简单压差；可替换为你的公式）
-    private func evaluateLeakResultFromSamples() {
+    private func evaluateContinuousPressureReadResult() {
         guard leakTestSamples.count >= 2 else {
             leakTestResultMessage = appLanguage.string("debug.gas_leak_result_insufficient")
+            leakTestResultDetails = ""
             return
         }
         let first = leakTestSamples.first!.pressure
         let last = leakTestSamples.last!.pressure
         let delta = first - last
-        // 占位判定：压差 > 0.05 bar 视为可能泄漏；你可在此替换为自己的公式
         if delta > 0.05 {
             leakTestResultMessage = appLanguage.string("debug.gas_leak_result_leak") + " (Δ\(String(format: "%.3f", delta)) bar)"
         } else {
             leakTestResultMessage = appLanguage.string("debug.gas_leak_result_ok") + " (Δ\(String(format: "%.3f", delta)) bar)"
         }
+        leakTestResultDetails = ""
+    }
+
+    /// 根据两阶段采样点计算连续压力测试结果：阶段1与阶段2末值的压降大于阈值即失败
+    private func evaluateLeakResultFromSamples() {
+        let source = leakTestJudgementSource
+        let sourceLabel = leakTestPressureSourceLabel(source)
+        guard let beforeAverage = leakTestAveragePressure(for: .beforeClose, source: source),
+              let afterMinimum = leakTestMinimumPressure(for: .afterClose, source: source) else {
+            leakTestResultMessage = appLanguage.string("debug.gas_leak_result_insufficient")
+            leakTestResultDetails = String(
+                format: appLanguage.string("debug.gas_leak_result_details_insufficient"),
+                sourceLabel
+            )
+            return
+        }
+        let thresholdLine = beforeAverage - leakTestPressureDropThresholdMbar / 1000.0
+        let lowestDropMbar = (beforeAverage - afterMinimum) * 1000.0
+        leakTestResultDetails = String(
+            format: appLanguage.string("debug.gas_leak_result_details_format"),
+            sourceLabel,
+            beforeAverage,
+            thresholdLine,
+            afterMinimum,
+            lowestDropMbar,
+            leakTestPressureDropThresholdMbar
+        )
+        if afterMinimum < thresholdLine {
+            leakTestResultMessage = String(
+                format: appLanguage.string("debug.gas_leak_result_leak_with_threshold"),
+                afterMinimum,
+                thresholdLine
+            )
+        } else {
+            leakTestResultMessage = String(
+                format: appLanguage.string("debug.gas_leak_result_ok_with_threshold"),
+                afterMinimum,
+                thresholdLine
+            )
+        }
+        appendLeakTestStepLog(6, "结果判定：\(leakTestResultMessage)")
+        appendLeakTestStepLog(6, leakTestResultDetails)
     }
 
     /// 导出当前泄漏检测的采样数据为 CSV：time, close/open 压力, 阀门状态, Gas system status
     @MainActor
     private func exportLeakTestCSV() {
         guard !leakTestSamples.isEmpty else { return }
-        var csv = "time_s,pressure_close_bar,pressure_open_bar,valve_state,gas_system_status\n"
+        var csv = "time_s,phase,pressure_close_bar,pressure_open_bar,valve_state,gas_system_status\n"
         for s in leakTestSamples {
             let t = String(format: "%.3f", s.time)
+            let phase = s.phase.rawValue
             let closeStr = String(format: "%.5f", s.pressure)
             let openStr = s.pressureOpen.map { String(format: "%.5f", $0) } ?? ""
             let valve = s.valveState ?? ""
@@ -1021,7 +1586,7 @@ struct DebugModeView: View {
             // 简单转义双引号
             let escapedValve = valve.replacingOccurrences(of: "\"", with: "\"\"")
             let escapedGas = gas.replacingOccurrences(of: "\"", with: "\"\"")
-            csv.append("\(t),\(closeStr),\(openStr),\"\(escapedValve)\",\"\(escapedGas)\"\n")
+            csv.append("\(t),\(phase),\(closeStr),\(openStr),\"\(escapedValve)\",\"\(escapedGas)\"\n")
         }
 
         let panel = NSSavePanel()
@@ -1041,18 +1606,17 @@ struct DebugModeView: View {
         }
     }
     
-    private var gasLeakDetectionSection: some View {
+    private var continuousPressureReadSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
-            // 标题 + 开始/停止 同一行
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
-                Text(appLanguage.string("debug.gas_leak_detection"))
+                Text(appLanguage.string("debug.continuous_pressure_read"))
                     .font(UIDesignSystem.Typography.subsectionTitle)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 Spacer(minLength: UIDesignSystem.Spacing.sm)
                 Group {
-                    if isLeakTestRunning {
+                    if isContinuousPressureReadActive {
                         Button {
-                            finishLeakTest(reason: "用户手动停止")
+                            finishLeakTest(reason: appLanguage.string("debug.gas_leak_stop_reason_user"))
                         } label: {
                             Text(appLanguage.string("debug.gas_leak_stop"))
                                 .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
@@ -1060,15 +1624,7 @@ struct DebugModeView: View {
                         .buttonStyle(.bordered)
                     } else {
                         Button {
-                            leakTestSamples = []
-                            leakTestElapsedSec = 0
-                            leakTestCurrentPressureBar = nil
-                            leakTestCurrentPressureOpenBar = nil
-                            leakTestLastPressureForAlarm = nil
-                            leakTestResultMessage = ""
-                            leakTestChartLocked = false
-                            isLeakTestRunning = true
-                            startLeakTestPolling()
+                            startContinuousPressureRead()
                         } label: {
                             Text(appLanguage.string("debug.gas_leak_start"))
                                 .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
@@ -1076,10 +1632,9 @@ struct DebugModeView: View {
                         .buttonStyle(.borderedProminent)
                     }
                 }
-                .disabled(!ble.isConnected || ble.isOTAInProgress)
+                .disabled(!ble.isConnected || ble.isOTAInProgress || isLeakTestWorkflowActive)
             }
 
-            // 持续时间 | 读取间隔 | 报警阈值 同一行（总时长、读取间隔可手动输入）
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
                     Text(appLanguage.string("debug.gas_leak_duration"))
@@ -1091,7 +1646,6 @@ struct DebugModeView: View {
                         .multilineTextAlignment(.trailing)
                         .onSubmit {
                             let v = Int(leakTestDurationInput.trimmingCharacters(in: .whitespaces)) ?? leakTestDurationSeconds
-                            // 0 表示“无限时长”，允许 0～3600
                             let clamped = min(3600, max(0, v))
                             leakTestDurationSeconds = clamped
                             leakTestDurationInput = "\(clamped)"
@@ -1101,9 +1655,9 @@ struct DebugModeView: View {
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     Stepper("", value: $leakTestDurationSeconds, in: 0...3600, step: 10)
                         .labelsHidden()
-                        .onChange(of: leakTestDurationSeconds, perform: { leakTestDurationInput = "\($0)" })
+                        .onChange(of: leakTestDurationSeconds) { leakTestDurationInput = "\($0)" }
                 }
-                .disabled(isLeakTestRunning)
+                .disabled(isContinuousPressureReadActive)
                 HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
                     Text(appLanguage.string("debug.gas_leak_interval"))
                         .font(UIDesignSystem.Typography.caption)
@@ -1117,12 +1671,16 @@ struct DebugModeView: View {
                             let clamped = min(3.0, max(0.1, v))
                             leakTestIntervalSec = clamped
                             leakTestIntervalInput = String(format: "%.2f", clamped)
+                            persistLeakTestRuleValues()
                         }
                     Stepper("", value: $leakTestIntervalSec, in: 0.1...3.0, step: 0.1)
                         .labelsHidden()
-                        .onChange(of: leakTestIntervalSec, perform: { leakTestIntervalInput = String(format: "%.2f", $0) })
+                        .onChange(of: leakTestIntervalSec) {
+                            leakTestIntervalInput = String(format: "%.2f", $0)
+                            persistLeakTestRuleValues()
+                        }
                 }
-                .disabled(isLeakTestRunning)
+                .disabled(isContinuousPressureReadActive)
                 HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
                     Toggle("", isOn: $leakTestAlarmEnabled)
                         .toggleStyle(.switch)
@@ -1136,10 +1694,245 @@ struct DebugModeView: View {
                     Stepper("", value: $leakTestAlarmThresholdBar, in: 0.5...1.5, step: 0.1)
                         .labelsHidden()
                 }
-                .disabled(isLeakTestRunning)
+                .disabled(isContinuousPressureReadActive)
             }
 
-            // 显示范围 + 锁定 + 纵轴缩放 同一行
+            if leakTestSessionType == .continuous {
+                leakTestChartDisplay(showPhase: false)
+            }
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+
+    private var guidedLeakTestSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+            // 标题 + 开始/停止 同一行
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
+                Text(appLanguage.string("debug.gas_leak_rule_test"))
+                    .font(UIDesignSystem.Typography.subsectionTitle)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Spacer(minLength: UIDesignSystem.Spacing.sm)
+                Group {
+                    if isLeakTestWorkflowActive {
+                        Button {
+                            finishLeakTest(reason: appLanguage.string("debug.gas_leak_stop_reason_user"))
+                        } label: {
+                            Text(appLanguage.string("debug.gas_leak_stop"))
+                                .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                        }
+                        .buttonStyle(.bordered)
+                    } else {
+                        Button {
+                            startGuidedLeakTest()
+                        } label: {
+                            Text(appLanguage.string("debug.gas_leak_start"))
+                                .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .disabled(!ble.isConnected || ble.isOTAInProgress || isContinuousPressureReadActive)
+            }
+
+            // 规则参数：两阶段时长、读取间隔、判定压力源、压降阈值、确认开关
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
+                    Text(appLanguage.string("debug.gas_leak_pre_close_duration"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    TextField("", text: $leakTestPreCloseDurationInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 44, maxWidth: 56)
+                        .multilineTextAlignment(.trailing)
+                        .onSubmit {
+                            let v = Int(leakTestPreCloseDurationInput.trimmingCharacters(in: .whitespaces)) ?? leakTestPreCloseDurationSeconds
+                            let clamped = min(3600, max(0, v))
+                            leakTestPreCloseDurationSeconds = clamped
+                            leakTestPreCloseDurationInput = "\(clamped)"
+                            persistLeakTestRuleValues()
+                        }
+                    Text(appLanguage.string("debug.gas_leak_duration_unit"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Stepper("", value: $leakTestPreCloseDurationSeconds, in: 0...3600, step: 1)
+                        .labelsHidden()
+                        .onChange(of: leakTestPreCloseDurationSeconds, perform: {
+                            leakTestPreCloseDurationInput = "\($0)"
+                            persistLeakTestRuleValues()
+                        })
+                }
+                .disabled(isLeakTestWorkflowActive)
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
+                    Text(appLanguage.string("debug.gas_leak_post_close_duration"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    TextField("", text: $leakTestPostCloseDurationInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 44, maxWidth: 56)
+                        .multilineTextAlignment(.trailing)
+                        .onSubmit {
+                            let v = Int(leakTestPostCloseDurationInput.trimmingCharacters(in: .whitespaces)) ?? leakTestPostCloseDurationSeconds
+                            let clamped = min(3600, max(0, v))
+                            leakTestPostCloseDurationSeconds = clamped
+                            leakTestPostCloseDurationInput = "\(clamped)"
+                            persistLeakTestRuleValues()
+                        }
+                    Text(appLanguage.string("debug.gas_leak_duration_unit"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Stepper("", value: $leakTestPostCloseDurationSeconds, in: 0...3600, step: 1)
+                        .labelsHidden()
+                        .onChange(of: leakTestPostCloseDurationSeconds, perform: {
+                            leakTestPostCloseDurationInput = "\($0)"
+                            persistLeakTestRuleValues()
+                        })
+                }
+                .disabled(isLeakTestWorkflowActive)
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
+                    Text(appLanguage.string("debug.gas_leak_interval"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    TextField("", text: $leakTestIntervalInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 40, maxWidth: 52)
+                        .multilineTextAlignment(.trailing)
+                        .onSubmit {
+                            let v = Double(leakTestIntervalInput.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")) ?? leakTestIntervalSec
+                            let clamped = min(3.0, max(0.1, v))
+                            leakTestIntervalSec = clamped
+                            leakTestIntervalInput = String(format: "%.2f", clamped)
+                            persistLeakTestRuleValues()
+                        }
+                    Stepper("", value: $leakTestIntervalSec, in: 0.1...3.0, step: 0.1)
+                        .labelsHidden()
+                        .onChange(of: leakTestIntervalSec, perform: {
+                            leakTestIntervalInput = String(format: "%.2f", $0)
+                            persistLeakTestRuleValues()
+                        })
+                }
+                .disabled(isLeakTestWorkflowActive)
+            }
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
+                    Text(appLanguage.string("debug.gas_leak_pressure_source"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Picker("", selection: $leakTestJudgementSource) {
+                        Text(appLanguage.string("debug.gas_leak_pressure_source_closed")).tag(LeakTestJudgementSource.closed)
+                        Text(appLanguage.string("debug.gas_leak_pressure_source_open")).tag(LeakTestJudgementSource.open)
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 120)
+                    .onChange(of: leakTestJudgementSource) { _ in
+                        persistLeakTestRuleValues()
+                        syncValveStateForLeakJudgementSource(reason: "切换判定压力源")
+                    }
+                }
+                .disabled(isLeakTestWorkflowActive)
+
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
+                    Text(appLanguage.string("debug.gas_leak_drop_threshold"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    TextField("", text: $leakTestPressureDropThresholdInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 48, maxWidth: 60)
+                        .multilineTextAlignment(.trailing)
+                        .onSubmit {
+                            let raw = leakTestPressureDropThresholdInput.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+                            let v = Double(raw) ?? leakTestPressureDropThresholdMbar
+                            let clamped = min(10_000, max(0, v))
+                            leakTestPressureDropThresholdMbar = clamped
+                            leakTestPressureDropThresholdInput = String(format: "%.1f", clamped)
+                            persistLeakTestRuleValues()
+                        }
+                    Text("mbar")
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Stepper("", value: $leakTestPressureDropThresholdMbar, in: 0...10_000, step: 1)
+                        .labelsHidden()
+                        .onChange(of: leakTestPressureDropThresholdMbar) {
+                            leakTestPressureDropThresholdInput = String(format: "%.1f", $0)
+                            persistLeakTestRuleValues()
+                        }
+                }
+                .disabled(isLeakTestWorkflowActive)
+
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
+                    Toggle("", isOn: $leakTestAlarmEnabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .onChange(of: leakTestAlarmEnabled) { _ in persistLeakTestRuleValues() }
+                    Text(appLanguage.string("debug.gas_leak_alarm_threshold"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Text(String(format: "%.1f", leakTestAlarmThresholdBar))
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .frame(minWidth: 28, alignment: .trailing)
+                    Stepper("", value: $leakTestAlarmThresholdBar, in: 0.5...1.5, step: 0.1)
+                        .labelsHidden()
+                        .onChange(of: leakTestAlarmThresholdBar) { _ in persistLeakTestRuleValues() }
+                }
+                .disabled(isLeakTestWorkflowActive)
+            }
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Toggle(appLanguage.string("debug.gas_leak_require_pipeline_ready_confirm"), isOn: $leakTestRequirePipelineReadyConfirm)
+                    .toggleStyle(.checkbox)
+                    .onChange(of: leakTestRequirePipelineReadyConfirm) { _ in persistLeakTestRuleValues() }
+                    .disabled(isLeakTestWorkflowActive)
+                Toggle(appLanguage.string("debug.gas_leak_require_valve_closed_confirm"), isOn: $leakTestRequireValveClosedConfirm)
+                    .toggleStyle(.checkbox)
+                    .onChange(of: leakTestRequireValveClosedConfirm) { _ in persistLeakTestRuleValues() }
+                    .disabled(isLeakTestWorkflowActive)
+                Spacer()
+                Text("\(appLanguage.string("debug.gas_leak_total_duration")) \(leakTestConfiguredTotalDurationSeconds) s")
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            }
+
+            if leakTestSessionType == .guided {
+                leakTestChartDisplay(showPhase: true)
+            }
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+        .onChange(of: ble.isConnected) { _ in stopLeakTestIfDisconnected() }
+        .onChange(of: ble.areCharacteristicsReady) { _ in stopLeakTestIfDisconnected() }
+        .alert(item: $leakTestPendingPrompt) { prompt in
+            switch prompt {
+            case .pipelineReady:
+                return Alert(
+                    title: Text(appLanguage.string("debug.gas_leak_pipeline_ready_title")),
+                    message: Text(appLanguage.string("debug.gas_leak_pipeline_ready_message")),
+                    primaryButton: .default(Text(appLanguage.string("debug.gas_leak_confirm_action"))) {
+                        continueLeakTestAfterPrompt(.pipelineReady)
+                    },
+                    secondaryButton: .cancel(Text(appLanguage.string("debug.gas_leak_cancel_action"))) {
+                        cancelLeakTestPrompt(.pipelineReady)
+                    }
+                )
+            case .valveClosed:
+                return Alert(
+                    title: Text(appLanguage.string("debug.gas_leak_valve_closed_title")),
+                    message: Text(appLanguage.string("debug.gas_leak_valve_closed_message")),
+                    primaryButton: .default(Text(appLanguage.string("debug.gas_leak_confirm_action"))) {
+                        continueLeakTestAfterPrompt(.valveClosed)
+                    },
+                    secondaryButton: .cancel(Text(appLanguage.string("debug.gas_leak_cancel_action"))) {
+                        cancelLeakTestPrompt(.valveClosed)
+                    }
+                )
+            }
+        }
+    }
+
+    private func leakTestChartDisplay(showPhase: Bool) -> some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
                 Text(appLanguage.string("debug.gas_leak_chart_show"))
                     .font(UIDesignSystem.Typography.caption)
@@ -1183,8 +1976,7 @@ struct DebugModeView: View {
             gasLeakChart
                 .frame(height: 200)
                 .padding(.vertical, UIDesignSystem.Padding.xs)
-            
-            // 锁定视图时，在底部显示滑块用于拖动当前可见时间区间
+
             if leakTestChartLocked && leakTestLockedWindowLength > 0 && leakTestLockedSliderMaxStart > 0 {
                 HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Text(appLanguage.string("debug.gas_leak_chart_locked_range"))
@@ -1209,6 +2001,36 @@ struct DebugModeView: View {
                         .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 }
+                if leakTestAverageLineBar != nil {
+                    HStack(spacing: 4) {
+                        Rectangle()
+                            .fill(leakTestAverageLineColor.opacity(0.85))
+                            .frame(width: 12, height: 2)
+                            .overlay(
+                                Rectangle()
+                                    .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [6, 2]))
+                                    .foregroundStyle(leakTestAverageLineColor.opacity(0.85))
+                            )
+                        Text(appLanguage.string("debug.gas_leak_chart_legend_average_line"))
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    }
+                }
+                if leakTestFailureLineBar != nil {
+                    HStack(spacing: 4) {
+                        Rectangle()
+                            .fill(Color.red.opacity(0.9))
+                            .frame(width: 12, height: 2)
+                            .overlay(
+                                Rectangle()
+                                    .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [4, 2]))
+                                    .foregroundStyle(Color.red.opacity(0.9))
+                            )
+                        Text(appLanguage.string("debug.gas_leak_chart_legend_fail_line"))
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    }
+                }
                 Spacer()
                 Button(appLanguage.string("debug.gas_leak_export_csv")) {
                     exportLeakTestCSV()
@@ -1218,7 +2040,6 @@ struct DebugModeView: View {
                 .disabled(leakTestSamples.isEmpty)
             }
 
-            // 已运行 · 关阀 · 开阀 · 结果 同一行
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 Text("\(appLanguage.string("debug.gas_leak_elapsed")) \(isLeakTestRunning ? String(format: "%.1f s", leakTestElapsedSec) : (leakTestSamples.isEmpty ? "--" : String(format: "%.1f s", leakTestElapsedSec)))")
                     .font(UIDesignSystem.Typography.caption)
@@ -1235,6 +2056,14 @@ struct DebugModeView: View {
                 Text("\(appLanguage.string("debug.open_pressure")) \(leakTestCurrentPressureOpenBar != nil ? String(format: "%.3f bar", leakTestCurrentPressureOpenBar!) : "--")")
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                if showPhase {
+                    Text("·")
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Text("\(appLanguage.string("debug.gas_leak_current_phase")) \(appLanguage.string("debug.gas_leak_state_\(leakTestFlowState.rawValue)"))")
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
                 Text("·")
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
@@ -1247,12 +2076,24 @@ struct DebugModeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.secondary.opacity(0.12))
             .cornerRadius(UIDesignSystem.CornerRadius.sm)
+
+            if showPhase, !leakTestResultDetails.isEmpty {
+                Text(leakTestResultDetails)
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    .padding(.horizontal, UIDesignSystem.Padding.sm)
+                    .padding(.vertical, UIDesignSystem.Padding.xs)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.08))
+                    .cornerRadius(UIDesignSystem.CornerRadius.sm)
+            }
+
+            if showPhase, (leakTestAverageLineBar != nil || leakTestFailureLineBar != nil) {
+                Text(appLanguage.string("debug.gas_leak_fail_line_formula"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            }
         }
-        .padding(UIDesignSystem.Padding.sm)
-        .background(UIDesignSystem.Background.light)
-        .cornerRadius(UIDesignSystem.CornerRadius.md)
-        .onChange(of: ble.isConnected) { _ in stopLeakTestIfDisconnected() }
-        .onChange(of: ble.areCharacteristicsReady) { _ in stopLeakTestIfDisconnected() }
     }
     
     // MARK: - Gas system status 与 CO2 Pressure Limits 区域（仅读，同卡紧凑布局）
