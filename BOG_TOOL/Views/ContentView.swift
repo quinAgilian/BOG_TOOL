@@ -103,7 +103,6 @@ struct ContentView: View {
     @StateObject private var ble = BLEManager()
     @StateObject private var firmwareManager = FirmwareManager.shared
     @State private var selectedMode: AppMode = .productionTest
-    @State private var showFirmwareManager = false
     /// 是否显示日志区域，默认开启
     @State private var showLogArea = true
     /// 是否开启日志自动滚动到底部，默认开启
@@ -280,13 +279,6 @@ struct ContentView: View {
         .onChange(of: ble.isOTACompletedWaitingReboot) { if $0 { uploadOtaResultToServer(success: true) } }
         .onChange(of: ble.isOTAFailed) { if $0 { uploadOtaResultToServer(success: false) } }
         .onChange(of: ble.isOTACancelled) { if $0 { uploadOtaResultToServer(success: false) } }
-        .onReceive(NotificationCenter.default.publisher(for: .openFirmwareManager)) { _ in
-            showFirmwareManager = true
-        }
-        .sheet(isPresented: $showFirmwareManager) {
-            FirmwareManagerView(manager: firmwareManager)
-                .environmentObject(appLanguage)
-        }
         .sheet(isPresented: $serverSettings.showServerSettingsSheet) {
             ServerSettingsView(serverSettings: serverSettings)
                 .environmentObject(appLanguage)

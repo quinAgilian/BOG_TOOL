@@ -181,6 +181,7 @@
 "production_test.log_title" = "产测日志";
 "production_test.steps_title" = "测试步骤";
 "production_test.connect_first" = "请先连接设备";
+"production_test.required_rules_missing" = "错误：产测规则中的 %@ 不能为空，请先在规则面板中填写后再启动产测";
 "production_test.start" = "开始产测";
 "production_test.running" = "测试进行中...";
 "production_test.steps" = "步骤";
@@ -215,7 +216,7 @@
 "production_test_rules.firmware_version_label" = "FW 版本：";
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
 "production_test_rules.firmware_version_hint" = "从下拉选择目标固件版本，产测 OTA 步骤将直接使用此版本，无需再选。";
-"production_test_rules.firmware_version_no_entries" = "请在「固件」菜单中添加固件后再选择目标版本。";
+"production_test_rules.firmware_version_no_entries" = "服务器尚未提供可用于产测的 OTA 固件，请先在服务器后台配置产线可见固件。";
 "production_test_rules.firmware_version_reboot_required_hint" = "已启用恢复出厂或重启，仅支持该命令的固件版本（如 ≥1.1.2）可选。";
 "production_test_rules.firmware_upgrade_enabled" = "若 FW 不匹配则触发 OTA";
 "production_test_rules.use_parsed_version" = "使用 %@";

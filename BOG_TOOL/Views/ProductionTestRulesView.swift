@@ -40,10 +40,10 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.string(forKey: "production_test_bootloader_version") ?? ""
     }()
     @State private var firmwareVersion: String = {
-        UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? "1.0.5"
+        UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? ""
     }()
     @State private var hardwareVersion: String = {
-        UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? "P02V02R01"
+        UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? ""
     }()
     // 固件版本升级开关
     @State private var firmwareUpgradeEnabled: Bool = {

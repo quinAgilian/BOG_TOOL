@@ -897,9 +897,21 @@ struct DebugModeView: View {
         let afterReadWaitNs: UInt64 = 600_000_000
         leakTestTask = Task {
             var elapsed: Double = 0
+            var stopReason = "任务结束"
             while !Task.isCancelled && (infinite || elapsed <= duration) {
                 let connected: Bool = await MainActor.run { ble.isConnected && ble.areCharacteristicsReady }
-                if !connected { break }
+                if !connected {
+                    stopReason = await MainActor.run {
+                        if !ble.isConnected {
+                            return "蓝牙连接已断开"
+                        }
+                        if !ble.areCharacteristicsReady {
+                            return "GATT 特征未就绪"
+                        }
+                        return "设备连接状态异常"
+                    }
+                    break
+                }
                 await MainActor.run { leakTestElapsedSec = elapsed }
                 await MainActor.run {
                     ble.readPressure(silent: true)
@@ -945,21 +957,37 @@ struct DebugModeView: View {
             }
             if !Task.isCancelled {
                 await MainActor.run {
-                    isLeakTestRunning = false
-                    leakTestTask = nil
-                    evaluateLeakResultFromSamples()
+                    if !infinite && elapsed > duration {
+                        stopReason = "达到设定时长 \(Int(duration)) 秒"
+                    }
+                    finishLeakTest(reason: stopReason)
                 }
             }
         }
     }
 
-    /// 连接断开时停止气体泄漏检测，避免反复打「未连接或特征不可用」日志
-    private func stopLeakTestIfDisconnected() {
-        guard isLeakTestRunning, (!ble.isConnected || !ble.areCharacteristicsReady) else { return }
+    /// 统一结束泄漏检测并输出停止原因，避免不同退出路径日志不一致
+    @MainActor
+    private func finishLeakTest(reason: String) {
         leakTestTask?.cancel()
         leakTestTask = nil
         isLeakTestRunning = false
+        ble.appendLog("[DBG][GasLeak] 连续读取已停止：\(reason)", level: .info)
         evaluateLeakResultFromSamples()
+    }
+
+    /// 连接断开时停止气体泄漏检测，避免反复打「未连接或特征不可用」日志
+    private func stopLeakTestIfDisconnected() {
+        guard isLeakTestRunning, (!ble.isConnected || !ble.areCharacteristicsReady) else { return }
+        let reason: String
+        if !ble.isConnected {
+            reason = "蓝牙连接已断开"
+        } else if !ble.areCharacteristicsReady {
+            reason = "GATT 特征未就绪"
+        } else {
+            reason = "设备连接状态异常"
+        }
+        finishLeakTest(reason: reason)
     }
 
     /// 根据采样点计算泄漏结果（占位：简单压差；可替换为你的公式）
@@ -1024,10 +1052,7 @@ struct DebugModeView: View {
                 Group {
                     if isLeakTestRunning {
                         Button {
-                            leakTestTask?.cancel()
-                            leakTestTask = nil
-                            isLeakTestRunning = false
-                            evaluateLeakResultFromSamples()
+                            finishLeakTest(reason: "用户手动停止")
                         } label: {
                             Text(appLanguage.string("debug.gas_leak_stop"))
                                 .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)

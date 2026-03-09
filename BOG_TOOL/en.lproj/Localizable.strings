@@ -181,6 +181,7 @@
 "production_test.log_title" = "Test log";
 "production_test.steps_title" = "Test Steps";
 "production_test.connect_first" = "Please connect a device first";
+"production_test.required_rules_missing" = "Error: %@ in production test rules must not be empty. Fill it in before starting the test.";
 "production_test.start" = "Start test";
 "production_test.running" = "Testing...";
 "production_test.steps" = "steps";
@@ -215,7 +216,7 @@
 "production_test_rules.firmware_version_label" = "FW Version:";
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
 "production_test_rules.firmware_version_hint" = "Select target firmware version from dropdown; production test OTA step will use it directly.";
-"production_test_rules.firmware_version_no_entries" = "Add firmware in Firmware menu first, then select target version.";
+"production_test_rules.firmware_version_no_entries" = "No production OTA firmware is available from the server yet. Configure a production-visible firmware on the server first.";
 "production_test_rules.firmware_version_reboot_required_hint" = "Factory reset or reboot is enabled; only firmware versions that support these commands (e.g. ≥1.1.2) can be selected.";
 "production_test_rules.firmware_upgrade_enabled" = "Trigger OTA if FW mismatch";
 "production_test_rules.use_parsed_version" = "Use %@";

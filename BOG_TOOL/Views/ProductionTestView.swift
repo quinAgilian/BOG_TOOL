@@ -102,6 +102,15 @@ struct ProductionTestView: View {
     @State private var capturedGasSystemStatus: String?
     @State private var capturedValveState: String?
     
+    /// 按需从服务器拉取产线可见固件，并返回目标版本对应条目
+    private func productionFirmwareItem(for version: String) async -> ServerFirmwareItem? {
+        if let item = firmwareManager.serverItemsForProduction.first(where: { $0.version == version }) {
+            return item
+        }
+        await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: "production")
+        return firmwareManager.serverItemsForProduction.first(where: { $0.version == version })
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
             // 标题区域 - 带渐变背景
@@ -547,6 +556,18 @@ struct ProductionTestView: View {
             hardwareVersion: rules.hardwareVersion
         )
     }
+
+    /// 启动前规则校验：FW/HW 必须在产测规则中明确填写，不能为空
+    private func validateRequiredRulesBeforeStart() -> String? {
+        let rules = loadTestRules()
+        let missing: [String] = [
+            rules.firmwareVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "FW" : nil,
+            rules.hardwareVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "HW" : nil,
+        ]
+        .compactMap { $0 }
+        guard !missing.isEmpty else { return nil }
+        return String(format: appLanguage.string("production_test.required_rules_missing"), missing.joined(separator: "/"))
+    }
     
     // MARK: - 整体通过判定（连接、RTC、固件一致或 OTA 成功、压力、电磁阀）
     
@@ -919,8 +940,8 @@ struct ProductionTestView: View {
         
         // 加载版本配置
         let bootloaderVersion = UserDefaults.standard.string(forKey: "production_test_bootloader_version") ?? ""
-        let firmwareVersion = UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? "1.0.5"
-        let hardwareVersion = UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? "P02V02R00"
+        let firmwareVersion = UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? ""
+        let hardwareVersion = UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? ""
         
         // 加载阈值配置
         let thresholds = TestThresholds(
@@ -1186,6 +1207,13 @@ struct ProductionTestView: View {
     
     private func runProductionTest() {
         guard !isRunning else { return }
+        if let validationMessage = validateRequiredRulesBeforeStart() {
+            testLog.removeAll()
+            stepLogRanges.removeAll()
+            stepIndex = 0
+            log(validationMessage, level: .error)
+            return
+        }
         
         // 检查是否有选中的设备
         guard let selectedDeviceId = ble.selectedDeviceId,
@@ -1285,7 +1313,7 @@ struct ProductionTestView: View {
         self.log("开始产测流程（共 \(enabledSteps.count) 个步骤）", level: .info)
         self.log("——— 产测参数 ———", level: .info)
         self.log("步骤顺序与启用: \(rules.steps.map { "\($0.id)(\($0.enabled ? "开" : "关"))" }.joined(separator: " → "))", level: .info)
-        self.log("版本配置: Bootloader=\(rules.bootloaderVersion.isEmpty ? "(空)" : rules.bootloaderVersion), FW=\(rules.firmwareVersion), HW=\(rules.hardwareVersion)", level: .info)
+        self.log("版本配置: Bootloader=\(rules.bootloaderVersion.isEmpty ? "(空)" : rules.bootloaderVersion), FW=\(rules.firmwareVersion.isEmpty ? "(空)" : rules.firmwareVersion), HW=\(rules.hardwareVersion.isEmpty ? "(空)" : rules.hardwareVersion)", level: .info)
         let t = rules.thresholds
         self.log("步骤间延时: \(t.stepIntervalMs) ms", level: .info)
         if t.bluetoothPermissionWaitSeconds > 0 {
@@ -1465,11 +1493,11 @@ struct ProductionTestView: View {
                                 fwMismatchRequiresOTA = true
                                 self.log("FW 版本不匹配，需要 OTA（期望: \(rules.firmwareVersion), 实际: \(fwVersion)），将在「断开前 OTA」步骤执行", level: .warning, category: "OTA")
                                 resultMessages.append("FW: \(fwVersion) → 待OTA")
-                                // 提前校验固件管理中是否有目标版本，避免到 OTA 步骤才报错
-                                if firmwareManager.url(forVersion: rules.firmwareVersion) == nil {
-                                    self.log("错误：未在固件管理中找到版本 \(rules.firmwareVersion) 的固件，请先在「固件」菜单中添加", level: .error, category: "OTA")
+                                // 提前校验服务器是否提供了目标版本，避免到 OTA 步骤才报错
+                                if await productionFirmwareItem(for: rules.firmwareVersion) == nil {
+                                    self.log("错误：服务器未提供版本 \(rules.firmwareVersion) 的产线固件，请检查服务器固件列表或产线可见配置", level: .error, category: "OTA")
                                     stepStatuses[step.id] = .failed
-                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：未找到 \(rules.firmwareVersion) 固件（请在固件管理中添加）"
+                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：服务器未提供 \(rules.firmwareVersion) 产线固件"
                                     await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                                     isRunning = false
                                     currentStepId = nil
@@ -1907,11 +1935,21 @@ struct ProductionTestView: View {
                         break
                     }
                     
-                    // 产测按 SOP 期望版本从固件管理中选择目标固件
-                    guard let otaURL = firmwareManager.url(forVersion: rules.firmwareVersion) else {
-                        self.log("错误：未在固件管理中找到版本 \(rules.firmwareVersion) 的固件，请先在「固件」菜单中添加", level: .error, category: "OTA")
+                    // 产测按 SOP 期望版本，从服务器产线固件列表中按需下载目标固件
+                    guard let targetFirmware = await productionFirmwareItem(for: rules.firmwareVersion) else {
+                        self.log("错误：服务器未提供版本 \(rules.firmwareVersion) 的产线固件，请检查服务器固件列表或产线可见配置", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
-                        stepResults[step.id] = "OTA: 未找到 \(rules.firmwareVersion) 固件（请在固件管理中添加）"
+                        stepResults[step.id] = "OTA: 服务器未提供 \(rules.firmwareVersion) 产线固件"
+                        break
+                    }
+                    let otaURL: URL
+                    do {
+                        otaURL = try await firmwareManager.resolveLocalURL(for: targetFirmware, serverClient: serverClient)
+                        ble.selectFirmware(url: otaURL, version: targetFirmware.version)
+                    } catch {
+                        self.log("错误：无法从服务器准备 OTA 固件 \(rules.firmwareVersion)：\(error.localizedDescription)", level: .error, category: "OTA")
+                        stepStatuses[step.id] = .failed
+                        stepResults[step.id] = "OTA: 无法准备 \(rules.firmwareVersion) 固件"
                         break
                     }
                     // 产测：由规则决定是否跳过（当前已是目标版本则跳过）；OTA 只接收 URL 执行，不做版本比对
