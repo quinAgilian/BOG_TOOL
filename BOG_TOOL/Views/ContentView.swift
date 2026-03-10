@@ -96,11 +96,16 @@ private struct WindowLevelSetter: NSViewRepresentable {
     }
 }
 
+final class ProductionTestState: ObservableObject {
+    @Published var isRunning: Bool = false
+}
+
 struct ContentView: View {
     @EnvironmentObject private var appSettings: AppSettings
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverSettings: ServerSettings
     @StateObject private var ble = BLEManager()
+    @StateObject private var productionState = ProductionTestState()
     @StateObject private var firmwareManager = FirmwareManager.shared
     @State private var selectedMode: AppMode = .productionTest
     /// 是否显示日志区域，默认开启
@@ -146,6 +151,7 @@ struct ContentView: View {
                 .padding(.vertical, UIDesignSystem.Padding.sm)
                 
                 DeviceListView(ble: ble, selectedMode: selectedMode, firmwareManager: firmwareManager)
+                    .environmentObject(productionState)
 
                 Divider()
 
@@ -169,6 +175,7 @@ struct ContentView: View {
                             switch selectedMode {
                             case .productionTest:
                                 ProductionTestView(ble: ble, firmwareManager: firmwareManager)
+                                    .environmentObject(productionState)
                             case .debug:
                                 DebugModeView(ble: ble, firmwareManager: firmwareManager)
                             }
@@ -275,6 +282,8 @@ struct ContentView: View {
             serverSettings.retryPendingUploads { msg in
                 DispatchQueue.main.async { ble.appendLog(msg, level: .info) }
             }
+            // 启动时拉取产测与 Debug 固件列表（usage_type=ota_app），并生成 log
+            fetchFirmwareListsAtStartup()
         }
         .onChange(of: ble.isOTACompletedWaitingReboot) { if $0 { uploadOtaResultToServer(success: true) } }
         .onChange(of: ble.isOTAFailed) { if $0 { uploadOtaResultToServer(success: false) } }
@@ -288,6 +297,40 @@ struct ContentView: View {
     private func applyWindowFloating(_ floating: Bool) {
         let level: NSWindow.Level = floating ? .floating : .normal
         (NSApp.keyWindow ?? NSApp.mainWindow)?.level = level
+    }
+
+    /// 启动时拉取产测与 Debug 固件列表（usage_type=ota_app），并写入 log
+    private func fetchFirmwareListsAtStartup() {
+        guard let client = serverSettings.serverClient else {
+            ble.appendLog("[固件] 启动拉取跳过：未配置服务器", level: .info)
+            return
+        }
+        let baseURL = serverSettings.effectiveBaseURL
+        ble.appendLog("[固件] 启动拉取固件列表 (usage_type=ota_app)…", level: .info)
+        Task {
+            // 产测固件 (channel=production)
+            await firmwareManager.fetchServerFirmware(serverClient: client, channel: "production")
+            await MainActor.run {
+                let count = firmwareManager.serverItemsForProduction.count
+                if let err = firmwareManager.serverItemsError {
+                    ble.appendLog("[固件] 产测固件拉取失败 channel=production: \(err)", level: .error)
+                } else {
+                    let versions = firmwareManager.serverItemsForProduction.map(\.version).joined(separator: ", ")
+                    ble.appendLog("[固件] 产测固件拉取成功 channel=production count=\(count) versions=[\(versions.isEmpty ? "—" : versions)] base=\(baseURL)", level: .info)
+                }
+            }
+            // Debug 固件 (channel=debugging)
+            await firmwareManager.fetchServerFirmware(serverClient: client, channel: "debugging")
+            await MainActor.run {
+                let count = firmwareManager.serverItemsForDebug.count
+                if let err = firmwareManager.serverItemsError {
+                    ble.appendLog("[固件] Debug固件拉取失败 channel=debugging: \(err)", level: .error)
+                } else {
+                    let versions = firmwareManager.serverItemsForDebug.map(\.version).joined(separator: ", ")
+                    ble.appendLog("[固件] Debug固件拉取成功 channel=debugging count=\(count) versions=[\(versions.isEmpty ? "—" : versions)] base=\(baseURL)", level: .info)
+                }
+            }
+        }
     }
 
     /// OTA 完成后上报固件升级记录到服务器（成功或失败）；仅当开启上传时执行

@@ -183,6 +183,7 @@
 "debug.gas_leak_result_ok_with_threshold" = "Passed (min %.4f bar >= red line %.4f bar)";
 "debug.gas_leak_result_details_insufficient" = "Judgement source: %@. Missing enough samples in phase 1 or phase 2.";
 "debug.gas_leak_result_details_format" = "Judgement source: %@ | Phase 1 average: %.4f bar | Red line: %.4f bar | Lowest in 15 s: %.4f bar | Max drop: %.1f mbar | Threshold: %.1f mbar";
+"debug.gas_leak_result_start_pressure_low" = "Start pressure %.1f mbar is below minimum %.1f mbar";
 "debug.gas_leak_chart_time" = "Time";
 "debug.gas_leak_chart_pressure" = "Pressure";
 "debug.gas_leak_chart_pressure_close" = "Close";
@@ -254,6 +255,10 @@
 "production_test.passed_steps" = "Passed Steps";
 "production_test.overlay_step_skipped" = "Test skipped due to SOP rule settings";
 
+/* Production pressure step prompt */
+"production_test.pressure_pipeline_ready_title" = "Confirm pipeline and valves";
+"production_test.pressure_pipeline_ready_message" = "Please confirm the gas pipeline is properly connected, the input valve is open, and the output side is open before starting the pressure test.";
+
 /* Production test rules */
 "production_test_rules.title" = "Production Test Rules (SOP)";
 "production_test_rules.firmware_version_title" = "Version Configuration";
@@ -261,7 +266,7 @@
 "production_test_rules.bootloader_version_placeholder" = "e.g., 2";
 "production_test_rules.firmware_version_label" = "FW Version:";
 "production_test_rules.firmware_version_placeholder" = "1.0.5";
-"production_test_rules.firmware_version_hint" = "Select target firmware version from dropdown; production test OTA step will use it directly.";
+"production_test_rules.firmware_version_hint" = "Firmware version is from server OTA list; if server firmware matches local cache no re-download; if device is already that version OTA is skipped.";
 "production_test_rules.firmware_version_no_entries" = "No production OTA firmware is available from the server yet. Configure a production-visible firmware on the server first.";
 "production_test_rules.firmware_version_reboot_required_hint" = "Factory reset or reboot is enabled; only firmware versions that support these commands (e.g. ≥1.1.2) can be selected.";
 "production_test_rules.firmware_upgrade_enabled" = "Trigger OTA if FW mismatch";
@@ -289,6 +294,16 @@
 "production_test_rules.step_gas_system_status_title" = "Read Gas system status";
 "production_test_rules.step_gas_system_status_desc" = "Read and decode gas system status; must be 1 (ok) to pass.";
 "production_test_rules.step_gas_system_status_criteria" = "✓ Pass: Gas system status = 1 (ok). ✗ Fail: not 1 (e.g. 0 initially closed, 2 leak).";
+"production_test_rules.step_gas_leak_title" = "Gas Leak Detection";
+"production_test_rules.step_gas_leak_desc" = "Uses Debug flow: sample before/after valve close; judge leak by pressure drop threshold.";
+"production_test_rules.step_gas_leak_criteria" = "✓ Pass: Phase1 avg − Phase2 min < drop threshold. ✗ Fail: Drop exceeds threshold (leak). (Logic TBD)";
+"production_test_rules.step_gas_leak_open_title" = "Gas Leak Detection (Open Valve Pressure)";
+"production_test_rules.step_gas_leak_open_desc" = "First leak step; default judgement by open valve pressure. Pre/post close duration and threshold configurable per step.";
+"production_test_rules.step_gas_leak_open_criteria" = "✓ Pass: Drop below threshold. ✗ Fail: Drop exceeds threshold (leak). (Logic TBD)";
+"production_test_rules.step_gas_leak_closed_title" = "Gas Leak Detection (Closed Valve Pressure)";
+"production_test_rules.step_gas_leak_closed_desc" = "Second leak step; default judgement by closed valve pressure. Pre/post close duration and threshold configurable per step.";
+"production_test_rules.step_gas_leak_closed_criteria" = "✓ Pass: Drop below threshold. ✗ Fail: Drop exceeds threshold (leak). (Logic TBD)";
+"production_test_rules.gas_leak_skip_closed_when_open_passes" = "Skip this step when open-pressure leak test passes";
 "production_test_rules.step5_title" = "TBD";
 "production_test_rules.step5_desc" = "Additional test steps to be defined.";
 "production_test_rules.step5_criteria" = "";
@@ -340,6 +355,22 @@
 "production_test_rules.pressure_diff_min" = "Difference Min";
 "production_test_rules.pressure_diff_max" = "Difference Max";
 "production_test_rules.unit_mbar" = "mbar";
+"production_test_rules.unit_bar" = "bar";
+
+/* Gas leak step parameters */
+"production_test_rules.gas_leak_params_title" = "Gas Leak Detection Parameters";
+"production_test_rules.gas_leak_judgement_source" = "Judgement pressure source";
+"production_test_rules.gas_leak_judgement_closed" = "Closed valve pressure";
+"production_test_rules.gas_leak_judgement_open" = "Open valve pressure";
+"production_test_rules.gas_leak_pre_close_duration" = "Pre-close duration";
+"production_test_rules.gas_leak_post_close_duration" = "Post-close duration";
+"production_test_rules.gas_leak_interval" = "Read interval";
+"production_test_rules.gas_leak_drop_threshold_mbar" = "Drop threshold";
+"production_test_rules.gas_leak_start_pressure_min" = "Start pressure min";
+"production_test_rules.gas_leak_alarm_enabled" = "Enable alarm (sound when above threshold)";
+"production_test_rules.gas_leak_alarm_threshold_bar" = "Alarm threshold";
+"production_test_rules.gas_leak_require_pipeline_ready_confirm" = "Confirm pipeline ready before phase 1";
+"production_test_rules.gas_leak_require_valve_closed_confirm" = "Confirm inlet valve closed before phase 2";
 
 /* OTA */
 "ota.title" = "OTA";

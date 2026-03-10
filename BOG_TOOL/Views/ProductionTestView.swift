@@ -49,11 +49,23 @@ enum TestResultStatus {
     case allFailed     // 全部失败
 }
 
+/// 产测气体泄漏检测步骤的配置（从 UserDefaults 按 keyPrefix 加载）
+struct ProductionGasLeakConfig {
+    var preCloseDurationSeconds: Int
+    var postCloseDurationSeconds: Int
+    var intervalSeconds: Double
+    var dropThresholdMbar: Double
+    var startPressureMinMbar: Double
+    var requirePipelineReadyConfirm: Bool
+    var requireValveClosedConfirm: Bool
+}
+
 /// 产测模式：连接后执行 开→关→开，并在开前/开后/关后各读一次压力
 struct ProductionTestView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverSettings: ServerSettings
     @EnvironmentObject private var serverClient: ServerClient
+    @EnvironmentObject private var productionState: ProductionTestState
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var isRunning = false
@@ -101,6 +113,26 @@ struct ProductionTestView: View {
     @State private var capturedPressureOpenMbar: Double?
     @State private var capturedGasSystemStatus: String?
     @State private var capturedValveState: String?
+    @State private var capturedGasLeakOpenDeltaMbar: Double?
+    @State private var capturedGasLeakClosedDeltaMbar: Double?
+    @State private var capturedGasLeakOpenDurationSeconds: Double?
+    @State private var capturedGasLeakClosedDurationSeconds: Double?
+    @State private var capturedGasLeakOpenPhase1AvgBar: Double?
+    @State private var capturedGasLeakClosedPhase1AvgBar: Double?
+    @State private var capturedGasLeakOpenThresholdMbar: Double?
+    @State private var capturedGasLeakClosedThresholdMbar: Double?
+    @State private var capturedGasLeakOpenLimitBar: Double?
+    @State private var capturedGasLeakClosedLimitBar: Double?
+    @State private var capturedGasLeakOpenUserActionSeconds: Double?
+    @State private var capturedGasLeakClosedUserActionSeconds: Double?
+    @State private var capturedGasLeakOpenSamples: [[String: Any]]?
+    @State private var capturedGasLeakClosedSamples: [[String: Any]]?
+    
+    /// 气体泄漏检测步骤中的用户确认弹窗（阶段1前气路确认 / 阶段2前关阀确认）
+    @State private var showGasLeakConfirmAlert = false
+    @State private var gasLeakConfirmTitle = ""
+    @State private var gasLeakConfirmMessage = ""
+    @State private var gasLeakConfirmResume: ((Bool) -> Void)?
     
     /// 按需从服务器拉取产线可见固件，并返回目标版本对应条目
     private func productionFirmwareItem(for version: String) async -> ServerFirmwareItem? {
@@ -245,6 +277,9 @@ struct ProductionTestView: View {
                 )
         )
         .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 4)
+        .onChange(of: isRunning) { running in
+            productionState.isRunning = running
+        }
         .onAppear {
             updateTestRules()
             updateTestSteps()
@@ -284,6 +319,20 @@ struct ProductionTestView: View {
             )
             .environmentObject(appLanguage)
         }
+        .alert(gasLeakConfirmTitle, isPresented: $showGasLeakConfirmAlert) {
+            Button(appLanguage.string("debug.gas_leak_confirm_action")) {
+                gasLeakConfirmResume?(true)
+                gasLeakConfirmResume = nil
+                showGasLeakConfirmAlert = false
+            }
+            Button(appLanguage.string("debug.gas_leak_cancel_action"), role: .cancel) {
+                gasLeakConfirmResume?(false)
+                gasLeakConfirmResume = nil
+                showGasLeakConfirmAlert = false
+            }
+        } message: {
+            Text(gasLeakConfirmMessage)
+        }
         .overlay {
             if showResultOverlay {
                 ProductionTestResultOverlay(
@@ -319,6 +368,30 @@ struct ProductionTestView: View {
         capturedPressureOpenMbar = nil
         capturedGasSystemStatus = nil
         capturedValveState = nil
+        capturedGasLeakOpenDeltaMbar = nil
+        capturedGasLeakClosedDeltaMbar = nil
+        capturedGasLeakOpenDurationSeconds = nil
+        capturedGasLeakClosedDurationSeconds = nil
+        capturedGasLeakOpenPhase1AvgBar = nil
+        capturedGasLeakClosedPhase1AvgBar = nil
+        capturedGasLeakOpenThresholdMbar = nil
+        capturedGasLeakClosedThresholdMbar = nil
+        capturedGasLeakOpenLimitBar = nil
+        capturedGasLeakClosedLimitBar = nil
+        capturedGasLeakOpenUserActionSeconds = nil
+        capturedGasLeakClosedUserActionSeconds = nil
+        capturedGasLeakOpenSamples = nil
+        capturedGasLeakClosedSamples = nil
+        capturedGasLeakOpenPhase1AvgBar = nil
+        capturedGasLeakClosedPhase1AvgBar = nil
+        capturedGasLeakOpenThresholdMbar = nil
+        capturedGasLeakClosedThresholdMbar = nil
+        capturedGasLeakOpenLimitBar = nil
+        capturedGasLeakClosedLimitBar = nil
+        capturedGasLeakOpenUserActionSeconds = nil
+        capturedGasLeakClosedUserActionSeconds = nil
+        capturedGasLeakOpenSamples = nil
+        capturedGasLeakClosedSamples = nil
         lastTestStartTime = nil
         lastTestEndTime = nil
     }
@@ -651,6 +724,18 @@ struct ProductionTestView: View {
         } else if currentTestSteps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
             list.append((appLanguage.string("production_test_rules.step_gas_system_status_title"), true, true, skippedDetail))
         }
+        // 气体泄漏检测（开阀压力）
+        if enabled.contains(where: { $0.id == TestStep.gasLeakOpen.id }) {
+            list.append((appLanguage.string("production_test_rules.step_gas_leak_open_title"), stepStatuses[TestStep.gasLeakOpen.id] == .passed, stepStatuses[TestStep.gasLeakOpen.id] == .skipped, detail(for: TestStep.gasLeakOpen.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.gasLeakOpen.id }) {
+            list.append((appLanguage.string("production_test_rules.step_gas_leak_open_title"), true, true, skippedDetail))
+        }
+        // 气体泄漏检测（关阀压力）
+        if enabled.contains(where: { $0.id == TestStep.gasLeakClosed.id }) {
+            list.append((appLanguage.string("production_test_rules.step_gas_leak_closed_title"), stepStatuses[TestStep.gasLeakClosed.id] == .passed, stepStatuses[TestStep.gasLeakClosed.id] == .skipped, detail(for: TestStep.gasLeakClosed.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.gasLeakClosed.id }) {
+            list.append((appLanguage.string("production_test_rules.step_gas_leak_closed_title"), true, true, skippedDetail))
+        }
         // 电磁阀
         if enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
             list.append((appLanguage.string("production_test_rules.step_valve_title"), stepStatuses[TestStep.ensureValveOpen.id] == .passed, false, detail(for: TestStep.ensureValveOpen.id)))
@@ -867,8 +952,8 @@ struct ProductionTestView: View {
 
     /// 加载测试规则配置
     private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds) {
-        // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启、重启、恢复出厂等步骤）
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启、重启、恢复出厂、气体泄漏检测等步骤）
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         var steps: [TestStep] = []
@@ -879,7 +964,7 @@ struct ProductionTestView: View {
                 }
             }
         } else {
-            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .ensureValveOpen, .reset, .factoryReset, .tbd, .otaBeforeDisconnect, .disconnectDevice]
+            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .ensureValveOpen, .reset, .factoryReset, .tbd, .otaBeforeDisconnect, .disconnectDevice]
         }
         
         // 确保第一步和最后一步在正确位置
@@ -909,6 +994,26 @@ struct ProductionTestView: View {
                 steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
             }
         }
+        // 迁移：若旧配置中无「气体泄漏检测（开阀压力）」步骤，则插入在读取 Gas system status 之后
+        if !steps.contains(where: { $0.id == TestStep.gasLeakOpen.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+                steps.insert(TestStep.gasLeakOpen, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
+                steps.insert(TestStep.gasLeakOpen, at: idx)
+            } else {
+                steps.insert(TestStep.gasLeakOpen, at: steps.count - 1)
+            }
+        }
+        // 迁移：若旧配置中无「气体泄漏检测（关阀压力）」步骤，则插入在开阀压力步骤之后
+        if !steps.contains(where: { $0.id == TestStep.gasLeakClosed.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.gasLeakOpen.id }) {
+                steps.insert(TestStep.gasLeakClosed, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
+                steps.insert(TestStep.gasLeakClosed, at: idx)
+            } else {
+                steps.insert(TestStep.gasLeakClosed, at: steps.count - 1)
+            }
+        }
         // 迁移：若旧配置中无「重启」「恢复出厂」步骤，则插入在断开连接之前
         if !steps.contains(where: { $0.id == TestStep.reset.id }) {
             if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
@@ -934,12 +1039,15 @@ struct ProductionTestView: View {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: false)
                 } else if let enabled = enabledDict[steps[i].id] {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
+                } else if (steps[i].id == TestStep.gasLeakOpen.id || steps[i].id == TestStep.gasLeakClosed.id),
+                          let legacyEnabled = enabledDict["step_gas_leak"] {
+                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: legacyEnabled)
                 }
             }
         }
         
-        // 加载版本配置
-        let bootloaderVersion = UserDefaults.standard.string(forKey: "production_test_bootloader_version") ?? ""
+        // 加载版本配置（BOOTLOADER 默认为 2；固件版本从服务器拉取 OTA 列表，本地已有缓存则不重复拉取）
+        let bootloaderVersion = UserDefaults.standard.string(forKey: "production_test_bootloader_version").flatMap { $0.isEmpty ? nil : $0 } ?? "2"
         let firmwareVersion = UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? ""
         let hardwareVersion = UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? ""
         
@@ -1197,6 +1305,284 @@ struct ProductionTestView: View {
         return false
     }
     
+    /// 将电磁阀设为指定状态并等待回读确认（用于气体泄漏检测的判定压力对应状态）
+    private func ensureValveState(open targetOpen: Bool) async -> Bool {
+        let rules = loadTestRules()
+        let valveTimeout = rules.thresholds.valveOpenTimeout
+        let targetState = targetOpen ? "open" : "closed"
+        
+        ble.readValveState()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        if ble.lastValveStateValue == targetState {
+            self.log("电磁阀已是\(targetState)状态", level: .info)
+            return true
+        }
+        self.log("将电磁阀切换为\(targetState)...", level: .info)
+        ble.setValve(open: targetOpen)
+        var checkCount = 0
+        let maxChecks = Int(valveTimeout * 10)
+        while checkCount < maxChecks {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            checkCount += 1
+            ble.readValveState()
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if ble.lastValveStateValue == targetState {
+                self.log("电磁阀已切换为\(targetState)", level: .info)
+                return true
+            }
+        }
+        self.log("错误：电磁阀未能切换为\(targetState)（超时）", level: .error)
+        return false
+    }
+    
+    /// 从 BLE 压力显示字符串解析 bar 值（与 Debug 模式一致）
+    private static func parseBarFromPressureString(_ s: String) -> Double? {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, !t.hasPrefix("Error") else { return nil }
+        let parts = t.split(separator: " ")
+        guard let first = parts.first else { return nil }
+        return Double(first)
+    }
+    
+    /// 从 UserDefaults 加载产测气体泄漏步骤配置（keyPrefix 为 production_test_gas_leak_open 或 production_test_gas_leak_closed）
+    private func loadProductionGasLeakConfig(keyPrefix: String) -> ProductionGasLeakConfig {
+        ProductionGasLeakConfig(
+            preCloseDurationSeconds: UserDefaults.standard.object(forKey: "\(keyPrefix)_pre_close_duration_seconds") as? Int ?? 10,
+            postCloseDurationSeconds: UserDefaults.standard.object(forKey: "\(keyPrefix)_post_close_duration_seconds") as? Int ?? 15,
+            intervalSeconds: UserDefaults.standard.object(forKey: "\(keyPrefix)_interval_seconds") as? Double ?? 0.5,
+            dropThresholdMbar: UserDefaults.standard.object(forKey: "\(keyPrefix)_drop_threshold_mbar") as? Double ?? 15,
+            startPressureMinMbar: UserDefaults.standard.object(forKey: "\(keyPrefix)_start_pressure_min_mbar") as? Double ?? 1300,
+            requirePipelineReadyConfirm: UserDefaults.standard.object(forKey: "\(keyPrefix)_require_pipeline_ready_confirm") as? Bool ?? true,
+            requireValveClosedConfirm: UserDefaults.standard.object(forKey: "\(keyPrefix)_require_valve_closed_confirm") as? Bool ?? true
+        )
+    }
+    
+    /// 执行产测气体泄漏检测步骤：阀门预置 → 可选阶段1前确认 → 阶段1采样 (phase=1, pre) → 用户关阀/操作采样 (phase=2, between) → 阶段2采样 (phase=3, post) → 判定
+    private func runProductionGasLeakStep(stepId: String, stepLabel: String, config: ProductionGasLeakConfig) async -> (passed: Bool, message: String) {
+        let useOpenPressure = (stepId == TestStep.gasLeakOpen.id)
+        let preDur = max(0, config.preCloseDurationSeconds)
+        let postDur = max(0, config.postCloseDurationSeconds)
+        let interval = max(0.1, min(3.0, config.intervalSeconds))
+        let thresholdMbar = max(0, config.dropThresholdMbar)
+        
+        self.log("\(stepLabel)：判定压力=\(useOpenPressure ? "开阀" : "关阀")，阶段1=\(preDur)s，阶段2=\(postDur)s，间隔=\(String(format: "%.2f", interval))s，阈值=\(String(format: "%.1f", thresholdMbar)) mbar", level: .info)
+        
+        // 1. 阀门预置：切换到判定压力对应状态
+        let valveOk = await ensureValveState(open: useOpenPressure)
+        guard valveOk else {
+            return (false, "电磁阀未能切换到判定压力对应状态")
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        ble.readPressure(silent: true)
+        ble.readPressureOpen(silent: true)
+        ble.readValveState()
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        
+        // 2. 阶段1前确认（可选）
+        if config.requirePipelineReadyConfirm {
+            let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                DispatchQueue.main.async {
+                    self.gasLeakConfirmTitle = appLanguage.string("debug.gas_leak_pipeline_ready_title")
+                    self.gasLeakConfirmMessage = appLanguage.string("debug.gas_leak_pipeline_ready_message")
+                    self.gasLeakConfirmResume = { cont.resume(returning: $0) }
+                    self.showGasLeakConfirmAlert = true
+                }
+            }
+            guard confirmed else {
+                return (false, appLanguage.string("debug.gas_leak_stop_reason_pipeline_not_confirmed"))
+            }
+        }
+        
+        // 3. 阶段1采样（pre：phase=1）
+        struct SamplePoint {
+            let t: Double
+            let pressureClosed: Double?
+            let pressureOpen: Double?
+        }
+        var phase1Samples: [SamplePoint] = []
+        var betweenSamples: [SamplePoint] = []
+        var phase2Samples: [SamplePoint] = []
+        var phaseElapsed: Double = 0
+        let afterReadWaitNs: UInt64 = 600_000_000
+        
+        while phaseElapsed <= Double(preDur) {
+            guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
+                return (false, "连接丢失或用户终止")
+            }
+            ble.readPressure(silent: true)
+            ble.readPressureOpen(silent: true)
+            ble.readValveState()
+            ble.readGasSystemStatus(silent: true)
+            try? await Task.sleep(nanoseconds: afterReadWaitNs)
+            let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
+            let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+            if closeBar != nil || openBar != nil {
+                phase1Samples.append(SamplePoint(t: phaseElapsed, pressureClosed: closeBar, pressureOpen: openBar))
+            }
+            phaseElapsed += interval
+            if phaseElapsed <= Double(preDur) {
+                let remainingNs = UInt64(max(0, interval - 0.6) * 1_000_000_000)
+                if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
+            }
+        }
+        
+        self.log("\(stepLabel)：阶段1采样完成，共 \(phase1Samples.count) 点", level: .info)
+        
+        // 4. 用户关阀/操作期间采样（between：phase=2），并统计耗时
+        var userActionDuration: Double = 0
+        if config.requireValveClosedConfirm {
+            let userActionStart = Date()
+            var betweenElapsed: Double = 0
+            var userConfirmed = false
+            
+            // 弹出确认弹窗（关阀确认）
+            let confirmationTask = Task {
+                let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                    DispatchQueue.main.async {
+                        self.gasLeakConfirmTitle = appLanguage.string("debug.gas_leak_valve_closed_title")
+                        self.gasLeakConfirmMessage = appLanguage.string("debug.gas_leak_valve_closed_message")
+                        self.gasLeakConfirmResume = { cont.resume(returning: $0) }
+                        self.showGasLeakConfirmAlert = true
+                    }
+                }
+                userConfirmed = confirmed
+            }
+            
+            while isRunning, ble.isConnected, ble.areCharacteristicsReady, !userConfirmed {
+                ble.readPressure(silent: true)
+                ble.readPressureOpen(silent: true)
+                ble.readValveState()
+                ble.readGasSystemStatus(silent: true)
+                try? await Task.sleep(nanoseconds: afterReadWaitNs)
+                let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
+                let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+                let t = Double(preDur) + betweenElapsed
+                if closeBar != nil || openBar != nil {
+                    betweenSamples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar))
+                }
+                betweenElapsed += interval
+                if betweenElapsed > 3600 { break } // 安全上限，避免意外长时间阻塞
+                let remainingNs = UInt64(max(0, interval - 0.6) * 1_000_000_000)
+                if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
+            }
+            
+            await confirmationTask.value
+            guard userConfirmed else {
+                return (false, appLanguage.string("debug.gas_leak_stop_reason_valve_not_confirmed"))
+            }
+            userActionDuration = Date().timeIntervalSince(userActionStart)
+            let durationStr = String(format: "%.2f", userActionDuration)
+            self.log("\(stepLabel)：用户操作期间采样完成，共 \(betweenSamples.count) 点，耗时 \(durationStr) 秒", level: .info)
+        }
+        
+        // 5. 阶段2采样（post：phase=3）
+        phaseElapsed = 0
+        while phaseElapsed <= Double(postDur) {
+            guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
+                return (false, "连接丢失或用户终止")
+            }
+            ble.readPressure(silent: true)
+            ble.readPressureOpen(silent: true)
+            ble.readValveState()
+            ble.readGasSystemStatus(silent: true)
+            try? await Task.sleep(nanoseconds: afterReadWaitNs)
+            let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
+            let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+            let t = Double(preDur) + userActionDuration + phaseElapsed
+            if closeBar != nil || openBar != nil {
+                phase2Samples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar))
+            }
+            phaseElapsed += interval
+            if phaseElapsed <= Double(postDur) {
+                let remainingNs = UInt64(max(0, interval - 0.6) * 1_000_000_000)
+                if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
+            }
+        }
+        
+        self.log("\(stepLabel)：阶段2采样完成，共 \(phase2Samples.count) 点", level: .info)
+        
+        // 6. 判定：阶段1平均 − 阶段2最低，压降超过阈值则失败
+        func value(for p: SamplePoint) -> Double? { useOpenPressure ? p.pressureOpen : p.pressureClosed }
+        let phase1Values = phase1Samples.compactMap { value(for: $0) }
+        let phase2Values = phase2Samples.compactMap { value(for: $0) }
+        guard !phase1Values.isEmpty else {
+            return (false, "阶段1有效采样不足，无法判定")
+        }
+        guard !phase2Values.isEmpty else {
+            return (false, "阶段2有效采样不足，无法判定")
+        }
+        let phase1Avg = phase1Values.reduce(0, +) / Double(phase1Values.count)
+        let phase2Min = phase2Values.min()!
+        let thresholdBar = thresholdMbar / 1000.0
+        let dropMbar = (phase1Avg - phase2Min) * 1000.0
+        let thresholdLineBar = phase1Avg - thresholdBar
+
+        // 起始压力下限判定（单位 mbar）：阶段1平均压力低于下限则直接失败
+        let startMbar = phase1Avg * 1000.0
+        if startMbar < config.startPressureMinMbar {
+            let msg = String(format: "起始压力 %.1f mbar 低于下限 %.1f mbar", startMbar, config.startPressureMinMbar)
+            self.log("\(stepLabel)：✗ \(msg)", level: .error)
+            return (false, msg)
+        }
+
+        // 记录本次气体泄漏检测的压降、阶段1均值、阈值和总检测/用户操作时长（用于上传 testDetails）
+        let totalDurationSeconds = Double(preDur) + userActionDuration + Double(postDur)
+        if useOpenPressure {
+            capturedGasLeakOpenDeltaMbar = dropMbar
+            capturedGasLeakOpenDurationSeconds = totalDurationSeconds
+            capturedGasLeakOpenPhase1AvgBar = phase1Avg
+            capturedGasLeakOpenThresholdMbar = thresholdMbar
+            capturedGasLeakOpenLimitBar = thresholdLineBar
+            capturedGasLeakOpenUserActionSeconds = userActionDuration > 0 ? userActionDuration : nil
+
+            var allSamples: [[String: Any]] = []
+            for s in phase1Samples {
+                let value = s.pressureOpen ?? s.pressureClosed ?? 0
+                allSamples.append(["phase": 1, "t": s.t, "pressureBar": value])
+            }
+            for s in betweenSamples {
+                let value = s.pressureOpen ?? s.pressureClosed ?? 0
+                allSamples.append(["phase": 2, "t": s.t, "pressureBar": value])
+            }
+            for s in phase2Samples {
+                let value = s.pressureOpen ?? s.pressureClosed ?? 0
+                allSamples.append(["phase": 3, "t": s.t, "pressureBar": value])
+            }
+            capturedGasLeakOpenSamples = allSamples.isEmpty ? nil : allSamples
+        } else {
+            capturedGasLeakClosedDeltaMbar = dropMbar
+            capturedGasLeakClosedDurationSeconds = totalDurationSeconds
+            capturedGasLeakClosedPhase1AvgBar = phase1Avg
+            capturedGasLeakClosedThresholdMbar = thresholdMbar
+            capturedGasLeakClosedLimitBar = thresholdLineBar
+            capturedGasLeakClosedUserActionSeconds = userActionDuration > 0 ? userActionDuration : nil
+
+            var allSamples: [[String: Any]] = []
+            for s in phase1Samples {
+                let value = s.pressureClosed ?? s.pressureOpen ?? 0
+                allSamples.append(["phase": 1, "t": s.t, "pressureBar": value])
+            }
+            for s in betweenSamples {
+                let value = s.pressureClosed ?? s.pressureOpen ?? 0
+                allSamples.append(["phase": 2, "t": s.t, "pressureBar": value])
+            }
+            for s in phase2Samples {
+                let value = s.pressureClosed ?? s.pressureOpen ?? 0
+                allSamples.append(["phase": 3, "t": s.t, "pressureBar": value])
+            }
+            capturedGasLeakClosedSamples = allSamples.isEmpty ? nil : allSamples
+        }
+
+        if phase2Min < thresholdLineBar {
+            let msg = String(format: "泄漏：阶段1平均 %.4f bar，阶段2最低 %.4f bar，压降 %.1f mbar > 阈值 %.1f mbar", phase1Avg, phase2Min, dropMbar, thresholdMbar)
+            self.log("\(stepLabel)：✗ \(msg)", level: .error)
+            return (false, msg)
+        }
+        let msg = String(format: "通过：阶段1平均 %.4f bar，阶段2最低 %.4f bar，压降 %.1f mbar ≤ 阈值 %.1f mbar", phase1Avg, phase2Min, dropMbar, thresholdMbar)
+        self.log("\(stepLabel)：✓ \(msg)", level: .info)
+        return (true, msg)
+    }
+    
     /// 用户点击「TESTING.」时终止产测
     private func stopProductionTest() {
         guard isRunning else { return }
@@ -1301,6 +1687,10 @@ struct ProductionTestView: View {
         capturedPressureOpenMbar = nil
         capturedGasSystemStatus = nil
         capturedValveState = nil
+        capturedGasLeakOpenDeltaMbar = nil
+        capturedGasLeakClosedDeltaMbar = nil
+        capturedGasLeakOpenDurationSeconds = nil
+        capturedGasLeakClosedDurationSeconds = nil
         initializeStepStatuses()
         
         // 使用当前的测试步骤列表（已从UserDefaults加载）
@@ -1327,6 +1717,9 @@ struct ProductionTestView: View {
         
         /// 由 step2（确认固件版本）设置：FW 不匹配且「若 FW 不匹配则触发 OTA」开启时为 true；step_ota 据此决定是否执行 OTA
         var fwMismatchRequiresOTA = false
+        
+        // 规则：若配置为“开阀压力通过则跳过关阀压力步骤”，且开阀步骤启用并通过，则在执行关阀步骤前跳过
+        let skipClosedWhenOpenPasses = UserDefaults.standard.object(forKey: "production_test_gas_leak_skip_closed_when_open_passes") as? Bool ?? false
         
         for step in enabledSteps {
                 guard isRunning else {
@@ -1688,6 +2081,24 @@ struct ProductionTestView: View {
                     }
                     
                 case "step4": // 读取压力值 - 复用debug mode的方法，并验证阈值
+                    // 在开始压力测试前，让产线人员确认气路与阀门状态
+                    do {
+                        let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                            DispatchQueue.main.async {
+                                self.gasLeakConfirmTitle = appLanguage.string("production_test.pressure_pipeline_ready_title")
+                                self.gasLeakConfirmMessage = appLanguage.string("production_test.pressure_pipeline_ready_message")
+                                self.gasLeakConfirmResume = { cont.resume(returning: $0) }
+                                self.showGasLeakConfirmAlert = true
+                            }
+                        }
+                        if !confirmed {
+                            self.log("步骤4: 用户未确认气路与阀门状态，压力测试终止", level: .warning)
+                            stepResults[step.id] = appLanguage.string("production_test.pressure_pipeline_ready_message")
+                            stepStatuses[step.id] = .failed
+                            break
+                        }
+                    }
+                    
                     self.log("步骤4: 读取压力值", level: .info)
                     
                     let pressureClosedMin = rules.thresholds.pressureClosedMin
@@ -1840,6 +2251,30 @@ struct ProductionTestView: View {
                             stepStatuses[step.id] = .failed
                         }
                         capturedGasSystemStatus = gasStatusStr.isEmpty || gasStatusStr == "--" ? nil : gasStatusStr
+                    }
+                    
+                case "step_gas_leak_open": // 气体泄漏检测（开阀压力）
+                    self.log("步骤: 气体泄漏检测（开阀压力）", level: .info)
+                    let configOpen = loadProductionGasLeakConfig(keyPrefix: "production_test_gas_leak_open")
+                    let resultOpen = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_open_title"), config: configOpen)
+                    stepResults[step.id] = resultOpen.message
+                    stepStatuses[step.id] = resultOpen.passed ? .passed : .failed
+                    
+                case "step_gas_leak_closed": // 气体泄漏检测（关阀压力）
+                    // 若启用了“开阀压力通过则跳过关阀压力步骤”，且开阀步骤启用并已通过，则跳过本步骤
+                    if skipClosedWhenOpenPasses,
+                       let openStep = currentTestSteps.first(where: { $0.id == TestStep.gasLeakOpen.id }),
+                       openStep.enabled,
+                       stepStatuses[TestStep.gasLeakOpen.id] == .passed {
+                        self.log("步骤: 气体泄漏检测（关阀压力）已根据规则跳过（开阀压力检测已通过）", level: .info)
+                        stepResults[step.id] = appLanguage.string("production_test.overlay_step_skipped") + "（开阀压力检测已通过）"
+                        stepStatuses[step.id] = .skipped
+                    } else {
+                        self.log("步骤: 气体泄漏检测（关阀压力）", level: .info)
+                        let configClosed = loadProductionGasLeakConfig(keyPrefix: "production_test_gas_leak_closed")
+                        let resultClosed = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_closed_title"), config: configClosed)
+                        stepResults[step.id] = resultClosed.message
+                        stepStatuses[step.id] = resultClosed.passed ? .passed : .failed
                     }
                     
                 case "step_valve": // 确保电磁阀是开启的
@@ -2151,6 +2586,20 @@ struct ProductionTestView: View {
         if let v = capturedPressureOpenMbar { testDetails["pressureOpenMbar"] = v }
         if let v = capturedGasSystemStatus { testDetails["gasSystemStatus"] = v }
         if let v = capturedValveState { testDetails["valveState"] = v }
+        if let v = capturedGasLeakOpenDeltaMbar { testDetails["gasLeakOpenDeltaMbar"] = v }
+        if let v = capturedGasLeakOpenDurationSeconds { testDetails["gasLeakOpenDurationSeconds"] = v }
+        if let v = capturedGasLeakClosedDeltaMbar { testDetails["gasLeakClosedDeltaMbar"] = v }
+        if let v = capturedGasLeakClosedDurationSeconds { testDetails["gasLeakClosedDurationSeconds"] = v }
+        if let v = capturedGasLeakOpenPhase1AvgBar { testDetails["gasLeakOpenPhase1AvgBar"] = v }
+        if let v = capturedGasLeakClosedPhase1AvgBar { testDetails["gasLeakClosedPhase1AvgBar"] = v }
+        if let v = capturedGasLeakOpenThresholdMbar { testDetails["gasLeakOpenThresholdMbar"] = v }
+        if let v = capturedGasLeakClosedThresholdMbar { testDetails["gasLeakClosedThresholdMbar"] = v }
+        if let v = capturedGasLeakOpenLimitBar { testDetails["gasLeakOpenLimitBar"] = v }
+        if let v = capturedGasLeakClosedLimitBar { testDetails["gasLeakClosedLimitBar"] = v }
+        if let v = capturedGasLeakOpenUserActionSeconds { testDetails["gasLeakOpenUserActionSeconds"] = v }
+        if let v = capturedGasLeakClosedUserActionSeconds { testDetails["gasLeakClosedUserActionSeconds"] = v }
+        if let v = capturedGasLeakOpenSamples { testDetails["gasLeakOpenSamples"] = v }
+        if let v = capturedGasLeakClosedSamples { testDetails["gasLeakClosedSamples"] = v }
         if !testDetails.isEmpty { body["testDetails"] = testDetails }
 
         self.log("正在上传产测结果至服务器（后台）…", level: .info)
