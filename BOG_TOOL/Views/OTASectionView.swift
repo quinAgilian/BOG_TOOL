@@ -412,16 +412,17 @@ struct OTASectionView: View {
     /// 从服务器拉取固件列表：Debug = 全部，产测 = 仅产线可见
     private func refreshServerFirmwareList() {
         let channel = isProductionTestOTA ? "production" : "debugging"
-        ble.appendLog("[OTA] 从服务器拉取固件列表…", level: .info)
+        let label = isProductionTestOTA ? "产测" : "Debug"
+        ble.appendLog("[固件] \(label) OTA 拉取 usage_type=ota_app channel=\(channel)", level: .info)
         Task {
             await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: channel)
             await MainActor.run {
+                let count = currentServerFirmwareItems.count
                 if let err = firmwareManager.serverItemsError {
-                    ble.appendLog("[OTA] 从服务器拉取固件列表失败：\(err)", level: .error)
+                    ble.appendLog("[固件] \(label) channel=\(channel) 拉取失败: \(err)", level: .error)
                 } else {
-                    let count = currentServerFirmwareItems.count
-                    let lvl: BLEManager.LogLevel = count > 0 ? .info : .warning
-                    ble.appendLog("[OTA] 固件列表已更新，共 \(count) 条", level: lvl)
+                    let versions = currentServerFirmwareItems.map(\.version).joined(separator: ", ")
+                    ble.appendLog("[固件] \(label) channel=\(channel) 拉取成功 共\(count)条 [\(versions.isEmpty ? "无" : versions)]", level: count > 0 ? .info : .warning)
                 }
             }
         }

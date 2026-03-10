@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// 产测规则变化通知名称
 extension Notification.Name {
@@ -18,6 +19,10 @@ struct TestStep: Identifiable, Equatable {
     static let readPressure = TestStep(id: "step4", key: "step4", isLocked: false, enabled: true)
     /// 读取 Gas system status（0 initially closed, 1 ok, 2 leak…；产测要求 1 ok）
     static let readGasSystemStatus = TestStep(id: "step_gas_system_status", key: "step_gas_system_status", isLocked: false, enabled: true)
+    /// 气体泄漏检测（开阀压力）：第一个泄漏检测步骤，默认用开阀压力判定；可独立启用与配置
+    static let gasLeakOpen = TestStep(id: "step_gas_leak_open", key: "step_gas_leak_open", isLocked: false, enabled: true)
+    /// 气体泄漏检测（关阀压力）：第二个泄漏检测步骤，默认用关阀压力判定；可独立启用与配置
+    static let gasLeakClosed = TestStep(id: "step_gas_leak_closed", key: "step_gas_leak_closed", isLocked: false, enabled: true)
     static let tbd = TestStep(id: "step5", key: "step5", isLocked: false, enabled: false)
     /// 确保电磁阀是开启的（可调顺序、有使能开关）
     static let ensureValveOpen = TestStep(id: "step_valve", key: "step_valve", isLocked: false, enabled: true)
@@ -34,10 +39,12 @@ struct TestStep: Identifiable, Equatable {
 struct ProductionTestRulesView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverClient: ServerClient
+    @EnvironmentObject private var productionState: ProductionTestState
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var bootloaderVersion: String = {
-        UserDefaults.standard.string(forKey: "production_test_bootloader_version") ?? ""
+        let v = UserDefaults.standard.string(forKey: "production_test_bootloader_version")
+        return (v == nil || v!.isEmpty) ? "2" : v!
     }()
     @State private var firmwareVersion: String = {
         UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? ""
@@ -117,6 +124,108 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400
     }()
     
+    // 气体泄漏检测（开阀压力）步骤参数
+    @State private var gasLeakOpenPreCloseDurationSeconds: Int = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_open_pre_close_duration_seconds") as? Int ?? 10
+    }()
+    @State private var gasLeakOpenPostCloseDurationSeconds: Int = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_open_post_close_duration_seconds") as? Int ?? 15
+    }()
+    @State private var gasLeakOpenIntervalSeconds: Double = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_open_interval_seconds") as? Double ?? 0.5
+    }()
+    @State private var gasLeakOpenDropThresholdMbar: Double = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_open_drop_threshold_mbar") as? Double ?? 15
+    }()
+    @State private var gasLeakOpenStartPressureMinMbar: Double = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_open_start_pressure_min_mbar") as? Double ?? 1300
+    }()
+    @State private var gasLeakOpenRequirePipelineReadyConfirm: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_open_require_pipeline_ready_confirm") as? Bool ?? true
+    }()
+    @State private var gasLeakOpenRequireValveClosedConfirm: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_open_require_valve_closed_confirm") as? Bool ?? true
+    }()
+    
+    // 气体泄漏检测（关阀压力）步骤参数
+    @State private var gasLeakClosedPreCloseDurationSeconds: Int = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_pre_close_duration_seconds") as? Int ?? 10
+    }()
+    @State private var gasLeakClosedPostCloseDurationSeconds: Int = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_post_close_duration_seconds") as? Int ?? 15
+    }()
+    @State private var gasLeakClosedIntervalSeconds: Double = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_interval_seconds") as? Double ?? 0.5
+    }()
+    @State private var gasLeakClosedDropThresholdMbar: Double = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_drop_threshold_mbar") as? Double ?? 15
+    }()
+    @State private var gasLeakClosedStartPressureMinMbar: Double = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_start_pressure_min_mbar") as? Double ?? 1300
+    }()
+    @State private var gasLeakClosedRequirePipelineReadyConfirm: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_require_pipeline_ready_confirm") as? Bool ?? true
+    }()
+    @State private var gasLeakClosedRequireValveClosedConfirm: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_require_valve_closed_confirm") as? Bool ?? true
+    }()
+    /// 若开阀压力检测通过则自动跳过关阀压力步骤
+    @State private var gasLeakSkipClosedWhenOpenPasses: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_skip_closed_when_open_passes") as? Bool ?? false
+    }()
+
+    // MARK: - 导入导出：当前规则快照
+    private struct RulesSnapshot: Codable {
+        struct StepState: Codable {
+            var id: String
+            var enabled: Bool
+        }
+        
+        var bootloaderVersion: String
+        var firmwareVersion: String
+        var hardwareVersion: String
+        var firmwareUpgradeEnabled: Bool
+        
+        var rtcTimeDiffPassThreshold: Double
+        var rtcTimeDiffFailThreshold: Double
+        var rtcWriteEnabled: Bool
+        var rtcWriteRetryCount: Int
+        var rtcReadTimeout: Double
+        var deviceInfoReadTimeout: Double
+        var otaStartWaitTimeout: Double
+        var deviceReconnectTimeout: Double
+        var valveOpenTimeout: Double
+        var stepIntervalMs: Int
+        var bluetoothPermissionWaitSeconds: Double
+        
+        var pressureClosedMin: Double
+        var pressureClosedMax: Double
+        var pressureOpenMin: Double
+        var pressureOpenMax: Double
+        var pressureDiffCheckEnabled: Bool
+        var pressureDiffMin: Double
+        var pressureDiffMax: Double
+        
+        var gasLeakOpenPreCloseDurationSeconds: Int
+        var gasLeakOpenPostCloseDurationSeconds: Int
+        var gasLeakOpenIntervalSeconds: Double
+        var gasLeakOpenDropThresholdMbar: Double
+        var gasLeakOpenStartPressureMinMbar: Double
+        var gasLeakOpenRequirePipelineReadyConfirm: Bool
+        var gasLeakOpenRequireValveClosedConfirm: Bool
+        
+        var gasLeakClosedPreCloseDurationSeconds: Int
+        var gasLeakClosedPostCloseDurationSeconds: Int
+        var gasLeakClosedIntervalSeconds: Double
+        var gasLeakClosedDropThresholdMbar: Double
+        var gasLeakClosedStartPressureMinMbar: Double
+        var gasLeakClosedRequirePipelineReadyConfirm: Bool
+        var gasLeakClosedRequireValveClosedConfirm: Bool
+        var gasLeakSkipClosedWhenOpenPasses: Bool
+        
+        var steps: [StepState]
+    }
+    
     // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「重启」「恢复出厂」等可调顺序步骤（须在第2步到倒数第二步之间）
     private static let defaultSteps: [TestStep] = [
         .connectDevice,
@@ -124,6 +233,8 @@ struct ProductionTestRulesView: View {
         .readRTC,
         .readPressure,
         .readGasSystemStatus,
+        .gasLeakOpen,
+        .gasLeakClosed,
         .ensureValveOpen,
         .reset,
         .factoryReset,
@@ -134,7 +245,7 @@ struct ProductionTestRulesView: View {
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         // 加载步骤顺序
@@ -176,6 +287,26 @@ struct ProductionTestRulesView: View {
                 steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
             }
         }
+        // 迁移：若旧配置中无「气体泄漏检测（开阀压力）」步骤，则插入在读取 Gas system status 之后
+        if !steps.contains(where: { $0.id == TestStep.gasLeakOpen.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+                steps.insert(TestStep.gasLeakOpen, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
+                steps.insert(TestStep.gasLeakOpen, at: idx)
+            } else {
+                steps.insert(TestStep.gasLeakOpen, at: steps.count - 1)
+            }
+        }
+        // 迁移：若旧配置中无「气体泄漏检测（关阀压力）」步骤，则插入在开阀压力步骤之后
+        if !steps.contains(where: { $0.id == TestStep.gasLeakClosed.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.gasLeakOpen.id }) {
+                steps.insert(TestStep.gasLeakClosed, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
+                steps.insert(TestStep.gasLeakClosed, at: idx)
+            } else {
+                steps.insert(TestStep.gasLeakClosed, at: steps.count - 1)
+            }
+        }
         // 迁移：若旧配置中无「重启」「恢复出厂」步骤，则插入在断开连接之前（第2步到倒数第二步之间）
         if !steps.contains(where: { $0.id == TestStep.reset.id }) {
             if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
@@ -205,6 +336,10 @@ struct ProductionTestRulesView: View {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: false)
                 } else if let enabled = enabledDict[steps[i].id] {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
+                } else if (steps[i].id == TestStep.gasLeakOpen.id || steps[i].id == TestStep.gasLeakClosed.id),
+                          let legacyEnabled = enabledDict["step_gas_leak"] {
+                    // 迁移：旧单步「气体泄漏检测」的启用状态应用到两个新步骤
+                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: legacyEnabled)
                 }
             }
         }
@@ -217,7 +352,7 @@ struct ProductionTestRulesView: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 4) {
                     // 产测流程说明
                     testProcedureSection
                     
@@ -232,8 +367,9 @@ struct ProductionTestRulesView: View {
                 }
                 .padding()
             }
+            .disabled(isReadOnly)
         }
-        .frame(minWidth: 720, minHeight: 500)
+        .frame(minWidth: 960, idealWidth: 1100, minHeight: 540)
     }
     
     private var header: some View {
@@ -241,12 +377,343 @@ struct ProductionTestRulesView: View {
             HStack {
                 Text(appLanguage.string("production_test_rules.title"))
                     .font(.title2.weight(.semibold))
+                
+                if isReadOnly {
+                    Text(appLanguage.string("production_test_rules.readonly_while_testing"))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                
                 Spacer()
+                
+                HStack(spacing: 8) {
+                    Button {
+                        saveRulesToFile()
+                    } label: {
+                        Text(appLanguage.string("production_test_rules.export_rules"))
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReadOnly)
+                    
+                    Button {
+                        loadRulesFromFile()
+                    } label: {
+                        Text(appLanguage.string("production_test_rules.import_rules"))
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReadOnly)
+                    
+                    Button {
+                        resetToDefaultRules()
+                    } label: {
+                        Text(appLanguage.string("common.reset_to_default"))
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReadOnly)
+                }
             }
         }
         .padding()
     }
+
+    /// 将所有产测 SOP 规则恢复为默认值
+    private func resetToDefaultRules() {
+        guard !isReadOnly else { return }
+        let defaults = UserDefaults.standard
+        // 版本与基础配置
+        defaults.removeObject(forKey: "production_test_bootloader_version")
+        defaults.removeObject(forKey: "production_test_firmware_version")
+        defaults.removeObject(forKey: "production_test_hardware_version")
+        defaults.removeObject(forKey: "production_test_firmware_upgrade_enabled")
+        // 步骤顺序与启用状态
+        defaults.removeObject(forKey: "production_test_steps_order")
+        defaults.removeObject(forKey: "production_test_steps_enabled")
+        // 全局延时
+        defaults.removeObject(forKey: "production_test_step_interval_ms")
+        defaults.removeObject(forKey: "production_test_bluetooth_permission_wait_seconds")
+        // RTC
+        defaults.removeObject(forKey: "production_test_rtc_pass_threshold")
+        defaults.removeObject(forKey: "production_test_rtc_fail_threshold")
+        defaults.removeObject(forKey: "production_test_rtc_write_enabled")
+        defaults.removeObject(forKey: "production_test_rtc_write_retry_count")
+        defaults.removeObject(forKey: "production_test_rtc_read_timeout")
+        // 设备信息 / OTA / 断开重连
+        defaults.removeObject(forKey: "production_test_device_info_timeout")
+        defaults.removeObject(forKey: "production_test_ota_start_timeout")
+        defaults.removeObject(forKey: "production_test_reconnect_timeout")
+        defaults.removeObject(forKey: "production_test_valve_open_timeout")
+        // 压力阈值
+        defaults.removeObject(forKey: "production_test_pressure_closed_min")
+        defaults.removeObject(forKey: "production_test_pressure_closed_max")
+        defaults.removeObject(forKey: "production_test_pressure_open_min")
+        defaults.removeObject(forKey: "production_test_pressure_open_max")
+        defaults.removeObject(forKey: "production_test_pressure_diff_check_enabled")
+        defaults.removeObject(forKey: "production_test_pressure_diff_min")
+        defaults.removeObject(forKey: "production_test_pressure_diff_max")
+        // 气体泄漏（开阀）
+        defaults.removeObject(forKey: "production_test_gas_leak_open_judgement_source")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_pre_close_duration_seconds")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_post_close_duration_seconds")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_interval_seconds")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_drop_threshold_mbar")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_alarm_enabled")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_alarm_threshold_bar")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_require_pipeline_ready_confirm")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_require_valve_closed_confirm")
+        // 气体泄漏（关阀）
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_judgement_source")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_pre_close_duration_seconds")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_post_close_duration_seconds")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_interval_seconds")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_drop_threshold_mbar")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_alarm_enabled")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_alarm_threshold_bar")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_require_pipeline_ready_confirm")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_require_valve_closed_confirm")
+
+        // 重置本地状态为初始默认值
+        bootloaderVersion = "2"
+        firmwareVersion = ""
+        hardwareVersion = ""
+        firmwareUpgradeEnabled = true
+        rtcTimeDiffPassThreshold = 2.0
+        rtcTimeDiffFailThreshold = 5.0
+        rtcWriteEnabled = true
+        rtcWriteRetryCount = 3
+        rtcReadTimeout = 2.0
+        deviceInfoReadTimeout = 3.0
+        otaStartWaitTimeout = 5.0
+        deviceReconnectTimeout = 5.0
+        valveOpenTimeout = 5.0
+        stepIntervalMs = 100
+        bluetoothPermissionWaitSeconds = 0
+        pressureClosedMin = 1100
+        pressureClosedMax = 1350
+        pressureOpenMin = 1300
+        pressureOpenMax = 1500
+        pressureDiffCheckEnabled = true
+        pressureDiffMin = 30
+        pressureDiffMax = 400
+        gasLeakOpenPreCloseDurationSeconds = 10
+        gasLeakOpenPostCloseDurationSeconds = 15
+        gasLeakOpenIntervalSeconds = 0.5
+        gasLeakOpenDropThresholdMbar = 15
+        gasLeakOpenRequirePipelineReadyConfirm = true
+        gasLeakOpenRequireValveClosedConfirm = true
+        gasLeakClosedPreCloseDurationSeconds = 10
+        gasLeakClosedPostCloseDurationSeconds = 15
+        gasLeakClosedIntervalSeconds = 0.5
+        gasLeakClosedDropThresholdMbar = 15
+        gasLeakClosedRequirePipelineReadyConfirm = true
+        gasLeakClosedRequireValveClosedConfirm = true
+        testSteps = Self.defaultSteps
+        expandedSteps = []
+        isEditingOrder = false
+
+        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+    }
+
+    // MARK: - 规则导出 / 导入
+    private func makeSnapshot() -> RulesSnapshot {
+        RulesSnapshot(
+            bootloaderVersion: bootloaderVersion,
+            firmwareVersion: firmwareVersion,
+            hardwareVersion: hardwareVersion,
+            firmwareUpgradeEnabled: firmwareUpgradeEnabled,
+            rtcTimeDiffPassThreshold: rtcTimeDiffPassThreshold,
+            rtcTimeDiffFailThreshold: rtcTimeDiffFailThreshold,
+            rtcWriteEnabled: rtcWriteEnabled,
+            rtcWriteRetryCount: rtcWriteRetryCount,
+            rtcReadTimeout: rtcReadTimeout,
+            deviceInfoReadTimeout: deviceInfoReadTimeout,
+            otaStartWaitTimeout: otaStartWaitTimeout,
+            deviceReconnectTimeout: deviceReconnectTimeout,
+            valveOpenTimeout: valveOpenTimeout,
+            stepIntervalMs: stepIntervalMs,
+            bluetoothPermissionWaitSeconds: bluetoothPermissionWaitSeconds,
+            pressureClosedMin: pressureClosedMin,
+            pressureClosedMax: pressureClosedMax,
+            pressureOpenMin: pressureOpenMin,
+            pressureOpenMax: pressureOpenMax,
+            pressureDiffCheckEnabled: pressureDiffCheckEnabled,
+            pressureDiffMin: pressureDiffMin,
+            pressureDiffMax: pressureDiffMax,
+            gasLeakOpenPreCloseDurationSeconds: gasLeakOpenPreCloseDurationSeconds,
+            gasLeakOpenPostCloseDurationSeconds: gasLeakOpenPostCloseDurationSeconds,
+            gasLeakOpenIntervalSeconds: gasLeakOpenIntervalSeconds,
+            gasLeakOpenDropThresholdMbar: gasLeakOpenDropThresholdMbar,
+            gasLeakOpenStartPressureMinMbar: gasLeakOpenStartPressureMinMbar,
+            gasLeakOpenRequirePipelineReadyConfirm: gasLeakOpenRequirePipelineReadyConfirm,
+            gasLeakOpenRequireValveClosedConfirm: gasLeakOpenRequireValveClosedConfirm,
+            gasLeakClosedPreCloseDurationSeconds: gasLeakClosedPreCloseDurationSeconds,
+            gasLeakClosedPostCloseDurationSeconds: gasLeakClosedPostCloseDurationSeconds,
+            gasLeakClosedIntervalSeconds: gasLeakClosedIntervalSeconds,
+            gasLeakClosedDropThresholdMbar: gasLeakClosedDropThresholdMbar,
+            gasLeakClosedStartPressureMinMbar: gasLeakClosedStartPressureMinMbar,
+            gasLeakClosedRequirePipelineReadyConfirm: gasLeakClosedRequirePipelineReadyConfirm,
+            gasLeakClosedRequireValveClosedConfirm: gasLeakClosedRequireValveClosedConfirm,
+            gasLeakSkipClosedWhenOpenPasses: gasLeakSkipClosedWhenOpenPasses,
+            steps: testSteps.map { RulesSnapshot.StepState(id: $0.id, enabled: $0.enabled) }
+        )
+    }
+
+    private func applySnapshot(_ snapshot: RulesSnapshot) {
+        guard !isReadOnly else { return }
+
+        let defaults = UserDefaults.standard
+
+        bootloaderVersion = snapshot.bootloaderVersion
+        firmwareVersion = snapshot.firmwareVersion
+        hardwareVersion = snapshot.hardwareVersion
+        firmwareUpgradeEnabled = snapshot.firmwareUpgradeEnabled
+
+        rtcTimeDiffPassThreshold = snapshot.rtcTimeDiffPassThreshold
+        rtcTimeDiffFailThreshold = snapshot.rtcTimeDiffFailThreshold
+        rtcWriteEnabled = snapshot.rtcWriteEnabled
+        rtcWriteRetryCount = snapshot.rtcWriteRetryCount
+        rtcReadTimeout = snapshot.rtcReadTimeout
+        deviceInfoReadTimeout = snapshot.deviceInfoReadTimeout
+        otaStartWaitTimeout = snapshot.otaStartWaitTimeout
+        deviceReconnectTimeout = snapshot.deviceReconnectTimeout
+        valveOpenTimeout = snapshot.valveOpenTimeout
+        stepIntervalMs = snapshot.stepIntervalMs
+        bluetoothPermissionWaitSeconds = snapshot.bluetoothPermissionWaitSeconds
+
+        pressureClosedMin = snapshot.pressureClosedMin
+        pressureClosedMax = snapshot.pressureClosedMax
+        pressureOpenMin = snapshot.pressureOpenMin
+        pressureOpenMax = snapshot.pressureOpenMax
+        pressureDiffCheckEnabled = snapshot.pressureDiffCheckEnabled
+        pressureDiffMin = snapshot.pressureDiffMin
+        pressureDiffMax = snapshot.pressureDiffMax
+
+        gasLeakOpenPreCloseDurationSeconds = snapshot.gasLeakOpenPreCloseDurationSeconds
+        gasLeakOpenPostCloseDurationSeconds = snapshot.gasLeakOpenPostCloseDurationSeconds
+        gasLeakOpenIntervalSeconds = snapshot.gasLeakOpenIntervalSeconds
+        gasLeakOpenDropThresholdMbar = snapshot.gasLeakOpenDropThresholdMbar
+        gasLeakOpenStartPressureMinMbar = snapshot.gasLeakOpenStartPressureMinMbar
+        gasLeakOpenRequirePipelineReadyConfirm = snapshot.gasLeakOpenRequirePipelineReadyConfirm
+        gasLeakOpenRequireValveClosedConfirm = snapshot.gasLeakOpenRequireValveClosedConfirm
+
+        gasLeakClosedPreCloseDurationSeconds = snapshot.gasLeakClosedPreCloseDurationSeconds
+        gasLeakClosedPostCloseDurationSeconds = snapshot.gasLeakClosedPostCloseDurationSeconds
+        gasLeakClosedIntervalSeconds = snapshot.gasLeakClosedIntervalSeconds
+        gasLeakClosedDropThresholdMbar = snapshot.gasLeakClosedDropThresholdMbar
+        gasLeakClosedStartPressureMinMbar = snapshot.gasLeakClosedStartPressureMinMbar
+        gasLeakClosedRequirePipelineReadyConfirm = snapshot.gasLeakClosedRequirePipelineReadyConfirm
+        gasLeakClosedRequireValveClosedConfirm = snapshot.gasLeakClosedRequireValveClosedConfirm
+        gasLeakSkipClosedWhenOpenPasses = snapshot.gasLeakSkipClosedWhenOpenPasses
+
+        // 写回 UserDefaults（保持现有 key 语义）
+        defaults.set(bootloaderVersion, forKey: "production_test_bootloader_version")
+        defaults.set(firmwareVersion, forKey: "production_test_firmware_version")
+        defaults.set(hardwareVersion, forKey: "production_test_hardware_version")
+        defaults.set(firmwareUpgradeEnabled, forKey: "production_test_firmware_upgrade_enabled")
+
+        defaults.set(rtcTimeDiffPassThreshold, forKey: "production_test_rtc_pass_threshold")
+        defaults.set(rtcTimeDiffFailThreshold, forKey: "production_test_rtc_fail_threshold")
+        defaults.set(rtcWriteEnabled, forKey: "production_test_rtc_write_enabled")
+        defaults.set(rtcWriteRetryCount, forKey: "production_test_rtc_write_retry_count")
+        defaults.set(rtcReadTimeout, forKey: "production_test_rtc_read_timeout")
+        defaults.set(deviceInfoReadTimeout, forKey: "production_test_device_info_timeout")
+        defaults.set(otaStartWaitTimeout, forKey: "production_test_ota_start_timeout")
+        defaults.set(deviceReconnectTimeout, forKey: "production_test_reconnect_timeout")
+        defaults.set(valveOpenTimeout, forKey: "production_test_valve_open_timeout")
+        defaults.set(stepIntervalMs, forKey: "production_test_step_interval_ms")
+        defaults.set(bluetoothPermissionWaitSeconds, forKey: "production_test_bluetooth_permission_wait_seconds")
+
+        defaults.set(pressureClosedMin, forKey: "production_test_pressure_closed_min")
+        defaults.set(pressureClosedMax, forKey: "production_test_pressure_closed_max")
+        defaults.set(pressureOpenMin, forKey: "production_test_pressure_open_min")
+        defaults.set(pressureOpenMax, forKey: "production_test_pressure_open_max")
+        defaults.set(pressureDiffCheckEnabled, forKey: "production_test_pressure_diff_check_enabled")
+        defaults.set(pressureDiffMin, forKey: "production_test_pressure_diff_min")
+        defaults.set(pressureDiffMax, forKey: "production_test_pressure_diff_max")
+
+        defaults.set(gasLeakOpenPreCloseDurationSeconds, forKey: "production_test_gas_leak_open_pre_close_duration_seconds")
+        defaults.set(gasLeakOpenPostCloseDurationSeconds, forKey: "production_test_gas_leak_open_post_close_duration_seconds")
+        defaults.set(gasLeakOpenIntervalSeconds, forKey: "production_test_gas_leak_open_interval_seconds")
+        defaults.set(gasLeakOpenDropThresholdMbar, forKey: "production_test_gas_leak_open_drop_threshold_mbar")
+        defaults.set(gasLeakOpenStartPressureMinMbar, forKey: "production_test_gas_leak_open_start_pressure_min_mbar")
+        defaults.set(gasLeakOpenRequirePipelineReadyConfirm, forKey: "production_test_gas_leak_open_require_pipeline_ready_confirm")
+        defaults.set(gasLeakOpenRequireValveClosedConfirm, forKey: "production_test_gas_leak_open_require_valve_closed_confirm")
+
+        defaults.set(gasLeakClosedPreCloseDurationSeconds, forKey: "production_test_gas_leak_closed_pre_close_duration_seconds")
+        defaults.set(gasLeakClosedPostCloseDurationSeconds, forKey: "production_test_gas_leak_closed_post_close_duration_seconds")
+        defaults.set(gasLeakClosedIntervalSeconds, forKey: "production_test_gas_leak_closed_interval_seconds")
+        defaults.set(gasLeakClosedDropThresholdMbar, forKey: "production_test_gas_leak_closed_drop_threshold_mbar")
+        defaults.set(gasLeakClosedStartPressureMinMbar, forKey: "production_test_gas_leak_closed_start_pressure_min_mbar")
+        defaults.set(gasLeakClosedRequirePipelineReadyConfirm, forKey: "production_test_gas_leak_closed_require_pipeline_ready_confirm")
+        defaults.set(gasLeakClosedRequireValveClosedConfirm, forKey: "production_test_gas_leak_closed_require_valve_closed_confirm")
+        defaults.set(gasLeakSkipClosedWhenOpenPasses, forKey: "production_test_gas_leak_skip_closed_when_open_passes")
+
+        // 步骤顺序与启用状态
+        let ids = snapshot.steps.map { $0.id }
+        defaults.set(ids, forKey: "production_test_steps_order")
+        let enabledDict = Dictionary(uniqueKeysWithValues: snapshot.steps.map { ($0.id, $0.enabled) })
+        defaults.set(enabledDict, forKey: "production_test_steps_enabled")
+
+        // 更新本地状态数组
+        var newSteps: [TestStep] = []
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+            .reduce(into: [:]) { $0[$1.id] = $1 }
+        for s in snapshot.steps {
+            if var base = stepMap[s.id] {
+                base.enabled = s.enabled
+                newSteps.append(base)
+            }
+        }
+        if newSteps.isEmpty {
+            newSteps = Self.defaultSteps
+        }
+        testSteps = newSteps
+
+        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+    }
+
+    private func saveRulesToFile() {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.allowedFileTypes = ["json"]
+        panel.nameFieldStringValue = "ProductionTestRules.json"
+
+        let snapshot = makeSnapshot()
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                try? data.write(to: url)
+            }
+        }
+    }
+
+    private func loadRulesFromFile() {
+        guard !isReadOnly else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["json"]
+
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                guard let data = try? Data(contentsOf: url) else { return }
+                let decoder = JSONDecoder()
+                if let snapshot = try? decoder.decode(RulesSnapshot.self, from: data) {
+                    applySnapshot(snapshot)
+                }
+            }
+        }
+    }
     
+    
+    private var isReadOnly: Bool {
+        productionState.isRunning
+    }
     
     private var testProcedureSection: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -267,13 +734,13 @@ struct ProductionTestRulesView: View {
     
     /// 全局延时设定：步骤间延时（适用于所有步骤之间，非步骤2专属）
     private var globalStepDelaySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(appLanguage.string("production_test_rules.global_step_delay_section"))
                 .font(.headline)
                 .foregroundStyle(.primary)
 
             // 步骤间延时（ms）与蓝牙权限等待（s）放在同一行，提升布局利用率
-            HStack(alignment: .center, spacing: 24) {
+            HStack(alignment: .center, spacing: 8) {
                 thresholdIntRow(
                     label: appLanguage.string("production_test_rules.step_interval_ms"),
                     value: $stepIntervalMs,
@@ -287,8 +754,9 @@ struct ProductionTestRulesView: View {
                     unit: appLanguage.string("production_test_rules.unit_seconds"),
                     key: "production_test_bluetooth_permission_wait_seconds"
                 )
-                .frame(maxWidth: 260, alignment: .leading)
+                .frame(maxWidth: 360, alignment: .leading)
             }
+            .controlSize(.small)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -302,7 +770,9 @@ struct ProductionTestRulesView: View {
             Text(label)
                 .font(.body)
                 .foregroundStyle(.secondary)
-                .frame(width: 140, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 180, alignment: .leading)
             
             TextField("", value: value, format: .number.precision(.fractionLength(1)))
                 .textFieldStyle(.roundedBorder)
@@ -325,7 +795,9 @@ struct ProductionTestRulesView: View {
             Text(label)
                 .font(.body)
                 .foregroundStyle(.secondary)
-                .frame(width: 140, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 180, alignment: .leading)
             
             TextField("", value: value, format: .number)
                 .textFieldStyle(.roundedBorder)
@@ -732,6 +1204,10 @@ struct ProductionTestRulesView: View {
                 rtcConfigurationView
             case "step4": // 读取压力值
                 pressureConfigurationView
+            case "step_gas_leak_open": // 气体泄漏检测（开阀压力）
+                gasLeakOpenConfigurationView
+            case "step_gas_leak_closed": // 气体泄漏检测（关阀压力）
+                gasLeakClosedConfigurationView
             default:
                 EmptyView()
             }
@@ -789,8 +1265,27 @@ struct ProductionTestRulesView: View {
                             UserDefaults.standard.set(newValue, forKey: "production_test_firmware_version")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                         }
-                        
-                        Spacer()
+
+                        Button {
+                            ble.appendLog("[固件] 产测 SOP 手动刷新 usage_type=ota_app channel=production", level: .info)
+                            Task {
+                                await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: "production")
+                                await MainActor.run {
+                                    let count = firmwareManager.serverItemsForProduction.count
+                                    if let err = firmwareManager.serverItemsError {
+                                        ble.appendLog("[固件] 产测 channel=production 拉取失败: \(err)", level: .error)
+                                    } else {
+                                        let versions = firmwareManager.serverItemsForProduction.map(\.version).joined(separator: ", ")
+                                        ble.appendLog("[固件] 产测 channel=production 拉取成功 共\(count)条 [\(versions.isEmpty ? "无" : versions)]", level: .info)
+                                    }
+                                }
+                            }
+                        } label: {
+                            Text(appLanguage.string("ota.refresh_firmware_list"))
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(firmwareManager.serverItemsLoading)
                     }
                     
                     if productionTestRequiresFirmwareSupportForRebootSteps && !productionTestAllowedFirmwareEntries.isEmpty {
@@ -858,7 +1353,19 @@ struct ProductionTestRulesView: View {
                     }
                     // 若产线可见固件列表尚为空，则触发一次拉取（channel=production）
                     if firmwareManager.serverItemsForProduction.isEmpty && !firmwareManager.serverItemsLoading {
-                        Task { await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: "production") }
+                        ble.appendLog("[固件] 产测 SOP 拉取 usage_type=ota_app channel=production", level: .info)
+                        Task {
+                            await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: "production")
+                            await MainActor.run {
+                                let count = firmwareManager.serverItemsForProduction.count
+                                if let err = firmwareManager.serverItemsError {
+                                    ble.appendLog("[固件] 产测 channel=production 拉取失败: \(err)", level: .error)
+                                } else {
+                                    let versions = firmwareManager.serverItemsForProduction.map(\.version).joined(separator: ", ")
+                                    ble.appendLog("[固件] 产测 channel=production 拉取成功 共\(count)条 [\(versions.isEmpty ? "无" : versions)]", level: .info)
+                                }
+                            }
+                        }
                     }
                 }
                 
@@ -1074,6 +1581,114 @@ struct ProductionTestRulesView: View {
                     unit: appLanguage.string("production_test_rules.unit_seconds"),
                     key: "production_test_valve_open_timeout"
                 )
+            }
+        }
+        .padding(8)
+    }
+    
+    /// 气体泄漏检测（开阀压力）步骤配置视图
+    private var gasLeakOpenConfigurationView: some View {
+        gasLeakConfigView(
+            preCloseDuration: $gasLeakOpenPreCloseDurationSeconds,
+            postCloseDuration: $gasLeakOpenPostCloseDurationSeconds,
+            intervalSeconds: $gasLeakOpenIntervalSeconds,
+            dropThresholdMbar: $gasLeakOpenDropThresholdMbar,
+            startPressureMinMbar: $gasLeakOpenStartPressureMinMbar,
+            requirePipelineReadyConfirm: $gasLeakOpenRequirePipelineReadyConfirm,
+            requireValveClosedConfirm: $gasLeakOpenRequireValveClosedConfirm,
+            keyPrefix: "production_test_gas_leak_open"
+        )
+    }
+    
+    /// 气体泄漏检测（关阀压力）步骤配置视图
+    private var gasLeakClosedConfigurationView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            gasLeakConfigView(
+                preCloseDuration: $gasLeakClosedPreCloseDurationSeconds,
+                postCloseDuration: $gasLeakClosedPostCloseDurationSeconds,
+                intervalSeconds: $gasLeakClosedIntervalSeconds,
+                dropThresholdMbar: $gasLeakClosedDropThresholdMbar,
+                startPressureMinMbar: $gasLeakClosedStartPressureMinMbar,
+                requirePipelineReadyConfirm: $gasLeakClosedRequirePipelineReadyConfirm,
+                requireValveClosedConfirm: $gasLeakClosedRequireValveClosedConfirm,
+                keyPrefix: "production_test_gas_leak_closed"
+            )
+            
+            Divider()
+                .padding(.vertical, 4)
+            
+            // 开阀压力通过时是否跳过本步骤
+            HStack(spacing: 12) {
+                Toggle("", isOn: $gasLeakSkipClosedWhenOpenPasses)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .onChange(of: gasLeakSkipClosedWhenOpenPasses) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "production_test_gas_leak_skip_closed_when_open_passes")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+                
+                Text(appLanguage.string("production_test_rules.gas_leak_skip_closed_when_open_passes"))
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                
+                Spacer()
+            }
+        }
+    }
+    
+    /// 气体泄漏检测通用配置视图（供开阀/关阀两个步骤复用）
+    private func gasLeakConfigView(
+        preCloseDuration: Binding<Int>,
+        postCloseDuration: Binding<Int>,
+        intervalSeconds: Binding<Double>,
+        dropThresholdMbar: Binding<Double>,
+        startPressureMinMbar: Binding<Double>,
+        requirePipelineReadyConfirm: Binding<Bool>,
+        requireValveClosedConfirm: Binding<Bool>,
+        keyPrefix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(appLanguage.string("production_test_rules.gas_leak_params_title"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_pre_close_duration"), value: preCloseDuration, key: "\(keyPrefix)_pre_close_duration_seconds")
+                thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_post_close_duration"), value: postCloseDuration, key: "\(keyPrefix)_post_close_duration_seconds")
+                thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_interval"), value: intervalSeconds, unit: appLanguage.string("production_test_rules.unit_seconds"), key: "\(keyPrefix)_interval_seconds")
+                thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_drop_threshold_mbar"), value: dropThresholdMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_drop_threshold_mbar")
+                thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_start_pressure_min"), value: startPressureMinMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_start_pressure_min_mbar")
+                
+                Divider().padding(.vertical, 4)
+                Divider().padding(.vertical, 4)
+                
+                HStack(spacing: 12) {
+                    Toggle("", isOn: requirePipelineReadyConfirm)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .onChange(of: requirePipelineReadyConfirm.wrappedValue) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_pipeline_ready_confirm")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                    Text(appLanguage.string("production_test_rules.gas_leak_require_pipeline_ready_confirm"))
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                
+                HStack(spacing: 12) {
+                    Toggle("", isOn: requireValveClosedConfirm)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .onChange(of: requireValveClosedConfirm.wrappedValue) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_valve_closed_confirm")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                    Text(appLanguage.string("production_test_rules.gas_leak_require_valve_closed_confirm"))
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
             }
         }
         .padding(8)
