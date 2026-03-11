@@ -20,7 +20,7 @@ struct TestStep: Identifiable, Equatable {
     /// 读取 Gas system status（0 initially closed, 1 ok, 2 leak…；产测要求 1 ok）
     static let readGasSystemStatus = TestStep(id: "step_gas_system_status", key: "step_gas_system_status", isLocked: false, enabled: true)
     /// 气体泄漏检测（开阀压力）：第一个泄漏检测步骤，默认用开阀压力判定；可独立启用与配置
-    static let gasLeakOpen = TestStep(id: "step_gas_leak_open", key: "step_gas_leak_open", isLocked: false, enabled: true)
+    static let gasLeakOpen = TestStep(id: "step_gas_leak_open", key: "step_gas_leak_open", isLocked: false, enabled: false)
     /// 气体泄漏检测（关阀压力）：第二个泄漏检测步骤，默认用关阀压力判定；可独立启用与配置
     static let gasLeakClosed = TestStep(id: "step_gas_leak_closed", key: "step_gas_leak_closed", isLocked: false, enabled: true)
     static let tbd = TestStep(id: "step5", key: "step5", isLocked: false, enabled: false)
@@ -42,6 +42,8 @@ struct ProductionTestRulesView: View {
     @EnvironmentObject private var productionState: ProductionTestState
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
+    
+    private let hardwareVersionPresets = ["P02V02R01", "P02V02R00"]
     @State private var bootloaderVersion: String = {
         let v = UserDefaults.standard.string(forKey: "production_test_bootloader_version")
         return (v == nil || v!.isEmpty) ? "2" : v!
@@ -50,11 +52,11 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? ""
     }()
     @State private var hardwareVersion: String = {
-        UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? ""
+        UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? "P02V02R01"
     }()
-    // 固件版本升级开关
+    // 固件版本升级开关（默认关闭，仅在用户显式开启时触发 OTA）
     @State private var firmwareUpgradeEnabled: Bool = {
-        UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? true
+        UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? false
     }()
     @State private var isEditingOrder: Bool = false
     // 步骤展开状态（用于显示配置项）
@@ -102,13 +104,13 @@ struct ProductionTestRulesView: View {
     
     // 压力阈值配置（单位：mbar）
     @State private var pressureClosedMin: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1100
+        UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1000
     }()
     @State private var pressureClosedMax: Double = {
         UserDefaults.standard.object(forKey: "production_test_pressure_closed_max") as? Double ?? 1350
     }()
     @State private var pressureOpenMin: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1300
+        UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1000
     }()
     @State private var pressureOpenMax: Double = {
         UserDefaults.standard.object(forKey: "production_test_pressure_open_max") as? Double ?? 1500
@@ -118,7 +120,7 @@ struct ProductionTestRulesView: View {
         UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? true
     }()
     @State private var pressureDiffMin: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 30
+        UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 0
     }()
     @State private var pressureDiffMax: Double = {
         UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400
@@ -477,7 +479,7 @@ struct ProductionTestRulesView: View {
         // 重置本地状态为初始默认值
         bootloaderVersion = "2"
         firmwareVersion = ""
-        hardwareVersion = ""
+        hardwareVersion = "P02V02R01"
         firmwareUpgradeEnabled = true
         rtcTimeDiffPassThreshold = 2.0
         rtcTimeDiffFailThreshold = 5.0
@@ -490,12 +492,12 @@ struct ProductionTestRulesView: View {
         valveOpenTimeout = 5.0
         stepIntervalMs = 100
         bluetoothPermissionWaitSeconds = 0
-        pressureClosedMin = 1100
+        pressureClosedMin = 1000
         pressureClosedMax = 1350
-        pressureOpenMin = 1300
+        pressureOpenMin = 1000
         pressureOpenMax = 1500
         pressureDiffCheckEnabled = true
-        pressureDiffMin = 30
+        pressureDiffMin = 0
         pressureDiffMax = 400
         gasLeakOpenPreCloseDurationSeconds = 10
         gasLeakOpenPostCloseDurationSeconds = 15
@@ -1369,22 +1371,40 @@ struct ProductionTestRulesView: View {
                     }
                 }
                 
-                // HW 版本
+                // HW 版本（可输入 + 下拉预设）
                 HStack(spacing: 12) {
                     Text(appLanguage.string("production_test_rules.hardware_version_label"))
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .frame(width: 100, alignment: .leading)
                     
-                    TextField(
-                        appLanguage.string("production_test_rules.hardware_version_placeholder"),
-                        text: $hardwareVersion
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                    .onChange(of: hardwareVersion) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "production_test_hardware_version")
-                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    HStack(spacing: 8) {
+                        TextField(
+                            appLanguage.string("production_test_rules.hardware_version_placeholder"),
+                            text: $hardwareVersion
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: hardwareVersion) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "production_test_hardware_version")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                        
+                        if !hardwareVersionPresets.isEmpty {
+                            Menu {
+                                ForEach(hardwareVersionPresets, id: \.self) { preset in
+                                    Button(preset) {
+                                        hardwareVersion = preset
+                                        UserDefaults.standard.set(preset, forKey: "production_test_hardware_version")
+                                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: "chevron.down.circle")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .menuStyle(.borderlessButton)
+                        }
                     }
                 }
                 

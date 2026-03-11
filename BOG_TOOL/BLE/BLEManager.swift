@@ -129,6 +129,10 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var lastConnectFailureWasPairingRemoved: Bool = false
     /// 产测恢复出厂后重连时设为 true，使 didFailToConnect 收到 Peer removed pairing 时以 info 记录并跳过弹窗/打开设置
     var isExpectingPairingRemovedFromFactoryReset: Bool = false
+    /// 是否抑制 GATT 相关底层读写日志（wr:/rd:/[GATT]…）；在 OTA 与漏气测试期间置为 true，结束后恢复
+    @Published var suppressGattLogs: Bool = false
+    /// 是否抑制高层传感器详细日志（关阀/开阀压力、阀门状态、Gas system status 等），产测可在特定阶段关闭这些细节日志
+    @Published var suppressSensorDetailLogs: Bool = false
     /// OTA 流程内部标记：进入发送固件前置位，用于状态机校验
     private var otaMarkerSet: Bool = false
     /// OTA 成功完成时的耗时（秒），用于完成后在状态/标题显示
@@ -1036,6 +1040,8 @@ final class BLEManager: NSObject, ObservableObject {
         connectionStartTime = Date()
         initialRttSamples.removeAll()
         otaValidationStartTime = nil
+        // OTA 期间抑制 GATT 底层读写日志，避免刷屏
+        suppressGattLogs = true
         // 先检查设备初始状态，确保为 0（OTA not started）才能开始
         otaFlowState = .checkingInitialState(chunks: chunks)
         
@@ -1129,6 +1135,7 @@ final class BLEManager: NSObject, ObservableObject {
             otaStartTime = nil
             otaFirmwareTotalBytes = nil
         }
+        suppressGattLogs = false
     }
     
     /// 取消 OTA：写 Status=0（abort）通知设备，并重置本地状态，可随时调用
@@ -1171,6 +1178,7 @@ final class BLEManager: NSObject, ObservableObject {
             isOTACompletedWaitingReboot = false
             isOTAInProgress = false
             otaValidationStartTime = nil
+            suppressGattLogs = false
             if otaStartTime != nil {
                 otaCompletedDuration = Date().timeIntervalSince(otaStartTime!)
             }
@@ -1409,7 +1417,14 @@ final class BLEManager: NSObject, ObservableObject {
     // MARK: - Private Helpers
     
     /// 向主日志区追加一条日志（含时间戳）。产测传入 [FQC]/[FQC][OTA]: 时原样保留；本模块日志加 [DBG]/[DBG][OTA]:，遵循日志等级过滤
-    func appendLog(_ msg: String, level: LogLevel = .info) {
+    /// - Parameters:
+    ///   - msg: 日志内容
+    ///   - level: 日志等级
+    ///   - category: 可选分类（如 \"GATT\" 表示底层 GATT 读写日志，可在 suppressGattLogs=true 时整体抑制）
+    func appendLog(_ msg: String, level: LogLevel = .info, category: String? = nil) {
+        if suppressGattLogs, let cat = category, cat == "GATT" {
+            return
+        }
         let line: String
         if msg.hasPrefix("[FQC]") {
             // 产测同步来的日志，已带 [FQC] 或 [FQC][OTA]:，只加时间戳
@@ -1509,7 +1524,7 @@ final class BLEManager: NSObject, ObservableObject {
     
     private func writeToCharacteristic(_ char: CBCharacteristic?, data: Data) {
         guard let peripheral = connectedPeripheral, let char = char else {
-            appendLog("[GATT] 未连接或特征不可用，跳过写入", level: .error)
+            appendLog("[GATT] 未连接或特征不可用，跳过写入", level: .error, category: "GATT")
             return
         }
         let isOtaDataWrite = (GattMapping.characteristicKey(for: char.uuid) == GattMapping.Key.otaData)
@@ -1519,7 +1534,7 @@ final class BLEManager: NSObject, ObservableObject {
             let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
             let alias = GattMapping.characteristicKey(for: char.uuid) ?? String(char.uuid.uuidString.suffix(8))
             let uuidTag = "0x" + char.uuid.uuidString.lowercased()
-            appendLog("wr:\(uuidTag): \(alias) : \(hex)", level: .debug)
+            appendLog("wr:\(uuidTag): \(alias) : \(hex)", level: .debug, category: "GATT")
         }
         // OTA 数据写入：始终使用 writeWithResponse 确保可靠性（等待设备确认后再继续）
         // 不使用 writeWithoutResponse，因为可能导致数据包丢失导致校验失败
@@ -1528,7 +1543,7 @@ final class BLEManager: NSObject, ObservableObject {
     
     private func readCharacteristic(_ char: CBCharacteristic?) {
         guard let peripheral = connectedPeripheral, let char = char else {
-            appendLog("[GATT] 未连接或特征不可用，跳过读取", level: .error)
+            appendLog("[GATT] 未连接或特征不可用，跳过读取", level: .error, category: "GATT")
             return
         }
         peripheral.readValue(for: char)
@@ -1557,11 +1572,11 @@ final class BLEManager: NSObject, ObservableObject {
     /// 调试用：向指定 UUID 特征写入 hex 字符串（空格可选）
     func writeToCharacteristic(uuidString: String, hex: String) {
         guard let data = dataFromHexString(hex), !data.isEmpty else {
-            appendLog("[GATT] 无效 hex，跳过写入", level: .error)
+            appendLog("[GATT] 无效 hex，跳过写入", level: .error, category: "GATT")
             return
         }
         guard let char = characteristic(for: uuidString) else {
-            appendLog("[GATT] 未找到特征 \(uuidString)，跳过写入", level: .error)
+            appendLog("[GATT] 未找到特征 \(uuidString)，跳过写入", level: .error, category: "GATT")
             return
         }
         writeToCharacteristic(char, data: data)
@@ -1570,7 +1585,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// 调试用：读取指定 UUID 特征；结果在 didUpdateValueFor 中写入 lastDebugRead* 供 UI 显示
     func readCharacteristic(uuidString: String) {
         guard let char = characteristic(for: uuidString) else {
-            appendLog("[GATT] 未找到特征 \(uuidString)，跳过读取", level: .error)
+            appendLog("[GATT] 未找到特征 \(uuidString)，跳过读取", level: .error, category: "GATT")
             return
         }
         pendingDebugReadUUID = uuidString
@@ -2003,14 +2018,14 @@ extension BLEManager: CBPeripheralDelegate {
                     if let peripheral = connectedPeripheral {
                         centralManager.cancelPeripheralConnection(peripheral)
                     }
-                } else {
-                    appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)", level: .error)
+                    } else {
+                    appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)", level: .error, category: "GATT")
                 }
             }
             return
         }
         guard let data = characteristic.value else {
-            Task { @MainActor in appendLog("rd:\(uuidTag): \(alias) : value=nil", level: .error) }
+            Task { @MainActor in appendLog("rd:\(uuidTag): \(alias) : value=nil", level: .error, category: "GATT") }
             return
         }
         let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
@@ -2029,13 +2044,17 @@ extension BLEManager: CBPeripheralDelegate {
             // 除了 OTA 数据包之外，其他所有读写操作都打印日志
             // OTA Status 读取使用 info 级别，确保总是显示（即使 OTA 进行中）
             let logLevel: LogLevel = isOtaStatusRead ? .info : .debug
-            appendLog("rd:\(uuidTag): \(alias) : \(hex)", level: logLevel)
+            appendLog("rd:\(uuidTag): \(alias) : \(hex)", level: logLevel, category: "GATT")
             if let u = pressureReadCBUUID, characteristic.uuid == u {
                 lastPressureValue = formatPressureData(data)
-                appendLog("关阀压力: \(lastPressureValue)", level: .info)
+                if !suppressSensorDetailLogs {
+                    appendLog("关阀压力: \(lastPressureValue)", level: .info)
+                }
             } else if let u = pressureOpenCBUUID, characteristic.uuid == u {
                 lastPressureOpenValue = formatPressureData(data)
-                appendLog("开阀压力: \(lastPressureOpenValue)", level: .info)
+                if !suppressSensorDetailLogs {
+                    appendLog("开阀压力: \(lastPressureOpenValue)", level: .info)
+                }
             } else if let u = rtcCBUUID, characteristic.uuid == u {
                 lastRTCValue = formatRTCData(data)
                 updateRTCReadSnapshot(deviceTimeString: lastRTCValue)
@@ -2047,7 +2066,9 @@ extension BLEManager: CBPeripheralDelegate {
                 appendLog("RTC: \(lastRTCValue)")
             } else if let u = gasSystemStatusCBUUID, characteristic.uuid == u {
                 lastGasSystemStatusValue = formatGasStatusData(data)
-                appendLog("Gas system status: \(lastGasSystemStatusValue)")
+                if !suppressSensorDetailLogs {
+                    appendLog("Gas system status: \(lastGasSystemStatusValue)")
+                }
             } else if let u = co2PressureLimitsCBUUID, characteristic.uuid == u {
                 lastPressureLimitsValue = formatPressureLimitsData(data)
                 appendLog("CO2 Pressure Limits: \(lastPressureLimitsValue.replacingOccurrences(of: "\n", with: ", "))")
@@ -2064,7 +2085,9 @@ extension BLEManager: CBPeripheralDelegate {
                 appendLog("阀门模式: \(lastValveModeValue) (0x\(String(format: "%02X", b)))")
             } else if let u = valveStateCBUUID, characteristic.uuid == u, let b = data.first {
                 lastValveStateValue = formatValveStateData(b)
-                appendLog("阀门状态: \(lastValveStateValue) (0x\(String(format: "%02X", b)))", level: .info)
+                if !suppressSensorDetailLogs {
+                    appendLog("阀门状态: \(lastValveStateValue) (0x\(String(format: "%02X", b)))", level: .info)
+                }
                 if let wantOpen = pendingValveSetOpen {
                     if wantOpen && lastValveStateValue == "open" {
                         valveOperationWarning = "valve.warning_already_open"
@@ -2097,7 +2120,7 @@ extension BLEManager: CBPeripheralDelegate {
                     }
                 }
             } else {
-                appendLog("[GATT] 未识别特征 \(alias)", level: .warning)
+                appendLog("[GATT] 未识别特征 \(alias)", level: .warning, category: "GATT")
             }
         }
     }
@@ -2108,7 +2131,7 @@ extension BLEManager: CBPeripheralDelegate {
         let isOtaData = (GattMapping.characteristicKey(for: characteristic.uuid) == GattMapping.Key.otaData)
         if let error = error {
             Task { @MainActor in
-                appendLog("wr:\(uuidTag): \(alias) 失败: \(error.localizedDescription)", level: .error)
+                appendLog("wr:\(uuidTag): \(alias) 失败: \(error.localizedDescription)", level: .error, category: "GATT")
                 if isOtaData, case .sendingChunks = otaFlowState {
                     abortOtaAndCleanup(reason: error.localizedDescription)
                 }
@@ -2132,7 +2155,7 @@ extension BLEManager: CBPeripheralDelegate {
                 } else {
                     // 除了 OTA 数据包之外，其他所有 GATT 操作都打印成功日志（包括 OTA Status）
                     if !isOtaData {
-                        appendLog("wr:\(uuidTag): \(alias) ok", level: .debug)
+                        appendLog("wr:\(uuidTag): \(alias) ok", level: .debug, category: "GATT")
                     }
                 }
             }

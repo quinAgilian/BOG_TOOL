@@ -133,6 +133,15 @@ struct ProductionTestView: View {
     @State private var gasLeakConfirmTitle = ""
     @State private var gasLeakConfirmMessage = ""
     @State private var gasLeakConfirmResume: ((Bool) -> Void)?
+
+    /// 产测提示音：弹窗提示用户做动作时播放，提升可见性
+    private func playProductionHintSound() {
+        if let sound = NSSound(named: "Glass") {
+            sound.play()
+        } else {
+            NSSound.beep()
+        }
+    }
     
     /// 按需从服务器拉取产线可见固件，并返回目标版本对应条目
     private func productionFirmwareItem(for version: String) async -> ServerFirmwareItem? {
@@ -457,12 +466,10 @@ struct ProductionTestView: View {
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.primary)
                         
-                        // 展开/折叠图标
-                        if status != .pending && status != .running {
-                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
+                        // 展开/折叠图标（任意时刻可点击切换）
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                     
                     if !result.isEmpty {
@@ -501,13 +508,11 @@ struct ProductionTestView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture {
-                // 只有非pending和非running状态的步骤才能展开
-                if status != .pending && status != .running {
-                    if isExpanded {
-                        expandedSteps.remove(step.id)
-                    } else {
-                        expandedSteps.insert(step.id)
-                    }
+                // 任意时刻点击均可展开/折叠该步骤
+                if isExpanded {
+                    expandedSteps.remove(step.id)
+                } else {
+                    expandedSteps.insert(step.id)
                 }
             }
             .background(
@@ -1064,12 +1069,12 @@ struct ProductionTestView: View {
             otaStartWaitTimeout: UserDefaults.standard.object(forKey: "production_test_ota_start_timeout") as? Double ?? 5.0,
             deviceReconnectTimeout: UserDefaults.standard.object(forKey: "production_test_reconnect_timeout") as? Double ?? 5.0,
             valveOpenTimeout: UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 5.0,
-            pressureClosedMin: UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1100,
+            pressureClosedMin: UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1000,
             pressureClosedMax: UserDefaults.standard.object(forKey: "production_test_pressure_closed_max") as? Double ?? 1350,
-            pressureOpenMin: UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1300,
+            pressureOpenMin: UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1000,
             pressureOpenMax: UserDefaults.standard.object(forKey: "production_test_pressure_open_max") as? Double ?? 1500,
             pressureDiffCheckEnabled: UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? true,
-            pressureDiffMin: UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 30,
+            pressureDiffMin: UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 0,
             pressureDiffMax: UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400,
             firmwareUpgradeEnabled: UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? true
         )
@@ -1359,6 +1364,14 @@ struct ProductionTestView: View {
     
     /// 执行产测气体泄漏检测步骤：阀门预置 → 可选阶段1前确认 → 阶段1采样 (phase=1, pre) → 用户关阀/操作采样 (phase=2, between) → 阶段2采样 (phase=3, post) → 判定
     private func runProductionGasLeakStep(stepId: String, stepLabel: String, config: ProductionGasLeakConfig) async -> (passed: Bool, message: String) {
+        // 产测泄漏检测期间抑制 GATT 底层 rd/wr 日志，只保留高层压力/阀门/判定日志
+        ble.suppressGattLogs = true
+        ble.suppressSensorDetailLogs = true
+        defer {
+            ble.suppressGattLogs = false
+            ble.suppressSensorDetailLogs = false
+        }
+
         let useOpenPressure = (stepId == TestStep.gasLeakOpen.id)
         let preDur = max(0, config.preCloseDurationSeconds)
         let postDur = max(0, config.postCloseDurationSeconds)
@@ -1386,6 +1399,7 @@ struct ProductionTestView: View {
                     self.gasLeakConfirmMessage = appLanguage.string("debug.gas_leak_pipeline_ready_message")
                     self.gasLeakConfirmResume = { cont.resume(returning: $0) }
                     self.showGasLeakConfirmAlert = true
+                    self.playProductionHintSound()
                 }
             }
             guard confirmed else {
@@ -1416,8 +1430,14 @@ struct ProductionTestView: View {
             try? await Task.sleep(nanoseconds: afterReadWaitNs)
             let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
             let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+            let valveStr = ble.lastValveStateValue
+            let gasStr = ble.lastGasSystemStatusValue
             if closeBar != nil || openBar != nil {
                 phase1Samples.append(SamplePoint(t: phaseElapsed, pressureClosed: closeBar, pressureOpen: openBar))
+                let tStr = String(format: "%.1f", phaseElapsed)
+                let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
+                let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
+                self.log("\(stepLabel)：[阶段1] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
             }
             phaseElapsed += interval
             if phaseElapsed <= Double(preDur) {
@@ -1443,6 +1463,7 @@ struct ProductionTestView: View {
                         self.gasLeakConfirmMessage = appLanguage.string("debug.gas_leak_valve_closed_message")
                         self.gasLeakConfirmResume = { cont.resume(returning: $0) }
                         self.showGasLeakConfirmAlert = true
+                        self.playProductionHintSound()
                     }
                 }
                 userConfirmed = confirmed
@@ -1456,9 +1477,15 @@ struct ProductionTestView: View {
                 try? await Task.sleep(nanoseconds: afterReadWaitNs)
                 let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
                 let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+                let valveStr = ble.lastValveStateValue
+                let gasStr = ble.lastGasSystemStatusValue
                 let t = Double(preDur) + betweenElapsed
                 if closeBar != nil || openBar != nil {
                     betweenSamples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar))
+                    let tStr = String(format: "%.1f", t)
+                    let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
+                    let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
+                    self.log("\(stepLabel)：[关阀操作] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
                 }
                 betweenElapsed += interval
                 if betweenElapsed > 3600 { break } // 安全上限，避免意外长时间阻塞
@@ -1488,9 +1515,15 @@ struct ProductionTestView: View {
             try? await Task.sleep(nanoseconds: afterReadWaitNs)
             let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
             let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+            let valveStr = ble.lastValveStateValue
+            let gasStr = ble.lastGasSystemStatusValue
             let t = Double(preDur) + userActionDuration + phaseElapsed
             if closeBar != nil || openBar != nil {
                 phase2Samples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar))
+                let tStr = String(format: "%.1f", t)
+                let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
+                let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
+                self.log("\(stepLabel)：[阶段2] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
             }
             phaseElapsed += interval
             if phaseElapsed <= Double(postDur) {
@@ -1527,6 +1560,9 @@ struct ProductionTestView: View {
 
         // 记录本次气体泄漏检测的压降、阶段1均值、阈值和总检测/用户操作时长（用于上传 testDetails）
         let totalDurationSeconds = Double(preDur) + userActionDuration + Double(postDur)
+        let roundTToMilliseconds: (Double) -> Double = { value in
+            (value * 1000).rounded() / 1000
+        }
         if useOpenPressure {
             capturedGasLeakOpenDeltaMbar = dropMbar
             capturedGasLeakOpenDurationSeconds = totalDurationSeconds
@@ -1538,15 +1574,15 @@ struct ProductionTestView: View {
             var allSamples: [[String: Any]] = []
             for s in phase1Samples {
                 let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(["phase": 1, "t": s.t, "pressureBar": value])
+                allSamples.append(["phase": 1, "t": roundTToMilliseconds(s.t), "pressureBar": value])
             }
             for s in betweenSamples {
                 let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(["phase": 2, "t": s.t, "pressureBar": value])
+                allSamples.append(["phase": 2, "t": roundTToMilliseconds(s.t), "pressureBar": value])
             }
             for s in phase2Samples {
                 let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(["phase": 3, "t": s.t, "pressureBar": value])
+                allSamples.append(["phase": 3, "t": roundTToMilliseconds(s.t), "pressureBar": value])
             }
             capturedGasLeakOpenSamples = allSamples.isEmpty ? nil : allSamples
         } else {
@@ -1560,15 +1596,15 @@ struct ProductionTestView: View {
             var allSamples: [[String: Any]] = []
             for s in phase1Samples {
                 let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(["phase": 1, "t": s.t, "pressureBar": value])
+                allSamples.append(["phase": 1, "t": roundTToMilliseconds(s.t), "pressureBar": value])
             }
             for s in betweenSamples {
                 let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(["phase": 2, "t": s.t, "pressureBar": value])
+                allSamples.append(["phase": 2, "t": roundTToMilliseconds(s.t), "pressureBar": value])
             }
             for s in phase2Samples {
                 let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(["phase": 3, "t": s.t, "pressureBar": value])
+                allSamples.append(["phase": 3, "t": roundTToMilliseconds(s.t), "pressureBar": value])
             }
             capturedGasLeakClosedSamples = allSamples.isEmpty ? nil : allSamples
         }
@@ -1587,6 +1623,7 @@ struct ProductionTestView: View {
     private func stopProductionTest() {
         guard isRunning else { return }
         isRunning = false
+        if let id = currentStepId { expandedSteps.remove(id) }
         currentStepId = nil
         log("用户终止测试", level: .info)
     }
@@ -1723,6 +1760,7 @@ struct ProductionTestView: View {
         
         for step in enabledSteps {
                 guard isRunning else {
+                    if let id = currentStepId { expandedSteps.remove(id) }
                     currentStepId = nil
                     self.log("用户终止测试", level: .info)
                     return
@@ -1730,17 +1768,26 @@ struct ProductionTestView: View {
                 // 记录步骤开始时的日志索引
                 let logStartIndex = testLog.count
                 
-                // 更新当前步骤状态
+                // 步骤开始时：折叠上一步（若有），展开当前步
+                if let prev = currentStepId { expandedSteps.remove(prev) }
                 currentStepId = step.id
+                expandedSteps.insert(step.id)
                 stepStatuses[step.id] = .running
                 
                 // 产测过程中若蓝牙连接丢失，直接报错并终止（仅对需要连接的步骤检查，step1/最后一步断开除外）
                 let stepRequiresConnection = (step.id != TestStep.connectDevice.id && step.id != TestStep.disconnectDevice.id)
                 if stepRequiresConnection && !ble.isConnected {
-                    self.log("错误：蓝牙连接已丢失，产测终止", level: .error)
-                    stepResults[step.id] = "蓝牙连接丢失"
+                    if ble.lastConnectFailureWasPairingRemoved {
+                        // 特殊错误：系统已移除配对信息，本轮产测无法继续，提示产线在系统蓝牙中忘记设备后重测
+                        self.log("[FQC] 蓝牙连接失败：Peer removed pairing information，当前测试终止，请在系统「蓝牙」设置中删除该设备（忘记设备）后重测", level: .error)
+                        stepResults[step.id] = "连接失败：Peer removed pairing（请在系统「蓝牙」设置中删除该设备后重测）"
+                    } else {
+                        self.log("错误：蓝牙连接已丢失，产测终止", level: .error)
+                        stepResults[step.id] = "蓝牙连接丢失"
+                    }
                     stepStatuses[step.id] = .failed
                     stepLogRanges[step.id] = (start: logStartIndex, end: testLog.count)
+                    expandedSteps.remove(step.id)
                     currentStepId = nil
                     isRunning = false
                     updateTestResultStatus()
@@ -1812,6 +1859,7 @@ struct ProductionTestView: View {
                         stepResults[step.id] = appLanguage.string("production_test.sn_invalid")
                         await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                         isRunning = false
+                        expandedSteps.remove(step.id)
                         currentStepId = nil
                         return
                     }
@@ -1839,6 +1887,7 @@ struct ProductionTestView: View {
                                     stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_version_mismatch")
                                     await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                                     isRunning = false
+                                    expandedSteps.remove(step.id)
                                     currentStepId = nil
                                     return
                                 }
@@ -1850,6 +1899,7 @@ struct ProductionTestView: View {
                                     stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
                                     await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                                     isRunning = false
+                                    expandedSteps.remove(step.id)
                                     currentStepId = nil
                                     return
                                 }
@@ -1863,6 +1913,7 @@ struct ProductionTestView: View {
                                 stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
                                 await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                                 isRunning = false
+                                expandedSteps.remove(step.id)
                                 currentStepId = nil
                                 return
                             }
@@ -1874,6 +1925,7 @@ struct ProductionTestView: View {
                         stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_unreadable")
                         await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                         isRunning = false
+                        expandedSteps.remove(step.id)
                         currentStepId = nil
                         return
                     }
@@ -1893,6 +1945,7 @@ struct ProductionTestView: View {
                                     stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：服务器未提供 \(rules.firmwareVersion) 产线固件"
                                     await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                                     isRunning = false
+                                    expandedSteps.remove(step.id)
                                     currentStepId = nil
                                     return
                                 }
@@ -1923,6 +1976,7 @@ struct ProductionTestView: View {
                                 stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.hardware_version_mismatch")
                                 await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
                                 isRunning = false
+                                expandedSteps.remove(step.id)
                                 currentStepId = nil
                                 return
                             }
@@ -2498,7 +2552,8 @@ struct ProductionTestView: View {
                 let logEndIndex = testLog.count
                 stepLogRanges[step.id] = (start: logStartIndex, end: logEndIndex)
                 
-                // 清除当前步骤标记
+                // 当前步骤结束：折叠该步骤并清除标记
+                expandedSteps.remove(step.id)
                 currentStepId = nil
                 
                 // 步骤间延时（SOP 定义，单位 ms）；步骤1 后可选：等待蓝牙权限/配对弹窗
@@ -2528,6 +2583,7 @@ struct ProductionTestView: View {
         }
         
         isRunning = false
+        if let id = currentStepId { expandedSteps.remove(id) }
         currentStepId = nil
         // 更新测试结果状态
         updateTestResultStatus()
@@ -2601,6 +2657,14 @@ struct ProductionTestView: View {
         if let v = capturedGasLeakOpenSamples { testDetails["gasLeakOpenSamples"] = v }
         if let v = capturedGasLeakClosedSamples { testDetails["gasLeakClosedSamples"] = v }
         if !testDetails.isEmpty { body["testDetails"] = testDetails }
+
+        // 在日志区输出将要上传的完整 payload，便于排查
+        if let jsonData = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted]),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            self.log("上传产测记录 payload:\n\(jsonString)", level: .info)
+        } else {
+            self.log("上传产测记录 payload 构造完成（JSON 序列化失败，仅记录结构体）: \(body)", level: .warning)
+        }
 
         self.log("正在上传产测结果至服务器（后台）…", level: .info)
         do {

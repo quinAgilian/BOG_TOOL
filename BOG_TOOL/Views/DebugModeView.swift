@@ -667,7 +667,15 @@ struct DebugModeView: View {
     }
 
     private var leakTestConfiguredTotalDurationSeconds: Int {
-        max(0, leakTestPreCloseDurationSeconds) + max(0, leakTestPostCloseDurationSeconds)
+        let base = max(0, leakTestPreCloseDurationSeconds) + max(0, leakTestPostCloseDurationSeconds)
+        var extra = 0
+        if leakTestRequirePipelineReadyConfirm {
+            extra += 10
+        }
+        if leakTestRequireValveClosedConfirm {
+            extra += 10
+        }
+        return base + extra
     }
 
     private var isLeakTestWorkflowActive: Bool {
@@ -858,6 +866,7 @@ struct DebugModeView: View {
         leakTestChartLocked = false
         leakTestPendingPrompt = nil
         leakTestFlowState = .idle
+        ble.suppressGattLogs = false
     }
 
     private func startContinuousPressureRead() {
@@ -870,6 +879,7 @@ struct DebugModeView: View {
             "[DBG][Continuous] 开始连续读取：时长=\(clampedDuration == 0 ? "无限" : "\(clampedDuration)s")，间隔=\(String(format: "%.2f", leakTestIntervalSec))s",
             level: .info
         )
+        ble.suppressGattLogs = true
         isLeakTestRunning = true
         startContinuousPressureReadPolling()
     }
@@ -882,6 +892,7 @@ struct DebugModeView: View {
             0,
             "开始连续压力测试：判定压力=\(leakTestPressureSourceLabel(leakTestJudgementSource))，阶段1=\(leakTestPreCloseDurationSeconds)s，阶段2=\(leakTestPostCloseDurationSeconds)s，阈值=\(String(format: "%.1f", leakTestPressureDropThresholdMbar)) mbar"
         )
+        ble.suppressGattLogs = true
         performLeakTestStartupValveProbe { success in
             guard success else {
                 finishLeakTest(reason: appLanguage.string("debug.gas_leak_stop_reason_valve_sync_failed"))
@@ -1501,6 +1512,7 @@ struct DebugModeView: View {
         leakTestTask = nil
         isLeakTestRunning = false
         leakTestPendingPrompt = nil
+        ble.suppressGattLogs = false
         if leakTestSessionType == .guided {
             if leakTestFlowState != .completed {
                 leakTestFlowState = .cancelled
@@ -1774,6 +1786,33 @@ struct DebugModeView: View {
                     }
                 }
                 .disabled(!ble.isConnected || ble.isOTAInProgress || isContinuousPressureReadActive)
+            }
+
+            // guided 模式进度条与剩余时间
+            if leakTestSessionType == .guided && (isLeakTestWorkflowActive || !leakTestSamples.isEmpty) && leakTestConfiguredTotalDurationSeconds > 0 {
+                let total = Double(leakTestConfiguredTotalDurationSeconds)
+                let clampedElapsed = min(max(leakTestElapsedSec, 0), total)
+                let remaining = max(total - clampedElapsed, 0)
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                    ProgressView(value: clampedElapsed, total: total)
+                        .progressViewStyle(.linear)
+                    HStack(spacing: UIDesignSystem.Spacing.sm) {
+                        Text(String(format: "%@ %.1f / %.0f s",
+                                    appLanguage.string("debug.gas_leak_elapsed"),
+                                    clampedElapsed,
+                                    total))
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        Text("·")
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        Text(String(format: "%@ %.0f s",
+                                    appLanguage.string("debug.gas_leak_remaining"),
+                                    remaining))
+                            .font(UIDesignSystem.Typography.caption)
+                            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    }
+                }
             }
 
             // 规则参数：两阶段时长、读取间隔、判定压力源、压降阈值、确认开关、是否绘制 between 段
