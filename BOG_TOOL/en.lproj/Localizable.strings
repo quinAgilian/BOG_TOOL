@@ -120,6 +120,9 @@
 "debug.close_pressure" = "Close pressure";
 "debug.gas_system_status" = "Gas system status";
 "debug.co2_pressure_limits" = "CO2 Pressure Limits";
+"debug.disable_gas_self_check" = "Disable gas system self-check";
+"debug.disable_gas_self_check_hint" = "Write 12 bytes 0x00 to co2PressureLimits to disable gas system self-check.";
+"debug.disable_gas_self_check_action" = "Disable diag";
 "debug.read" = "Read";
 "debug.ota_production_test_in_progress" = "Production test OTA in progress. Switch to Production Test tab to manage.";
 "debug.factory_reset" = "Factory Reset";
@@ -279,6 +282,7 @@
 "production_test_rules.procedure_title" = "Test Procedure";
 "production_test_rules.procedure_description" = "This production test follows a standardized procedure to verify device functionality. Each step must pass the specified criteria.";
 "production_test_rules.steps_title" = "Test Steps";
+"production_test_rules.step_fatal_on_failure_title" = "Stop production test on step failure";
 "production_test_rules.step1_title" = "Connect Device";
 "production_test_rules.step1_desc" = "Establish connection with the device.";
 "production_test_rules.step1_criteria" = "✓ Pass: Connection successful. ✗ Fail: Error code -1, user must retest.";
@@ -291,6 +295,11 @@
 "production_test_rules.step4_title" = "Read Pressure Values";
 "production_test_rules.step4_desc" = "Read pressure values in both closed and open states.";
 "production_test_rules.step4_criteria" = "✓ Pass: Closed state > 1.300 mbar, Open state > 1.1 mbar.";
+"production_test_rules.step_disable_diag_title" = "Disable gas system self-check (Disable diag)";
+"production_test_rules.step_disable_diag_desc" = "Write 12 bytes 0x00 to co2PressureLimits to disable gas system self-check.";
+"production_test_rules.step_disable_diag_criteria" = "✓ Pass: Written 12×0x00 to co2PressureLimits.";
+"production_test_rules.disable_diag_config_title" = "Disable diag (wait after send)";
+"production_test_rules.disable_diag_wait_seconds" = "Wait after send";
 "production_test_rules.step_gas_system_status_title" = "Read Gas system status";
 "production_test_rules.step_gas_system_status_desc" = "Read and decode gas system status; must be 1 (ok) to pass.";
 "production_test_rules.step_gas_system_status_criteria" = "✓ Pass: Gas system status = 1 (ok). ✗ Fail: not 1 (e.g. 0 initially closed, 2 leak).";
@@ -371,6 +380,11 @@
 "production_test_rules.gas_leak_alarm_threshold_bar" = "Alarm threshold";
 "production_test_rules.gas_leak_require_pipeline_ready_confirm" = "Confirm pipeline ready before phase 1";
 "production_test_rules.gas_leak_require_valve_closed_confirm" = "Confirm inlet valve closed before phase 2";
+"production_test_rules.gas_leak_closed_phase4_title" = "Phase 4 (open valve after phase 3 pass)";
+"production_test_rules.gas_leak_closed_phase4_enabled" = "Enable Phase 4";
+"production_test_rules.gas_leak_closed_phase4_monitor_duration" = "Monitor duration";
+"production_test_rules.gas_leak_closed_phase4_drop_within" = "Pressure must drop within";
+"production_test_rules.gas_leak_closed_phase4_pressure_below" = "Pressure must go below";
 
 /* OTA */
 "ota.title" = "OTA";
@@ -433,6 +447,7 @@
 "production_test.result_criteria_fw" = "Firmware (match or OTA success)";
 "production_test.need_retest" = "Re-test required";
 "production_test.need_retest_detail" = "Current firmware did not support factory reset/reboot, so reboot was sent after OTA. Please run the test again to execute the remaining steps.";
+"production_test.step_disconnect_after_factory_reset_ok" = "✓ Pass: Device already disconnected after factory reset (expected).";
 
 /* Menu */
 "menu.floating" = "Floating";

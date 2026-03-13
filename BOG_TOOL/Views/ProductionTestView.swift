@@ -97,6 +97,8 @@ struct ProductionTestView: View {
     @State private var needRetestAfterOtaReboot = false
     /// 最近一次产测结束时间（用于 overlay 报表显示）
     @State private var lastTestEndTime: Date?
+    /// 本次产测是否已调用过 finish，避免 onChange 与 run loop guard 重复调用导致报表/上传两次
+    @State private var didFinishThisRun = false
     /// 本次产测开始时间（用于上传 durationSeconds）
     @State private var lastTestStartTime: Date?
     /// 本次产测过程中缓存的设备信息（步骤 2 通过时写入），用于结束后上传，与是否仍连接无关
@@ -315,6 +317,40 @@ struct ProductionTestView: View {
             if running {
                 testResultStatus = .running
             } else {
+                updateTestResultStatus()
+            }
+        }
+        .onChange(of: ble.lastConnectFailureWasPairingRemoved) { pairingRemoved in
+            guard pairingRemoved, isRunning else { return }
+            // Peer removed pairing 时立即终止当前产测（系统蓝牙设置已在 BLEManager 中自动弹出）
+            // 若当前步骤正是「恢复出厂」，则视为恢复出厂成功（设备已清除配对），该步记为通过；报表由 run loop 在 reconnectAfterTestingReboot 返回后统一出具，保证「测试完毕后再出报表」
+            let enabledSteps = currentTestSteps.filter { $0.enabled }
+            if let stepId = currentStepId {
+                let logStartIndex = testLog.count
+                let isFactoryResetStep = (stepId == TestStep.factoryReset.id)
+                if isFactoryResetStep {
+                    log("检测到设备已清除配对，判定恢复出厂成功", level: .info)
+                    stepResults[stepId] = appLanguage.string("production_test_rules.step_factory_reset_confirmed_pairing_removed")
+                    stepStatuses[stepId] = .passed
+                    stepResults[TestStep.disconnectDevice.id] = appLanguage.string("production_test.step_disconnect_after_factory_reset_ok")
+                    stepStatuses[TestStep.disconnectDevice.id] = .passed
+                } else {
+                    log("[FQC] 蓝牙连接失败：Peer removed pairing information，当前测试终止，请在系统「蓝牙」设置中删除该设备（忘记设备）后重测", level: .error)
+                    stepResults[stepId] = "连接失败：Peer removed pairing（请在系统「蓝牙」设置中删除该设备后重测）"
+                    stepStatuses[stepId] = .failed
+                    currentStepId = nil
+                    isRunning = false
+                    updateTestResultStatus()
+                    Task { @MainActor in
+                        finishProductionTestRunWithReportAndUpload(enabledSteps: enabledSteps)
+                    }
+                }
+                stepLogRanges[stepId] = (start: logStartIndex, end: testLog.count)
+                expandedSteps.remove(stepId)
+            }
+            if currentStepId != nil {
+                currentStepId = nil
+                isRunning = false
                 updateTestResultStatus()
             }
         }
@@ -723,6 +759,12 @@ struct ProductionTestView: View {
         } else if currentTestSteps.contains(where: { $0.id == TestStep.readPressure.id }) {
             list.append((appLanguage.string("production_test_rules.step4_title"), true, true, skippedDetail))
         }
+        // 屏蔽气体自检（Disable diag）
+        if enabled.contains(where: { $0.id == TestStep.disableDiag.id }) {
+            list.append((appLanguage.string("production_test_rules.step_disable_diag_title"), stepStatuses[TestStep.disableDiag.id] == .passed, false, detail(for: TestStep.disableDiag.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.disableDiag.id }) {
+            list.append((appLanguage.string("production_test_rules.step_disable_diag_title"), true, true, skippedDetail))
+        }
         // Gas system status
         if enabled.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
             list.append((appLanguage.string("production_test_rules.step_gas_system_status_title"), stepStatuses[TestStep.readGasSystemStatus.id] == .passed, false, detail(for: TestStep.readGasSystemStatus.id)))
@@ -758,6 +800,12 @@ struct ProductionTestView: View {
             list.append((appLanguage.string("production_test_rules.step_factory_reset_title"), stepStatuses[TestStep.factoryReset.id] == .passed, stepStatuses[TestStep.factoryReset.id] == .skipped, detail(for: TestStep.factoryReset.id)))
         } else if currentTestSteps.contains(where: { $0.id == TestStep.factoryReset.id }) {
             list.append((appLanguage.string("production_test_rules.step_factory_reset_title"), true, true, skippedDetail))
+        }
+        // 待定（step5）
+        if enabled.contains(where: { $0.id == TestStep.tbd.id }) {
+            list.append((appLanguage.string("production_test_rules.step5_title"), stepStatuses[TestStep.tbd.id] == .passed, stepStatuses[TestStep.tbd.id] == .skipped, detail(for: TestStep.tbd.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.tbd.id }) {
+            list.append((appLanguage.string("production_test_rules.step5_title"), true, true, skippedDetail))
         }
         // 安全断开连接
         if enabled.contains(where: { $0.id == TestStep.disconnectDevice.id }) {
@@ -956,9 +1004,9 @@ struct ProductionTestView: View {
     }
 
     /// 加载测试规则配置
-    private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds) {
-        // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启、重启、恢复出厂、气体泄漏检测等步骤）
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+    private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds, stepFatalOnFailure: [String: Bool]) {
+        // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启、重启、恢复出厂、气体泄漏检测、屏蔽气体自检等步骤）
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         var steps: [TestStep] = []
@@ -969,7 +1017,7 @@ struct ProductionTestView: View {
                 }
             }
         } else {
-            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .ensureValveOpen, .reset, .factoryReset, .tbd, .otaBeforeDisconnect, .disconnectDevice]
+            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .ensureValveOpen, .reset, .factoryReset, .tbd, .otaBeforeDisconnect, .disconnectDevice]
         }
         
         // 确保第一步和最后一步在正确位置
@@ -989,9 +1037,21 @@ struct ProductionTestView: View {
         if !steps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
             steps.insert(TestStep.ensureValveOpen, at: steps.count - 1)
         }
-        // 迁移：若旧配置中无「读取 Gas system status」步骤，则插入在读取压力之后、确保电磁阀之前
-        if !steps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+        // 迁移：若旧配置中无「屏蔽气体自检」步骤，则插入在读取压力之后
+        if !steps.contains(where: { $0.id == TestStep.disableDiag.id }) {
             if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
+                steps.insert(TestStep.disableDiag, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+                steps.insert(TestStep.disableDiag, at: idx)
+            } else {
+                steps.insert(TestStep.disableDiag, at: steps.count - 1)
+            }
+        }
+        // 迁移：若旧配置中无「读取 Gas system status」步骤，则插入在读取压力/屏蔽自检之后、确保电磁阀之前
+        if !steps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.disableDiag.id }) {
+                steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
                 steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
             } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
                 steps.insert(TestStep.readGasSystemStatus, at: idx)
@@ -1069,6 +1129,7 @@ struct ProductionTestView: View {
             otaStartWaitTimeout: UserDefaults.standard.object(forKey: "production_test_ota_start_timeout") as? Double ?? 5.0,
             deviceReconnectTimeout: UserDefaults.standard.object(forKey: "production_test_reconnect_timeout") as? Double ?? 5.0,
             valveOpenTimeout: UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 5.0,
+            disableDiagWaitSeconds: UserDefaults.standard.object(forKey: "production_test_disable_diag_wait_seconds") as? Double ?? 2.0,
             pressureClosedMin: UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1000,
             pressureClosedMax: UserDefaults.standard.object(forKey: "production_test_pressure_closed_max") as? Double ?? 1350,
             pressureOpenMin: UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1000,
@@ -1079,7 +1140,10 @@ struct ProductionTestView: View {
             firmwareUpgradeEnabled: UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? true
         )
         
-        return (steps: steps, bootloaderVersion: bootloaderVersion, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion, thresholds: thresholds)
+        // 加载每步「失败时是否终止产测」配置；未配置的步骤沿用规则层静态默认（stepIdsFatalOnFailure）
+        let stepFatalOnFailure = UserDefaults.standard.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool] ?? [:]
+
+        return (steps: steps, bootloaderVersion: bootloaderVersion, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion, thresholds: thresholds, stepFatalOnFailure: stepFatalOnFailure)
     }
     
     /// 测试阈值配置结构
@@ -1095,6 +1159,7 @@ struct ProductionTestView: View {
         let otaStartWaitTimeout: Double       // OTA启动等待超时（秒）
         let deviceReconnectTimeout: Double    // 设备重新连接超时（秒）
         let valveOpenTimeout: Double          // 阀门打开超时（秒）
+        let disableDiagWaitSeconds: Double   // Disable diag 发送完成后等待时间（秒），默认 2
         let pressureClosedMin: Double        // 关闭状态压力下限（mbar）
         let pressureClosedMax: Double        // 关闭状态压力上限（mbar）
         let pressureOpenMin: Double          // 开启状态压力下限（mbar）
@@ -1264,6 +1329,21 @@ struct ProductionTestView: View {
             stepResults[TestStep.factoryReset.id] = "恢复出厂: 未连接或特征未就绪"
             stepStatuses[TestStep.factoryReset.id] = .failed
         }
+    }
+
+    /// 步骤失败后的统一处理：根据规则层配置（或静态 `TestStep.stepIdsFatalOnFailure`）决定终止产测（return）或仅本步失败（break）。
+    /// 调用方应先设置 `stepStatuses[step.id] = .failed` 和 `stepResults[step.id]`，再调用本方法。
+    /// - Returns: true 表示调用方应 return 终止产测，false 表示调用方应 break 继续下一步。
+    private func handleStepFailureShouldExit(step: TestStep, enabledSteps: [TestStep], thresholds: TestThresholds, stepFatalOnFailure: [String: Bool]) async -> Bool {
+        let isFatal = stepFatalOnFailure[step.id] ?? TestStep.stepIdsFatalOnFailure.contains(step.id)
+        guard isFatal else { return false }
+        await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: thresholds)
+        isRunning = false
+        expandedSteps.remove(step.id)
+        currentStepId = nil
+        updateTestResultStatus()
+        finishProductionTestRunWithReportAndUpload(enabledSteps: enabledSteps)
+        return true
     }
 
     private func ensureValveOpen() async -> Bool {
@@ -1631,8 +1711,83 @@ struct ProductionTestView: View {
             self.log("\(stepLabel)：✗ \(msg)", level: .error)
             return (false, msg)
         }
-        let msg = String(format: "通过：阶段1平均 %.4f bar，阶段2最低 %.4f bar，压降 %.1f mbar ≤ 阈值 %.1f mbar", phase1Avg, phase2Min, dropMbar, thresholdMbar)
-        self.log("\(stepLabel)：✓ \(msg)", level: .info)
+        let msgPhase3 = String(format: "通过：阶段1平均 %.4f bar，阶段2最低 %.4f bar，压降 %.1f mbar ≤ 阈值 %.1f mbar", phase1Avg, phase2Min, dropMbar, thresholdMbar)
+        self.log("\(stepLabel)：✓ \(msgPhase3)", level: .info)
+
+        // 关阀压力：可选 Phase 4（Phase 3 与 Phase 4 均成功本步才成功；判定用开阀压力）
+        if stepId == TestStep.gasLeakClosed.id {
+            let phase4Enabled = UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_enabled") as? Bool ?? true
+            if phase4Enabled {
+                let monitorDur = max(0, UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds") as? Int ?? 15)
+                let dropWithin = max(0, UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_drop_within_seconds") as? Int ?? 5)
+                let belowMbar = max(0, UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_pressure_below_mbar") as? Double ?? 100)
+                self.log("\(stepLabel)：Phase 4 开阀泄压检测，监测 \(monitorDur)s，\(dropWithin)s 内开阀压力需低于 \(String(format: "%.0f", belowMbar)) mbar", level: .info)
+
+                let valveOk = await ensureValveState(open: true)
+                guard valveOk else {
+                    self.log("\(stepLabel)：✗ Phase 4 电磁阀未能打开", level: .error)
+                    return (false, "Phase 4：电磁阀未能打开")
+                }
+                try? await Task.sleep(nanoseconds: 700_000_000)
+
+                var phase4Samples: [SamplePoint] = []
+                var phase4Elapsed: Double = 0
+                var phase4DropAchieved = false
+                let phase4Interval = max(0.1, min(3.0, interval))
+                let afterReadWaitNs: UInt64 = 600_000_000
+
+                while phase4Elapsed <= Double(monitorDur) {
+                    guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
+                        return (false, "连接丢失或用户终止")
+                    }
+                    ble.readPressure(silent: true)
+                    ble.readPressureOpen(silent: true)
+                    ble.readValveState()
+                    ble.readGasSystemStatus(silent: true)
+                    try? await Task.sleep(nanoseconds: afterReadWaitNs)
+                    let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
+                    let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+                    let valveStr = ble.lastValveStateValue
+                    let gasStr = ble.lastGasSystemStatusValue
+                    if openBar != nil || closeBar != nil {
+                        let openMbar = (openBar ?? 0) * 1000
+                        if phase4Elapsed <= Double(dropWithin) && openMbar < belowMbar {
+                            phase4DropAchieved = true
+                        }
+                        phase4Samples.append(SamplePoint(t: phase4Elapsed, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
+                        let tStr = String(format: "%.1f", phase4Elapsed)
+                        let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
+                        let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
+                        self.log("\(stepLabel)：[阶段4] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
+                    }
+                    phase4Elapsed += phase4Interval
+                    if phase4Elapsed <= Double(monitorDur) {
+                        let remainingNs = UInt64(max(0, phase4Interval - 0.6) * 1_000_000_000)
+                        if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
+                    }
+                }
+
+                self.log("\(stepLabel)：Phase 4 采样完成，共 \(phase4Samples.count) 点", level: .info)
+                if !phase4DropAchieved {
+                    let failMsg = String(format: "Phase 4：在 %d s 内开阀压力未低于 %.0f mbar", dropWithin, belowMbar)
+                    self.log("\(stepLabel)：✗ \(failMsg)", level: .error)
+                    return (false, failMsg)
+                }
+                self.log("\(stepLabel)：✓ Phase 4 通过（开阀压力已在 \(dropWithin)s 内低于 \(String(format: "%.0f", belowMbar)) mbar）", level: .info)
+
+                // 将 Phase 4 采样并入上传的 raw data（phase 1～4 一起上传）
+                var closedSamples = capturedGasLeakClosedSamples ?? []
+                for s in phase4Samples {
+                    let pressureBar = s.pressureOpen ?? s.pressureClosed ?? 0
+                    closedSamples.append(sampleToDetailDict(s, phase: 4, pressureBar: pressureBar))
+                }
+                capturedGasLeakClosedSamples = closedSamples.isEmpty ? nil : closedSamples
+            }
+        }
+
+        let msg = stepId == TestStep.gasLeakClosed.id && (UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_enabled") as? Bool ?? true)
+            ? (msgPhase3 + "；Phase 4 通过")
+            : msgPhase3
         return (true, msg)
     }
     
@@ -1681,9 +1836,14 @@ struct ProductionTestView: View {
             // 等待连接完成，且 GATT 特征就绪（发现服务/特征需要时间），才认为连接完成
             Task { @MainActor in
                 var waitCount = 0
-                while isRunning && !ble.isConnected && waitCount < 100 { // 最多等待10秒
+                while isRunning && !ble.isConnected && !ble.lastConnectFailureWasPairingRemoved && waitCount < 100 { // 最多等待10秒；配对被移除时立即退出
                     try? await Task.sleep(nanoseconds: 100_000_000) // 0.1秒
                     waitCount += 1
+                }
+                if ble.lastConnectFailureWasPairingRemoved {
+                    log("[FQC] 蓝牙连接失败：Peer removed pairing information，当前测试终止，请在系统「蓝牙」设置中删除该设备（忘记设备）后重测", level: .error)
+                    isRunning = false
+                    return
                 }
                 if !ble.isConnected {
                     log("错误：设备连接失败", level: .error)
@@ -1693,9 +1853,14 @@ struct ProductionTestView: View {
                 guard isRunning else { return }
                 log("已连接，等待 GATT 特征就绪...", level: .info)
                 waitCount = 0
-                while isRunning && !ble.areCharacteristicsReady && waitCount < 100 { // 最多再等10秒
+                while isRunning && !ble.areCharacteristicsReady && !ble.lastConnectFailureWasPairingRemoved && waitCount < 100 { // 最多再等10秒；配对被移除时立即退出
                     try? await Task.sleep(nanoseconds: 100_000_000)
                     waitCount += 1
+                }
+                if ble.lastConnectFailureWasPairingRemoved {
+                    log("[FQC] 蓝牙连接失败：Peer removed pairing information，当前测试终止，请在系统「蓝牙」设置中删除该设备（忘记设备）后重测", level: .error)
+                    isRunning = false
+                    return
                 }
                 if !ble.areCharacteristicsReady {
                     log("错误：连接后 GATT 特征未就绪（10秒）", level: .error)
@@ -1750,6 +1915,7 @@ struct ProductionTestView: View {
         // 使用当前的测试步骤列表（已从UserDefaults加载）
         let enabledSteps = currentTestSteps.filter { $0.enabled }
         lastTestStartTime = Date()
+        didFinishThisRun = false
         
         // 加载版本配置（用于步骤验证）
         let rules = loadTestRules()
@@ -1777,9 +1943,12 @@ struct ProductionTestView: View {
         
         for step in enabledSteps {
                 guard isRunning else {
-                    if let id = currentStepId { expandedSteps.remove(id) }
-                    currentStepId = nil
-                    self.log("用户终止测试", level: .info)
+                    if !didFinishThisRun {
+                        if let id = currentStepId { expandedSteps.remove(id) }
+                        currentStepId = nil
+                        self.log("用户终止测试", level: .info)
+                        finishProductionTestRunWithReportAndUpload(enabledSteps: enabledSteps)
+                    }
                     return
                 }
                 // 记录步骤开始时的日志索引
@@ -1808,6 +1977,7 @@ struct ProductionTestView: View {
                     currentStepId = nil
                     isRunning = false
                     updateTestResultStatus()
+                    finishProductionTestRunWithReportAndUpload(enabledSteps: enabledSteps)
                     return
                 }
                 
@@ -1818,6 +1988,7 @@ struct ProductionTestView: View {
                         self.log("错误：未连接", level: .error)
                         stepResults[step.id] = "连接失败：未连接"
                         stepStatuses[step.id] = .failed
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
                     if !ble.areCharacteristicsReady {
@@ -1833,6 +2004,7 @@ struct ProductionTestView: View {
                             self.log("错误：GATT 特征未就绪（\(Int(charTimeoutSeconds))秒）", level: .error)
                             stepResults[step.id] = "连接失败：GATT 未就绪"
                             stepStatuses[step.id] = .failed
+                            if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                             break
                         }
                     }
@@ -1870,15 +2042,18 @@ struct ProductionTestView: View {
                     if let sn = ble.deviceSerialNumber, !sn.isEmpty {
                         self.log("✓ SN 验证通过: \(sn)", level: .info)
                         resultMessages.append("SN: \(sn)")
+                        // 立即缓存设备信息，供产测结束后上传使用（步骤2 即使后续 BL/FW/HW 失败也会执行恢复出厂等，上传时仍需 SN）
+                        capturedDeviceSN = sn.trimmingCharacters(in: .whitespacesAndNewlines)
+                        capturedDeviceName = ble.connectedDeviceName
+                        capturedFirmwareVersion = ble.currentFirmwareVersion
+                        capturedBootloaderVersion = ble.bootloaderVersion
+                        capturedHardwareRevision = ble.deviceHardwareRevision
                     } else {
                         self.log("错误：SN 无效或为空", level: .error)
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = appLanguage.string("production_test.sn_invalid")
-                        await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
-                        isRunning = false
-                        expandedSteps.remove(step.id)
-                        currentStepId = nil
-                        return
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                        break
                     }
                     
                     // 验证 Bootloader 版本：
@@ -1902,11 +2077,8 @@ struct ProductionTestView: View {
                                     self.log("错误：Bootloader 版本不匹配（期望: \(rules.bootloaderVersion), 实际: \(blVersionStr)）", level: .error)
                                     stepStatuses[step.id] = .failed
                                     stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_version_mismatch")
-                                    await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
-                                    isRunning = false
-                                    expandedSteps.remove(step.id)
-                                    currentStepId = nil
-                                    return
+                                    if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                                    break
                                 }
                             } else {
                                 // 规则解析不到有效数字时，退回旧逻辑
@@ -1914,11 +2086,8 @@ struct ProductionTestView: View {
                                     self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
                                     stepStatuses[step.id] = .failed
                                     stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
-                                    await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
-                                    isRunning = false
-                                    expandedSteps.remove(step.id)
-                                    currentStepId = nil
-                                    return
+                                    if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                                    break
                                 }
                                 resultMessages.append("BL: \(blVersionStr)")
                             }
@@ -1928,11 +2097,8 @@ struct ProductionTestView: View {
                                 self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
                                 stepStatuses[step.id] = .failed
                                 stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
-                                await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
-                                isRunning = false
-                                expandedSteps.remove(step.id)
-                                currentStepId = nil
-                                return
+                                if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                                break
                             }
                             resultMessages.append("BL: \(blVersionStr)")
                         }
@@ -1940,11 +2106,8 @@ struct ProductionTestView: View {
                         self.log("错误：无法读取 Bootloader 版本", level: .error)
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_unreadable")
-                        await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
-                        isRunning = false
-                        expandedSteps.remove(step.id)
-                        currentStepId = nil
-                        return
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                        break
                     }
                     
                     // 验证 FW 版本（仅检查是否需要升级，不在此步执行 OTA；OTA 在「断开前 OTA」步骤执行）
@@ -1960,11 +2123,8 @@ struct ProductionTestView: View {
                                     self.log("错误：服务器未提供版本 \(rules.firmwareVersion) 的产线固件，请检查服务器固件列表或产线可见配置", level: .error, category: "OTA")
                                     stepStatuses[step.id] = .failed
                                     stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n错误：服务器未提供 \(rules.firmwareVersion) 产线固件"
-                                    await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
-                                    isRunning = false
-                                    expandedSteps.remove(step.id)
-                                    currentStepId = nil
-                                    return
+                                    if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                                    break
                                 }
                             } else {
                                 // 固件升级已禁用：FW 不匹配仅作警告，本步骤仍视为通过
@@ -1991,11 +2151,8 @@ struct ProductionTestView: View {
                                 self.log("错误：HW 版本不匹配（期望: \(ruleHW), 实际: \(hwVersion)）", level: .error)
                                 stepStatuses[step.id] = .failed
                                 stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.hardware_version_mismatch")
-                                await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: rules.thresholds)
-                                isRunning = false
-                                expandedSteps.remove(step.id)
-                                currentStepId = nil
-                                return
+                                if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                                break
                             }
                         } else {
                             resultMessages.append("HW: \(hwVersion)")
@@ -2052,6 +2209,8 @@ struct ProductionTestView: View {
                         }
                         stepResults[step.id] = "RTC检查失败：无法读取"
                         stepStatuses[step.id] = .failed
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                        break
                     } else {
                         let deviceRTCString = ble.lastRTCValue
                         let systemTimeString = ble.lastSystemTimeAtRTCRead
@@ -2144,6 +2303,7 @@ struct ProductionTestView: View {
                         } else {
                             stepResults[step.id] = "RTC: \(deviceRTCString)\n时间差: \(timeDiffString) ✗"
                             stepStatuses[step.id] = .failed
+                            if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         }
                         capturedRtcDeviceTime = (ble.lastRTCValue.isEmpty || ble.lastRTCValue == "--") ? deviceRTCString : ble.lastRTCValue
                         capturedRtcSystemTime = (ble.lastSystemTimeAtRTCRead.isEmpty || ble.lastSystemTimeAtRTCRead == "--") ? systemTimeString : ble.lastSystemTimeAtRTCRead
@@ -2166,6 +2326,7 @@ struct ProductionTestView: View {
                             self.log("步骤4: 用户未确认气路与阀门状态，压力测试终止", level: .warning)
                             stepResults[step.id] = appLanguage.string("production_test.pressure_pipeline_ready_message")
                             stepStatuses[step.id] = .failed
+                            if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                             break
                         }
                     }
@@ -2286,8 +2447,20 @@ struct ProductionTestView: View {
                     
                     stepResults[step.id] = pressureMessages.joined(separator: "\n")
                     stepStatuses[step.id] = pressurePassed ? .passed : .failed
+                    if stepStatuses[step.id] == .failed, await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                     capturedPressureClosedMbar = closedPressureValue.map { $0 * 1000.0 }
                     capturedPressureOpenMbar = openPressureValue.map { $0 * 1000.0 }
+                    
+                case "step_disable_diag": // 屏蔽系统气体自检：向 co2PressureLimits 写入 12×0x00（与 Debug 区共用 BLEManager.writeCo2PressureLimitsZeros），发送完成后等待可配置秒数
+                    self.log("步骤: 屏蔽气体自检（Disable diag）", level: .info)
+                    ble.writeCo2PressureLimitsZeros()
+                    let waitSec = max(0, rules.thresholds.disableDiagWaitSeconds)
+                    if waitSec > 0 {
+                        self.log("等待 \(String(format: "%.1f", waitSec)) 秒…", level: .info)
+                        try? await Task.sleep(nanoseconds: UInt64(waitSec * 1_000_000_000))
+                    }
+                    stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                    stepStatuses[step.id] = .passed
                     
                 case "step_gas_system_status": // 读取 Gas system status，解码后须为 1 (ok)
                     self.log("步骤: 读取 Gas system status", level: .info)
@@ -2308,6 +2481,8 @@ struct ProductionTestView: View {
                         self.log("错误：Gas system status 读取超时或无效（\(Int(gasStatusTimeoutSeconds))秒）", level: .error)
                         stepResults[step.id] = "Gas system status: 读取超时或无效"
                         stepStatuses[step.id] = .failed
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                        break
                     } else {
                         self.log("Gas system status 读取值: \(gasStatusStr)", level: .info)
                         // 解码：1 = ok 为通过，其余均为失败
@@ -2320,6 +2495,7 @@ struct ProductionTestView: View {
                             self.log("Gas system status 检查失败: \(gasStatusStr)，期望 1 (ok)", level: .error)
                             stepResults[step.id] = "Gas system status: \(gasStatusStr)，期望 1 (ok)"
                             stepStatuses[step.id] = .failed
+                            if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         }
                         capturedGasSystemStatus = gasStatusStr.isEmpty || gasStatusStr == "--" ? nil : gasStatusStr
                     }
@@ -2330,6 +2506,7 @@ struct ProductionTestView: View {
                     let resultOpen = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_open_title"), config: configOpen)
                     stepResults[step.id] = resultOpen.message
                     stepStatuses[step.id] = resultOpen.passed ? .passed : .failed
+                    if stepStatuses[step.id] == .failed, await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                     
                 case "step_gas_leak_closed": // 气体泄漏检测（关阀压力）
                     // 若启用了“开阀压力通过则跳过关阀压力步骤”，且开阀步骤启用并已通过，则跳过本步骤
@@ -2346,6 +2523,7 @@ struct ProductionTestView: View {
                         let resultClosed = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_closed_title"), config: configClosed)
                         stepResults[step.id] = resultClosed.message
                         stepStatuses[step.id] = resultClosed.passed ? .passed : .failed
+                        if stepStatuses[step.id] == .failed, await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                     }
                     
                 case "step_valve": // 确保电磁阀是开启的
@@ -2359,6 +2537,7 @@ struct ProductionTestView: View {
                         self.log("电磁阀打开失败或超时", level: .error)
                         stepResults[step.id] = "电磁阀: 打开失败或超时"
                         stepStatuses[step.id] = .failed
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                     }
                     
                 case "step_reset": // 重启设备（Testing 0x00000001）
@@ -2381,6 +2560,7 @@ struct ProductionTestView: View {
                     case .notReady:
                         stepResults[step.id] = "重启: 未连接或特征未就绪"
                         stepStatuses[step.id] = .failed
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                     }
                     
                 case "step_factory_reset": // 恢复出厂（Testing 0x00000002）；重连若得到「Peer removed pairing」则判定恢复出厂成功
@@ -2395,6 +2575,14 @@ struct ProductionTestView: View {
                             stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria")
                         case .timeout(pairingRemoved: true):
                             stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_confirmed_pairing_removed")
+                            stepResults[TestStep.disconnectDevice.id] = appLanguage.string("production_test.step_disconnect_after_factory_reset_ok")
+                            stepStatuses[TestStep.disconnectDevice.id] = .passed
+                            expandedSteps.remove(step.id)
+                            currentStepId = nil
+                            isRunning = false
+                            updateTestResultStatus()
+                            finishProductionTestRunWithReportAndUpload(enabledSteps: enabledSteps)
+                            return
                         case .timeout(pairingRemoved: false):
                             stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria")
                         }
@@ -2407,6 +2595,14 @@ struct ProductionTestView: View {
                             stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria") + "（未确认断开）"
                         case .timeout(pairingRemoved: true):
                             stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_confirmed_pairing_removed")
+                            stepResults[TestStep.disconnectDevice.id] = appLanguage.string("production_test.step_disconnect_after_factory_reset_ok")
+                            stepStatuses[TestStep.disconnectDevice.id] = .passed
+                            expandedSteps.remove(step.id)
+                            currentStepId = nil
+                            isRunning = false
+                            updateTestResultStatus()
+                            finishProductionTestRunWithReportAndUpload(enabledSteps: enabledSteps)
+                            return
                         case .timeout(pairingRemoved: false):
                             stepResults[step.id] = appLanguage.string("production_test_rules.step_factory_reset_criteria") + "（未确认断开）"
                         }
@@ -2417,6 +2613,7 @@ struct ProductionTestView: View {
                     case .notReady:
                         stepResults[step.id] = "恢复出厂: 未连接或特征未就绪"
                         stepStatuses[step.id] = .failed
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                     }
                     
                 case "step_ota": // 断开连接前 OTA（是否执行由 step2 的「若 FW 不匹配则触发 OTA」+ FW 比对结果决定；OTA 步骤始终在 SOP 中，无法由用户单独关闭）
@@ -2446,6 +2643,7 @@ struct ProductionTestView: View {
                         self.log("错误：服务器未提供版本 \(rules.firmwareVersion) 的产线固件，请检查服务器固件列表或产线可见配置", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 服务器未提供 \(rules.firmwareVersion) 产线固件"
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
                     let otaURL: URL
@@ -2456,6 +2654,7 @@ struct ProductionTestView: View {
                         self.log("错误：无法从服务器准备 OTA 固件 \(rules.firmwareVersion)：\(error.localizedDescription)", level: .error, category: "OTA")
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 无法准备 \(rules.firmwareVersion) 固件"
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
                     // 产测：由规则决定是否跳过（当前已是目标版本则跳过）；OTA 只接收 URL 执行，不做版本比对
@@ -2486,6 +2685,7 @@ struct ProductionTestView: View {
                         needRetestAfterOtaReboot = false
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: \(reason)"
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
                     
@@ -2511,6 +2711,7 @@ struct ProductionTestView: View {
                             stepResults[step.id] = "OTA: 启动超时"
                         }
                         stepStatuses[step.id] = .failed
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
                     
@@ -2524,6 +2725,7 @@ struct ProductionTestView: View {
                         needRetestAfterOtaReboot = false
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 失败或已取消"
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
                     
@@ -2536,6 +2738,7 @@ struct ProductionTestView: View {
                         needRetestAfterOtaReboot = false
                         stepStatuses[step.id] = .failed
                         stepResults[step.id] = "OTA: 未完成"
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
                     
@@ -2562,7 +2765,9 @@ struct ProductionTestView: View {
                     
                 default:
                     self.log("未知步骤: \(step.id)", level: .error)
+                    stepResults[step.id] = "未知步骤"
                     stepStatuses[step.id] = .failed
+                    if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                 }
                 
                 // 记录步骤结束时的日志索引
@@ -2591,22 +2796,12 @@ struct ProductionTestView: View {
             }
             
         self.log("产测流程结束", level: .info)
-        // 无论通过或失败，均在日志区输出完整报表，便于主日志区按等级过滤查看
-        emitProductionTestReport(enabledSteps: enabledSteps)
-        
-        // 若已开启「上传至服务器」，则异步上报本次产测结果
-        if serverSettings.uploadToServerEnabled {
-            Task { await uploadProductionTestResultIfNeeded(enabledSteps: enabledSteps) }
-        }
-        
+        // 统一收尾：生成报表、按配置上传、设置结束时间与 overlay
+        finishProductionTestRunWithReportAndUpload(enabledSteps: enabledSteps)
         isRunning = false
         if let id = currentStepId { expandedSteps.remove(id) }
         currentStepId = nil
-        // 更新测试结果状态
         updateTestResultStatus()
-        // 显示结果 overlay（绿/红弹窗报表）
-        lastTestEndTime = Date()
-        showResultOverlay = true
     }
     
     /// 若「上传至服务器」已开启，将本次产测结果 POST 到服务器（使用产测过程中缓存的设备信息，与当前是否连接无关）
@@ -2624,7 +2819,7 @@ struct ProductionTestView: View {
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let startTimeStr = isoFormatter.string(from: startTime)
         let endTimeStr = isoFormatter.string(from: endTime)
-        let stepsSummary: [[String: String]] = enabledSteps.map { step in
+        let stepsSummary: [[String: Any]] = enabledSteps.enumerated().map { index, step in
             let status: String
             switch stepStatuses[step.id] ?? .pending {
             case .passed: status = "passed"
@@ -2632,7 +2827,13 @@ struct ProductionTestView: View {
             case .skipped: status = "skipped"
             case .pending, .running: status = "pending"
             }
-            return ["stepId": step.id, "status": status]
+            let stepName = appLanguage.string("production_test_rules.\(step.key)_title")
+            return [
+                "stepIndex": index + 1,
+                "stepName": stepName,
+                "stepId": step.id,
+                "status": status,
+            ] as [String: Any]
         }
         var body: [String: Any] = [
             "deviceSerialNumber": sn,
@@ -2675,6 +2876,18 @@ struct ProductionTestView: View {
         if let v = capturedGasLeakClosedSamples { testDetails["gasLeakClosedSamples"] = v }
         if !testDetails.isEmpty { body["testDetails"] = testDetails }
 
+        // #region agent log
+        let _logPath = "/Users/shiqingfeng/Library/CloudStorage/OneDrive-Personal/AgilianTech/000.RD/project/CO2/BOG_TOOL/.cursor/debug-37ccdb.log"
+        let _p: [String: Any] = ["sessionId": "37ccdb", "timestamp": Int64(Date().timeIntervalSince1970 * 1000), "location": "ProductionTestView.swift:uploadProductionTestResultIfNeeded", "message": "about to log payload", "hypothesisId": "B"]
+        if let _d = try? JSONSerialization.data(withJSONObject: _p), let _s = String(data: _d, encoding: .utf8) {
+            let _line = _s + "\n"
+            if FileManager.default.fileExists(atPath: _logPath), let _h = FileHandle(forWritingAtPath: _logPath) {
+                _h.seekToEndOfFile()
+                _h.write(Data(_line.utf8))
+                try? _h.close()
+            } else { try? (_line).write(to: URL(fileURLWithPath: _logPath), atomically: false, encoding: .utf8) }
+        }
+        // #endregion
         // 在日志区输出将要上传的完整 payload，便于排查
         if let jsonData = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted]),
            let jsonString = String(data: jsonData, encoding: .utf8) {
@@ -2683,10 +2896,14 @@ struct ProductionTestView: View {
             self.log("上传产测记录 payload 构造完成（JSON 序列化失败，仅记录结构体）: \(body)", level: .warning)
         }
 
-        self.log("正在上传产测结果至服务器（后台）…", level: .info)
+        let uploadDestination: String = {
+            let base = serverSettings.effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            return base.isEmpty ? "(未配置)" : "\(base)\(ServerAPI.productionTest)"
+        }()
+        self.log("正在上传产测结果至服务器（后台）… \(uploadDestination)", level: .info)
         do {
             try await serverClient.uploadProductionTest(body: body)
-            self.log("产测结果已上传至服务器", level: .info)
+            self.log("产测结果已上传至服务器（\(uploadDestination)）", level: .info)
         } catch let err as ServerClientError {
             switch err {
             case .serverError(let code, let retriable):
@@ -2706,6 +2923,29 @@ struct ProductionTestView: View {
             self.log("上传失败: \(error.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
             serverSettings.savePendingUpload(body: body)
         }
+    }
+    
+    /// 产测结束时的统一收尾：生成报表、按配置上传、设置结束时间与结果 overlay。正常结束与提前终止（用户停止、连接丢失、致命步骤失败）均调用此方法，保证每次产测都有报表并可上传。
+    private func finishProductionTestRunWithReportAndUpload(enabledSteps: [TestStep]) {
+        // #region agent log
+        let _logPath = "/Users/shiqingfeng/Library/CloudStorage/OneDrive-Personal/AgilianTech/000.RD/project/CO2/BOG_TOOL/.cursor/debug-37ccdb.log"
+        let _payload: [String: Any] = ["sessionId": "37ccdb", "timestamp": Int64(Date().timeIntervalSince1970 * 1000), "location": "ProductionTestView.swift:finishProductionTestRunWithReportAndUpload", "message": "finishProductionTestRunWithReportAndUpload entered", "hypothesisId": "A"]
+        if let _d = try? JSONSerialization.data(withJSONObject: _payload), let _s = String(data: _d, encoding: .utf8) {
+            let _line = _s + "\n"
+            if FileManager.default.fileExists(atPath: _logPath), let _h = FileHandle(forWritingAtPath: _logPath) {
+                _h.seekToEndOfFile()
+                _h.write(Data(_line.utf8))
+                try? _h.close()
+            } else { try? (_line).write(to: URL(fileURLWithPath: _logPath), atomically: false, encoding: .utf8) }
+        }
+        // #endregion
+        didFinishThisRun = true
+        emitProductionTestReport(enabledSteps: enabledSteps)
+        if serverSettings.uploadToServerEnabled {
+            Task { await uploadProductionTestResultIfNeeded(enabledSteps: enabledSteps) }
+        }
+        lastTestEndTime = Date()
+        showResultOverlay = true
     }
     
     /// 产测结束时生成报表并写入日志区，按步骤结果使用不同 log 等级（通过=info、失败=error、跳过=warning）
@@ -2767,27 +3007,27 @@ private struct ProductionTestResultOverlay: View {
         return passed ? "production_test.result_overlay_title_pass" : "production_test.result_overlay_title_fail"
     }
     private var accentColor: Color {
-        if needRetest { return Color(nsColor: .systemRed) }
-        return passed ? Color(nsColor: .systemGreen) : Color(nsColor: .systemRed)
+        if needRetest { return Color(red: 0.75, green: 0.28, blue: 0.28) }
+        return passed ? Color(red: 0.2, green: 0.45, blue: 0.78) : Color(red: 0.75, green: 0.28, blue: 0.28)
     }
     
     private func rowColor(ok: Bool, isWarning: Bool) -> Color {
-        if !ok { return Color(nsColor: .systemRed) }
-        if isWarning { return Color(nsColor: .systemOrange) }
-        return Color(nsColor: .systemGreen)
+        if !ok { return Color(red: 0.72, green: 0.3, blue: 0.3) }       // 红色（不深）
+        if isWarning { return Color(red: 0.85, green: 0.65, blue: 0.35) } // 浅橙（图标/勾）
+        return Color(red: 0.2, green: 0.45, blue: 0.78)               // 蓝色（通过）
     }
     
-    /// 较深的背景色，用于每行通过/失败/警告的底色（比 system 色 + 低透明度更醒目）
+    /// 每行通过/失败/跳过的背景色：通过=蓝，失败=浅红，跳过=非常浅橙
     private func rowBackgroundColor(ok: Bool, isWarning: Bool) -> Color {
-        if !ok { return Color(red: 0.85, green: 0.25, blue: 0.22) }   // 深红
-        if isWarning { return Color(red: 0.9, green: 0.55, blue: 0.2) } // 深橙
-        return Color(red: 0.22, green: 0.6, blue: 0.35)                 // 深绿
+        if !ok { return Color(red: 0.96, green: 0.45, blue: 0.45) }     // 浅红
+        if isWarning { return Color(red: 1.0, green: 0.95, blue: 0.88) } // 非常浅橙
+        return Color(red: 0.35, green: 0.58, blue: 0.88)               // 蓝
     }
     
-    /// Close 按钮使用的深色（通过=深绿，失败/需要重测=深红）
+    /// Close 按钮：通过=蓝，失败/需要重测=浅红
     private var closeButtonColor: Color {
-        if needRetest { return Color(red: 0.7, green: 0.18, blue: 0.18) }
-        return passed ? Color(red: 0.15, green: 0.5, blue: 0.25) : Color(red: 0.7, green: 0.18, blue: 0.18)
+        if needRetest { return Color(red: 0.72, green: 0.28, blue: 0.28) }
+        return passed ? Color(red: 0.18, green: 0.42, blue: 0.72) : Color(red: 0.72, green: 0.28, blue: 0.28)
     }
     
     var body: some View {
@@ -2796,71 +3036,78 @@ private struct ProductionTestResultOverlay: View {
             Color.black.opacity(0.3)
                 .allowsHitTesting(false)
             
-            VStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
-                    Text(appLanguage.string(titleKey))
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(Color(NSColor.labelColor))
-                    Text(timeString)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(Color(NSColor.secondaryLabelColor))
-                    if needRetest {
-                        Text(appLanguage.string("production_test.need_retest_detail"))
-                            .font(.subheadline)
+            GeometryReader { geo in
+                let maxCardHeight = min(560, geo.size.height * 0.88)
+                VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+                        Text(appLanguage.string(titleKey))
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(Color(NSColor.labelColor))
+                        Text(timeString)
+                            .font(.caption.monospacedDigit())
                             .foregroundStyle(Color(NSColor.secondaryLabelColor))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(Array(criteria.enumerated()), id: \.offset) { _, item in
-                            let color = rowColor(ok: item.ok, isWarning: item.isWarning)
-                            let bgColor = rowBackgroundColor(ok: item.ok, isWarning: item.isWarning)
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .center, spacing: 8) {
-                                    Text(item.ok ? "✓" : "✗")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(color)
-                                    Text(item.name)
-                                        .font(.subheadline)
-                                        .foregroundStyle(Color(NSColor.labelColor))
-                                    Spacer(minLength: 0)
-                                }
-                                if let detail = item.detail, !detail.isEmpty {
-                                    Text(detail)
-                                        .font(.caption)
-                                        .foregroundStyle(Color(NSColor.secondaryLabelColor))
-                                        .fixedSize(horizontal: false, vertical: true)
+                        if needRetest {
+                            Text(appLanguage.string("production_test.need_retest_detail"))
+                                .font(.subheadline)
+                                .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(Array(criteria.enumerated()), id: \.offset) { _, item in
+                                    let color = rowColor(ok: item.ok, isWarning: item.isWarning)
+                                    let bgColor = rowBackgroundColor(ok: item.ok, isWarning: item.isWarning)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(alignment: .center, spacing: 8) {
+                                            Text(item.ok ? "✓" : "✗")
+                                                .font(.system(size: 13, weight: .medium))
+                                                .foregroundStyle(color)
+                                            Text(item.name)
+                                                .font(.subheadline)
+                                                .foregroundStyle(Color(NSColor.labelColor))
+                                            Spacer(minLength: 0)
+                                        }
+                                        if let detail = item.detail, !detail.isEmpty {
+                                            Text(detail)
+                                                .font(.caption)
+                                                .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                    .padding(.horizontal, 8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(bgColor)
+                                    .cornerRadius(6)
                                 }
                             }
-                            .padding(.vertical, 4)
-                            .padding(.horizontal, 8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(bgColor)
-                            .cornerRadius(6)
+                            .padding(.vertical, 2)
+                        }
+                        .frame(maxHeight: max(120, maxCardHeight - 160))
+                        
+                        HStack {
+                            Spacer(minLength: 0)
+                            Text(appLanguage.string("production_test.result_overlay_dismiss"))
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.white)
+                                .frame(minWidth: 200)
+                                .padding(.vertical, 10)
+                                .background(closeButtonColor, in: RoundedRectangle(cornerRadius: 6))
+                                .contentShape(Rectangle())
+                                .onTapGesture { onDismiss() }
+                            Spacer(minLength: 0)
                         }
                     }
-                    
-                    HStack {
-                        Spacer(minLength: 0)
-                        Text(appLanguage.string("production_test.result_overlay_dismiss"))
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.white)
-                            .frame(minWidth: 200)
-                            .padding(.vertical, 10)
-                            .background(closeButtonColor, in: RoundedRectangle(cornerRadius: 6))
-                            .contentShape(Rectangle())
-                            .onTapGesture { onDismiss() }
-                        Spacer(minLength: 0)
-                    }
+                    .padding(UIDesignSystem.Padding.xl)
+                    .frame(minWidth: 320, maxWidth: 440, maxHeight: maxCardHeight)
+                    .background(Color(NSColor.windowBackgroundColor))
                 }
-                .padding(UIDesignSystem.Padding.xl)
-                .frame(minWidth: 320, maxWidth: 440)
-                .background(Color(NSColor.windowBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .shadow(color: .black.opacity(0.15), radius: 16, x: 0, y: 8)
+                .allowsHitTesting(true)
+                .contentShape(RoundedRectangle(cornerRadius: 12))
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .shadow(color: .black.opacity(0.15), radius: 16, x: 0, y: 8)
-            .allowsHitTesting(true)
-            .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onExitCommand { onDismiss() }

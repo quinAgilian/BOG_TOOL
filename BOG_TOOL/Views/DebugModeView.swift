@@ -188,6 +188,7 @@ struct DebugModeView: View {
             guidedLeakTestSection
             gasSystemStatusSection
             co2PressureLimitsSection
+            disableGasSelfCheckSection
             // 谁调用的 OTA 谁管理：产测 OTA 进行中时 Debug 区不随动，仅提示切回产测
             if ble.isOTAInProgress && ble.otaInitiatedByProductionTest {
                 productionTestOTAInProgressHint
@@ -2300,6 +2301,32 @@ struct DebugModeView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!ble.isConnected || ble.isOTAInProgress)
                 }
+            }
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+    
+    /// 屏蔽系统气体自检：向 co2PressureLimits 写入 12 个 0x00
+    private var disableGasSelfCheckSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            Text(appLanguage.string("debug.disable_gas_self_check"))
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            Text(appLanguage.string("debug.disable_gas_self_check_hint"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            HStack {
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                Button {
+                    ble.writeCo2PressureLimitsZeros()
+                } label: {
+                    Text(appLanguage.string("debug.disable_gas_self_check_action"))
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!ble.isConnected || ble.isOTAInProgress)
             }
         }
         .padding(UIDesignSystem.Padding.sm)

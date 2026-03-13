@@ -120,6 +120,9 @@
 "debug.close_pressure" = "关阀压力";
 "debug.gas_system_status" = "气体系统状态";
 "debug.co2_pressure_limits" = "CO2 压力限值";
+"debug.disable_gas_self_check" = "屏蔽系统气体自检";
+"debug.disable_gas_self_check_hint" = "向 co2PressureLimits 写入 12 个 0x00 以屏蔽气体系统自检功能。";
+"debug.disable_gas_self_check_action" = "Disable diag";
 "debug.read" = "读取";
 "debug.ota_production_test_in_progress" = "产测 OTA 进行中，请切回产测界面操作。";
 "debug.factory_reset" = "恢复出厂";
@@ -279,6 +282,7 @@
 "production_test_rules.procedure_title" = "测试流程";
 "production_test_rules.procedure_description" = "本产测遵循标准化流程，用于验证设备功能。每个步骤必须满足指定的判定标准。";
 "production_test_rules.steps_title" = "测试步骤";
+"production_test_rules.step_fatal_on_failure_title" = "失败时终止产测";
 "production_test_rules.step1_title" = "连接设备";
 "production_test_rules.step1_desc" = "与设备建立连接。";
 "production_test_rules.step1_criteria" = "✓ 通过：连接成功。✗ 失败：错误码-1，用户需重新测试。";
@@ -291,6 +295,11 @@
 "production_test_rules.step4_title" = "读取压力值";
 "production_test_rules.step4_desc" = "读取关闭和开启状态下的压力值。";
 "production_test_rules.step4_criteria" = "✓ 通过：关闭状态 > 1.300 mbar，开启状态 > 1.1 mbar。";
+"production_test_rules.step_disable_diag_title" = "屏蔽系统气体自检（Disable diag）";
+"production_test_rules.step_disable_diag_desc" = "向 co2PressureLimits 写入 12 个 0x00 以屏蔽气体系统自检功能。";
+"production_test_rules.step_disable_diag_criteria" = "✓ 通过：已向 co2PressureLimits 写入 12×0x00。";
+"production_test_rules.disable_diag_config_title" = "Disable diag（发送后等待）";
+"production_test_rules.disable_diag_wait_seconds" = "发送后等待时间";
 "production_test_rules.step_gas_system_status_title" = "读取 Gas system status";
 "production_test_rules.step_gas_system_status_desc" = "读取气体系统状态并解码，须为 1 (ok) 才通过。";
 "production_test_rules.step_gas_system_status_criteria" = "✓ 通过：Gas system status = 1 (ok)。✗ 失败：非 1（如 0 initially closed、2 leak 等）。";
@@ -371,6 +380,11 @@
 "production_test_rules.gas_leak_alarm_threshold_bar" = "报警阈值";
 "production_test_rules.gas_leak_require_pipeline_ready_confirm" = "阶段1前确认气路已连接";
 "production_test_rules.gas_leak_require_valve_closed_confirm" = "阶段2前确认入口阀门已关闭";
+"production_test_rules.gas_leak_closed_phase4_title" = "Phase 4（阶段3通过后开阀泄压）";
+"production_test_rules.gas_leak_closed_phase4_enabled" = "启用 Phase 4";
+"production_test_rules.gas_leak_closed_phase4_monitor_duration" = "连续监测时长";
+"production_test_rules.gas_leak_closed_phase4_drop_within" = "压力达标时间窗";
+"production_test_rules.gas_leak_closed_phase4_pressure_below" = "压力需低于";
 
 /* OTA */
 "ota.title" = "OTA";
@@ -433,6 +447,7 @@
 "production_test.result_criteria_fw" = "固件（一致或 OTA 成功）";
 "production_test.need_retest" = "需要重测";
 "production_test.need_retest_detail" = "本次因当前固件不支持恢复出厂/重启而在 OTA 后发送了 reboot，请重测以执行后续步骤。";
+"production_test.step_disconnect_after_factory_reset_ok" = "✓ 通过：恢复出厂后设备已断开，符合预期。";
 
 /* 菜单 */
 "menu.floating" = "置顶";

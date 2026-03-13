@@ -557,6 +557,13 @@ final class BLEManager: NSObject, ObservableObject {
         if !silent { appendLog("请求读取 CO2 Pressure Limits") }
     }
     
+    /// 向 co2PressureLimits 写入 12 个 0x00，用于屏蔽系统气体系统自检功能
+    func writeCo2PressureLimitsZeros() {
+        let data = Data(repeating: 0x00, count: 12)
+        writeToCharacteristic(pressureLimitsCharacteristic, data: data)
+        appendLog("已向 CO2 Pressure Limits 写入 12 个 0x00（屏蔽气体自检）")
+    }
+    
     /// RTC 测试：向 Schedule Time Write 写入十六进制触发，再从 OTA Testing 特征读取 RTC（7 字节）
     func writeRTCTrigger(hexString: String) {
         guard let data = dataFromHexString(hexString) else {
@@ -1769,6 +1776,7 @@ extension BLEManager: CBCentralManagerDelegate {
                 } else {
                     appendLog("已断开: \(err.localizedDescription)")
                     if BLEManager.isPairingRemovedError(err) {
+                        lastConnectFailureWasPairingRemoved = true
                         errorMessageKey = "error.pairing_removed_hint"
                         BLEManager.openBluetoothSettings()
                     }
@@ -2008,11 +2016,13 @@ extension BLEManager: CBPeripheralDelegate {
                         valveStateAuthErrorLogged = true
                         appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)（阀门状态需加密/配对，仅首次打印）", level: .error)
                     }
-                    // 加密/认证不足：提醒用户必须同意系统弹窗，放弃当前操作，等待用户手动再次连接
+                    // 加密/认证不足：提醒用户必须同意系统弹窗，并自动打开系统蓝牙设置、启动 30 秒等待提示
                     if BLEManager.isEncryptionOrAuthInsufficientError(err) {
                         errorMessageKey = "error.encryption_insufficient_hint"
                         errorMessage = err.localizedDescription
                         appendLog(NSLocalizedString("error.encryption_insufficient_hint", value: "请在系统弹窗中点击「允许」完成配对，然后手动再次连接。", comment: ""), level: .error)
+                        showBlePermissionPromptAndSchedule30s()
+                        BLEManager.openBluetoothSettings()
                     }
                     // 成功读到 GATT 之前的任何错误均视为连接失败：释放该次连接（加密未建立）
                     if let peripheral = connectedPeripheral {

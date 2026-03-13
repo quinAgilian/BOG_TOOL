@@ -17,6 +17,8 @@ struct TestStep: Identifiable, Equatable {
     static let verifyFirmware = TestStep(id: "step2", key: "step2", isLocked: false, enabled: true)
     static let readRTC = TestStep(id: "step3", key: "step3", isLocked: false, enabled: true)
     static let readPressure = TestStep(id: "step4", key: "step4", isLocked: false, enabled: true)
+    /// 屏蔽系统气体自检：向 co2PressureLimits 写入 12 个 0x00（与 Debug 区「Disable diag」共用 BLEManager.writeCo2PressureLimitsZeros）
+    static let disableDiag = TestStep(id: "step_disable_diag", key: "step_disable_diag", isLocked: false, enabled: true)
     /// 读取 Gas system status（0 initially closed, 1 ok, 2 leak…；产测要求 1 ok）
     static let readGasSystemStatus = TestStep(id: "step_gas_system_status", key: "step_gas_system_status", isLocked: false, enabled: true)
     /// 气体泄漏检测（开阀压力）：第一个泄漏检测步骤，默认用开阀压力判定；可独立启用与配置
@@ -33,6 +35,12 @@ struct TestStep: Identifiable, Equatable {
     /// 断开连接前的 OTA 步骤（默认启用，不许用户取消）
     static let otaBeforeDisconnect = TestStep(id: "step_ota", key: "step_ota", isLocked: true, enabled: true)
     static let disconnectDevice = TestStep(id: "step_disconnect", key: "step_disconnect", isLocked: false, enabled: true)
+}
+
+/// 规则层：本步失败时是否终止整条产测（return）；不在集合内的步骤失败时仅 break，继续后续步骤。
+extension TestStep {
+    /// 失败时应终止产测（先执行恢复出厂若已启用再 return）的 step.id 集合；其余步骤失败时只 break。
+    static let stepIdsFatalOnFailure: Set<String> = [TestStep.verifyFirmware.id]
 }
 
 /// 产测规则视图：定义产测SOP（标准操作程序）
@@ -61,6 +69,10 @@ struct ProductionTestRulesView: View {
     @State private var isEditingOrder: Bool = false
     // 步骤展开状态（用于显示配置项）
     @State private var expandedSteps: Set<String> = []
+    /// 每步「失败时终止产测」覆盖配置（stepId -> 是否终止）；未在此字典中的步骤沿用 TestStep.stepIdsFatalOnFailure 默认
+    @State private var stepFatalOverrides: [String: Bool] = {
+        UserDefaults.standard.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool] ?? [:]
+    }()
     
     // RTC时间差阈值配置（单位：秒）
     @State private var rtcTimeDiffPassThreshold: Double = {
@@ -92,6 +104,10 @@ struct ProductionTestRulesView: View {
     }()
     @State private var valveOpenTimeout: Double = {
         UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 5.0
+    }()
+    /// Disable diag 发送完成后等待时间（秒），默认 2
+    @State private var disableDiagWaitSeconds: Double = {
+        UserDefaults.standard.object(forKey: "production_test_disable_diag_wait_seconds") as? Double ?? 2.0
     }()
     /// 每个测试步骤之间的等待时间（SOP 定义，单位 ms）
     @State private var stepIntervalMs: Int = {
@@ -171,6 +187,19 @@ struct ProductionTestRulesView: View {
     @State private var gasLeakClosedRequireValveClosedConfirm: Bool = {
         UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_require_valve_closed_confirm") as? Bool ?? true
     }()
+    // 关阀压力 Phase 4：Phase 3 通过后开阀，连续监测，要求在规定时间内压力低于阈值
+    @State private var gasLeakClosedPhase4MonitorDurationSeconds: Int = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds") as? Int ?? 15
+    }()
+    @State private var gasLeakClosedPhase4DropWithinSeconds: Int = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_drop_within_seconds") as? Int ?? 5
+    }()
+    @State private var gasLeakClosedPhase4PressureBelowMbar: Double = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_pressure_below_mbar") as? Double ?? 100
+    }()
+    @State private var gasLeakClosedPhase4Enabled: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_enabled") as? Bool ?? true
+    }()
     /// 若开阀压力检测通过则自动跳过关阀压力步骤
     @State private var gasLeakSkipClosedWhenOpenPasses: Bool = {
         UserDefaults.standard.object(forKey: "production_test_gas_leak_skip_closed_when_open_passes") as? Bool ?? false
@@ -181,6 +210,8 @@ struct ProductionTestRulesView: View {
         struct StepState: Codable {
             var id: String
             var enabled: Bool
+            /// 本步失败时是否终止整条产测（true=return，false=break）；nil 表示沿用代码默认（导出时写入实际值便于导入还原）
+            var fatalOnFailure: Bool?
         }
         
         var bootloaderVersion: String
@@ -197,6 +228,7 @@ struct ProductionTestRulesView: View {
         var otaStartWaitTimeout: Double
         var deviceReconnectTimeout: Double
         var valveOpenTimeout: Double
+        var disableDiagWaitSeconds: Double?
         var stepIntervalMs: Int
         var bluetoothPermissionWaitSeconds: Double
         
@@ -223,6 +255,11 @@ struct ProductionTestRulesView: View {
         var gasLeakClosedStartPressureMinMbar: Double
         var gasLeakClosedRequirePipelineReadyConfirm: Bool
         var gasLeakClosedRequireValveClosedConfirm: Bool
+        /// Phase 4 参数（可选以兼容旧版导出）
+        var gasLeakClosedPhase4Enabled: Bool?
+        var gasLeakClosedPhase4MonitorDurationSeconds: Int?
+        var gasLeakClosedPhase4DropWithinSeconds: Int?
+        var gasLeakClosedPhase4PressureBelowMbar: Double?
         var gasLeakSkipClosedWhenOpenPasses: Bool
         
         var steps: [StepState]
@@ -234,6 +271,7 @@ struct ProductionTestRulesView: View {
         .verifyFirmware,
         .readRTC,
         .readPressure,
+        .disableDiag,
         .readGasSystemStatus,
         .gasLeakOpen,
         .gasLeakClosed,
@@ -247,7 +285,7 @@ struct ProductionTestRulesView: View {
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         // 加载步骤顺序
@@ -279,9 +317,21 @@ struct ProductionTestRulesView: View {
         if !steps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
             steps.insert(TestStep.ensureValveOpen, at: steps.count - 1)
         }
+        // 迁移：若旧配置中无「屏蔽气体自检」步骤，则插入在读取压力之后
+        if !steps.contains(where: { $0.id == TestStep.disableDiag.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
+                steps.insert(TestStep.disableDiag, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+                steps.insert(TestStep.disableDiag, at: idx)
+            } else {
+                steps.insert(TestStep.disableDiag, at: steps.count - 1)
+            }
+        }
         // 迁移：若旧配置中无「读取 Gas system status」步骤，则插入在读取压力之后、确保电磁阀之前
         if !steps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
-            if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.disableDiag.id }) {
+                steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
                 steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
             } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
                 steps.insert(TestStep.readGasSystemStatus, at: idx)
@@ -430,9 +480,10 @@ struct ProductionTestRulesView: View {
         defaults.removeObject(forKey: "production_test_firmware_version")
         defaults.removeObject(forKey: "production_test_hardware_version")
         defaults.removeObject(forKey: "production_test_firmware_upgrade_enabled")
-        // 步骤顺序与启用状态
+        // 步骤顺序、启用状态与失败行为
         defaults.removeObject(forKey: "production_test_steps_order")
         defaults.removeObject(forKey: "production_test_steps_enabled")
+        defaults.removeObject(forKey: "production_test_steps_fatal_on_failure")
         // 全局延时
         defaults.removeObject(forKey: "production_test_step_interval_ms")
         defaults.removeObject(forKey: "production_test_bluetooth_permission_wait_seconds")
@@ -447,6 +498,7 @@ struct ProductionTestRulesView: View {
         defaults.removeObject(forKey: "production_test_ota_start_timeout")
         defaults.removeObject(forKey: "production_test_reconnect_timeout")
         defaults.removeObject(forKey: "production_test_valve_open_timeout")
+        defaults.removeObject(forKey: "production_test_disable_diag_wait_seconds")
         // 压力阈值
         defaults.removeObject(forKey: "production_test_pressure_closed_min")
         defaults.removeObject(forKey: "production_test_pressure_closed_max")
@@ -475,6 +527,10 @@ struct ProductionTestRulesView: View {
         defaults.removeObject(forKey: "production_test_gas_leak_closed_alarm_threshold_bar")
         defaults.removeObject(forKey: "production_test_gas_leak_closed_require_pipeline_ready_confirm")
         defaults.removeObject(forKey: "production_test_gas_leak_closed_require_valve_closed_confirm")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_phase4_enabled")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_phase4_drop_within_seconds")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_phase4_pressure_below_mbar")
 
         // 重置本地状态为初始默认值
         bootloaderVersion = "2"
@@ -490,6 +546,7 @@ struct ProductionTestRulesView: View {
         otaStartWaitTimeout = 5.0
         deviceReconnectTimeout = 5.0
         valveOpenTimeout = 5.0
+        disableDiagWaitSeconds = 2.0
         stepIntervalMs = 100
         bluetoothPermissionWaitSeconds = 0
         pressureClosedMin = 1000
@@ -511,6 +568,10 @@ struct ProductionTestRulesView: View {
         gasLeakClosedDropThresholdMbar = 15
         gasLeakClosedRequirePipelineReadyConfirm = true
         gasLeakClosedRequireValveClosedConfirm = true
+        gasLeakClosedPhase4Enabled = true
+        gasLeakClosedPhase4MonitorDurationSeconds = 15
+        gasLeakClosedPhase4DropWithinSeconds = 5
+        gasLeakClosedPhase4PressureBelowMbar = 100
         testSteps = Self.defaultSteps
         expandedSteps = []
         isEditingOrder = false
@@ -534,6 +595,7 @@ struct ProductionTestRulesView: View {
             otaStartWaitTimeout: otaStartWaitTimeout,
             deviceReconnectTimeout: deviceReconnectTimeout,
             valveOpenTimeout: valveOpenTimeout,
+            disableDiagWaitSeconds: disableDiagWaitSeconds,
             stepIntervalMs: stepIntervalMs,
             bluetoothPermissionWaitSeconds: bluetoothPermissionWaitSeconds,
             pressureClosedMin: pressureClosedMin,
@@ -557,8 +619,16 @@ struct ProductionTestRulesView: View {
             gasLeakClosedStartPressureMinMbar: gasLeakClosedStartPressureMinMbar,
             gasLeakClosedRequirePipelineReadyConfirm: gasLeakClosedRequirePipelineReadyConfirm,
             gasLeakClosedRequireValveClosedConfirm: gasLeakClosedRequireValveClosedConfirm,
+            gasLeakClosedPhase4Enabled: gasLeakClosedPhase4Enabled,
+            gasLeakClosedPhase4MonitorDurationSeconds: gasLeakClosedPhase4MonitorDurationSeconds,
+            gasLeakClosedPhase4DropWithinSeconds: gasLeakClosedPhase4DropWithinSeconds,
+            gasLeakClosedPhase4PressureBelowMbar: gasLeakClosedPhase4PressureBelowMbar,
             gasLeakSkipClosedWhenOpenPasses: gasLeakSkipClosedWhenOpenPasses,
-            steps: testSteps.map { RulesSnapshot.StepState(id: $0.id, enabled: $0.enabled) }
+            steps: testSteps.map { step in
+                let fatalDict = UserDefaults.standard.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool]
+                let fatalVal = fatalDict?[step.id] ?? TestStep.stepIdsFatalOnFailure.contains(step.id)
+                return RulesSnapshot.StepState(id: step.id, enabled: step.enabled, fatalOnFailure: fatalVal)
+            }
         )
     }
 
@@ -581,6 +651,7 @@ struct ProductionTestRulesView: View {
         otaStartWaitTimeout = snapshot.otaStartWaitTimeout
         deviceReconnectTimeout = snapshot.deviceReconnectTimeout
         valveOpenTimeout = snapshot.valveOpenTimeout
+        disableDiagWaitSeconds = snapshot.disableDiagWaitSeconds ?? 2.0
         stepIntervalMs = snapshot.stepIntervalMs
         bluetoothPermissionWaitSeconds = snapshot.bluetoothPermissionWaitSeconds
 
@@ -607,6 +678,10 @@ struct ProductionTestRulesView: View {
         gasLeakClosedStartPressureMinMbar = snapshot.gasLeakClosedStartPressureMinMbar
         gasLeakClosedRequirePipelineReadyConfirm = snapshot.gasLeakClosedRequirePipelineReadyConfirm
         gasLeakClosedRequireValveClosedConfirm = snapshot.gasLeakClosedRequireValveClosedConfirm
+        gasLeakClosedPhase4Enabled = snapshot.gasLeakClosedPhase4Enabled ?? true
+        gasLeakClosedPhase4MonitorDurationSeconds = snapshot.gasLeakClosedPhase4MonitorDurationSeconds ?? 15
+        gasLeakClosedPhase4DropWithinSeconds = snapshot.gasLeakClosedPhase4DropWithinSeconds ?? 5
+        gasLeakClosedPhase4PressureBelowMbar = snapshot.gasLeakClosedPhase4PressureBelowMbar ?? 100
         gasLeakSkipClosedWhenOpenPasses = snapshot.gasLeakSkipClosedWhenOpenPasses
 
         // 写回 UserDefaults（保持现有 key 语义）
@@ -624,6 +699,7 @@ struct ProductionTestRulesView: View {
         defaults.set(otaStartWaitTimeout, forKey: "production_test_ota_start_timeout")
         defaults.set(deviceReconnectTimeout, forKey: "production_test_reconnect_timeout")
         defaults.set(valveOpenTimeout, forKey: "production_test_valve_open_timeout")
+        defaults.set(disableDiagWaitSeconds, forKey: "production_test_disable_diag_wait_seconds")
         defaults.set(stepIntervalMs, forKey: "production_test_step_interval_ms")
         defaults.set(bluetoothPermissionWaitSeconds, forKey: "production_test_bluetooth_permission_wait_seconds")
 
@@ -650,17 +726,28 @@ struct ProductionTestRulesView: View {
         defaults.set(gasLeakClosedStartPressureMinMbar, forKey: "production_test_gas_leak_closed_start_pressure_min_mbar")
         defaults.set(gasLeakClosedRequirePipelineReadyConfirm, forKey: "production_test_gas_leak_closed_require_pipeline_ready_confirm")
         defaults.set(gasLeakClosedRequireValveClosedConfirm, forKey: "production_test_gas_leak_closed_require_valve_closed_confirm")
+        defaults.set(gasLeakClosedPhase4Enabled, forKey: "production_test_gas_leak_closed_phase4_enabled")
+        defaults.set(gasLeakClosedPhase4MonitorDurationSeconds, forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds")
+        defaults.set(gasLeakClosedPhase4DropWithinSeconds, forKey: "production_test_gas_leak_closed_phase4_drop_within_seconds")
+        defaults.set(gasLeakClosedPhase4PressureBelowMbar, forKey: "production_test_gas_leak_closed_phase4_pressure_below_mbar")
         defaults.set(gasLeakSkipClosedWhenOpenPasses, forKey: "production_test_gas_leak_skip_closed_when_open_passes")
 
-        // 步骤顺序与启用状态
+        // 步骤顺序、启用状态与失败行为
         let ids = snapshot.steps.map { $0.id }
         defaults.set(ids, forKey: "production_test_steps_order")
         let enabledDict = Dictionary(uniqueKeysWithValues: snapshot.steps.map { ($0.id, $0.enabled) })
         defaults.set(enabledDict, forKey: "production_test_steps_enabled")
+        var fatalDict = defaults.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool] ?? [:]
+        for s in snapshot.steps where s.fatalOnFailure != nil {
+            fatalDict[s.id] = s.fatalOnFailure!
+        }
+        if !fatalDict.isEmpty {
+            defaults.set(fatalDict, forKey: "production_test_steps_fatal_on_failure")
+        }
 
         // 更新本地状态数组
         var newSteps: [TestStep] = []
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         for s in snapshot.steps {
             if var base = stepMap[s.id] {
@@ -1199,6 +1286,26 @@ struct ProductionTestRulesView: View {
             Divider()
                 .padding(.vertical, 4)
             
+            // 每步可单独设置：失败后终止产测 或 仅本步失败继续后续步骤
+            if !isEditingOrder {
+                HStack(spacing: 8) {
+                    Toggle(isOn: Binding(
+                        get: { stepFatalOverrides[step.id] ?? TestStep.stepIdsFatalOnFailure.contains(step.id) },
+                        set: { newVal in
+                            stepFatalOverrides[step.id] = newVal
+                            UserDefaults.standard.set(stepFatalOverrides, forKey: "production_test_steps_fatal_on_failure")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                    )) {
+                        Text(appLanguage.string("production_test_rules.step_fatal_on_failure_title"))
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                    }
+                    .toggleStyle(.switch)
+                }
+                .padding(.vertical, 4)
+            }
+            
             switch step.id {
             case "step2": // 确认固件版本
                 versionConfigurationView
@@ -1206,6 +1313,8 @@ struct ProductionTestRulesView: View {
                 rtcConfigurationView
             case "step4": // 读取压力值
                 pressureConfigurationView
+            case "step_disable_diag": // 屏蔽气体自检（Disable diag）
+                disableDiagConfigurationView
             case "step_gas_leak_open": // 气体泄漏检测（开阀压力）
                 gasLeakOpenConfigurationView
             case "step_gas_leak_closed": // 气体泄漏检测（关阀压力）
@@ -1606,6 +1715,22 @@ struct ProductionTestRulesView: View {
         .padding(8)
     }
     
+    /// 屏蔽气体自检（Disable diag）步骤配置：发送完成后等待时间
+    private var disableDiagConfigurationView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(appLanguage.string("production_test_rules.disable_diag_config_title"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.disable_diag_wait_seconds"),
+                value: $disableDiagWaitSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_disable_diag_wait_seconds"
+            )
+        }
+        .padding(8)
+    }
+    
     /// 气体泄漏检测（开阀压力）步骤配置视图
     private var gasLeakOpenConfigurationView: some View {
         gasLeakConfigView(
@@ -1633,6 +1758,35 @@ struct ProductionTestRulesView: View {
                 requireValveClosedConfirm: $gasLeakClosedRequireValveClosedConfirm,
                 keyPrefix: "production_test_gas_leak_closed"
             )
+            
+            Divider()
+                .padding(.vertical, 4)
+            
+            // Phase 4：Phase 3 通过后开阀，连续监测，要求在规定时间内开阀压力低于阈值（独立开关）
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    Toggle("", isOn: $gasLeakClosedPhase4Enabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .onChange(of: gasLeakClosedPhase4Enabled) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "production_test_gas_leak_closed_phase4_enabled")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                    Text(appLanguage.string("production_test_rules.gas_leak_closed_phase4_enabled"))
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                Text(appLanguage.string("production_test_rules.gas_leak_closed_phase4_title"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_monitor_duration"), value: $gasLeakClosedPhase4MonitorDurationSeconds, key: "production_test_gas_leak_closed_phase4_monitor_duration_seconds")
+                    thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_drop_within"), value: $gasLeakClosedPhase4DropWithinSeconds, key: "production_test_gas_leak_closed_phase4_drop_within_seconds")
+                    thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_pressure_below"), value: $gasLeakClosedPhase4PressureBelowMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "production_test_gas_leak_closed_phase4_pressure_below_mbar")
+                }
+                .padding(8)
+            }
             
             Divider()
                 .padding(.vertical, 4)
