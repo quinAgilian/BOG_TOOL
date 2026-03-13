@@ -1412,6 +1412,10 @@ struct ProductionTestView: View {
             let t: Double
             let pressureClosed: Double?
             let pressureOpen: Double?
+            /// 该时刻读取的阀门状态（用于上传更细腻的产测数据）
+            let valveState: String?
+            /// 该时刻读取的 Gas 系统状态（用于上传更细腻的产测数据）
+            let gasSystemStatus: String?
         }
         var phase1Samples: [SamplePoint] = []
         var betweenSamples: [SamplePoint] = []
@@ -1433,7 +1437,7 @@ struct ProductionTestView: View {
             let valveStr = ble.lastValveStateValue
             let gasStr = ble.lastGasSystemStatusValue
             if closeBar != nil || openBar != nil {
-                phase1Samples.append(SamplePoint(t: phaseElapsed, pressureClosed: closeBar, pressureOpen: openBar))
+                phase1Samples.append(SamplePoint(t: phaseElapsed, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
                 let tStr = String(format: "%.1f", phaseElapsed)
                 let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
                 let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
@@ -1481,7 +1485,7 @@ struct ProductionTestView: View {
                 let gasStr = ble.lastGasSystemStatusValue
                 let t = Double(preDur) + betweenElapsed
                 if closeBar != nil || openBar != nil {
-                    betweenSamples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar))
+                    betweenSamples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
                     let tStr = String(format: "%.1f", t)
                     let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
                     let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
@@ -1519,7 +1523,7 @@ struct ProductionTestView: View {
             let gasStr = ble.lastGasSystemStatusValue
             let t = Double(preDur) + userActionDuration + phaseElapsed
             if closeBar != nil || openBar != nil {
-                phase2Samples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar))
+                phase2Samples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
                 let tStr = String(format: "%.1f", t)
                 let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
                 let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
@@ -1563,6 +1567,19 @@ struct ProductionTestView: View {
         let roundTToMilliseconds: (Double) -> Double = { value in
             (value * 1000).rounded() / 1000
         }
+        /// 将单点采样转为上传用字典（含双路压力、阀门状态、Gas 状态，便于产测数据更细腻）
+        func sampleToDetailDict(_ s: SamplePoint, phase: Int, pressureBar: Double) -> [String: Any] {
+            var d: [String: Any] = [
+                "phase": phase,
+                "t": roundTToMilliseconds(s.t),
+                "pressureBar": pressureBar,
+            ]
+            if let v = s.pressureClosed { d["pressureClosedBar"] = v }
+            if let v = s.pressureOpen { d["pressureOpenBar"] = v }
+            if let v = s.valveState, !v.isEmpty { d["valveState"] = v }
+            if let v = s.gasSystemStatus, !v.isEmpty { d["gasSystemStatus"] = v }
+            return d
+        }
         if useOpenPressure {
             capturedGasLeakOpenDeltaMbar = dropMbar
             capturedGasLeakOpenDurationSeconds = totalDurationSeconds
@@ -1574,15 +1591,15 @@ struct ProductionTestView: View {
             var allSamples: [[String: Any]] = []
             for s in phase1Samples {
                 let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(["phase": 1, "t": roundTToMilliseconds(s.t), "pressureBar": value])
+                allSamples.append(sampleToDetailDict(s, phase: 1, pressureBar: value))
             }
             for s in betweenSamples {
                 let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(["phase": 2, "t": roundTToMilliseconds(s.t), "pressureBar": value])
+                allSamples.append(sampleToDetailDict(s, phase: 2, pressureBar: value))
             }
             for s in phase2Samples {
                 let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(["phase": 3, "t": roundTToMilliseconds(s.t), "pressureBar": value])
+                allSamples.append(sampleToDetailDict(s, phase: 3, pressureBar: value))
             }
             capturedGasLeakOpenSamples = allSamples.isEmpty ? nil : allSamples
         } else {
@@ -1596,15 +1613,15 @@ struct ProductionTestView: View {
             var allSamples: [[String: Any]] = []
             for s in phase1Samples {
                 let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(["phase": 1, "t": roundTToMilliseconds(s.t), "pressureBar": value])
+                allSamples.append(sampleToDetailDict(s, phase: 1, pressureBar: value))
             }
             for s in betweenSamples {
                 let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(["phase": 2, "t": roundTToMilliseconds(s.t), "pressureBar": value])
+                allSamples.append(sampleToDetailDict(s, phase: 2, pressureBar: value))
             }
             for s in phase2Samples {
                 let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(["phase": 3, "t": roundTToMilliseconds(s.t), "pressureBar": value])
+                allSamples.append(sampleToDetailDict(s, phase: 3, pressureBar: value))
             }
             capturedGasLeakClosedSamples = allSamples.isEmpty ? nil : allSamples
         }
