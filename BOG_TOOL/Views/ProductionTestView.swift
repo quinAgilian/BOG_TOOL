@@ -1130,6 +1130,14 @@ struct ProductionTestView: View {
             deviceReconnectTimeout: UserDefaults.standard.object(forKey: "production_test_reconnect_timeout") as? Double ?? 5.0,
             valveOpenTimeout: UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 5.0,
             disableDiagWaitSeconds: UserDefaults.standard.object(forKey: "production_test_disable_diag_wait_seconds") as? Double ?? 2.0,
+            disableDiagExpectedGasStatus: {
+                let v = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status")
+                if let i = v as? Int { return max(0, min(9, i)) }
+                if let d = v as? Double { return max(0, min(9, Int(d))) }
+                return 1
+            }(),
+            disableDiagPollTimeoutSeconds: UserDefaults.standard.object(forKey: "production_test_disable_diag_poll_timeout_seconds") as? Double ?? 3.0,
+            disableDiagPollGasStatusEnabled: UserDefaults.standard.object(forKey: "production_test_disable_diag_poll_gas_status_enabled") as? Bool ?? true,
             pressureClosedMin: UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1000,
             pressureClosedMax: UserDefaults.standard.object(forKey: "production_test_pressure_closed_max") as? Double ?? 1350,
             pressureOpenMin: UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1000,
@@ -1160,6 +1168,9 @@ struct ProductionTestView: View {
         let deviceReconnectTimeout: Double    // 设备重新连接超时（秒）
         let valveOpenTimeout: Double          // 阀门打开超时（秒）
         let disableDiagWaitSeconds: Double   // Disable diag 发送完成后等待时间（秒），默认 2
+        let disableDiagExpectedGasStatus: Int   // Disable diag 轮询 Gas status 时期望的值（0–9，1=ok）
+        let disableDiagPollTimeoutSeconds: Double   // Disable diag 轮询 Gas status 超时（秒），默认 3
+        let disableDiagPollGasStatusEnabled: Bool   // Disable diag 是否轮询 Gas status 直至期望值，默认 true
         let pressureClosedMin: Double        // 关闭状态压力下限（mbar）
         let pressureClosedMax: Double        // 关闭状态压力上限（mbar）
         let pressureOpenMin: Double          // 开启状态压力下限（mbar）
@@ -2451,7 +2462,7 @@ struct ProductionTestView: View {
                     capturedPressureClosedMbar = closedPressureValue.map { $0 * 1000.0 }
                     capturedPressureOpenMbar = openPressureValue.map { $0 * 1000.0 }
                     
-                case "step_disable_diag": // 屏蔽系统气体自检：向 co2PressureLimits 写入 12×0x00（与 Debug 区共用 BLEManager.writeCo2PressureLimitsZeros），发送完成后等待可配置秒数
+                case "step_disable_diag": // 屏蔽系统气体自检：写入 12×0x00 后等待可配置秒数，再轮询 Gas status 直至等于 SOP 配置的期望值或超时
                     self.log("步骤: 屏蔽气体自检（Disable diag）", level: .info)
                     ble.writeCo2PressureLimitsZeros()
                     let waitSec = max(0, rules.thresholds.disableDiagWaitSeconds)
@@ -2459,8 +2470,37 @@ struct ProductionTestView: View {
                         self.log("等待 \(String(format: "%.1f", waitSec)) 秒…", level: .info)
                         try? await Task.sleep(nanoseconds: UInt64(waitSec * 1_000_000_000))
                     }
-                    stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
-                    stepStatuses[step.id] = .passed
+                    if rules.thresholds.disableDiagPollGasStatusEnabled {
+                        let expectedStatus = rules.thresholds.disableDiagExpectedGasStatus
+                        let pollTimeout = max(0.1, rules.thresholds.disableDiagPollTimeoutSeconds)
+                        self.log("轮询 Gas system status 直至为 \(expectedStatus)（超时 \(String(format: "%.1f", pollTimeout))s）…", level: .info)
+                        let pollStart = Date()
+                        var gasReached = false
+                        while isRunning, ble.isConnected, ble.areCharacteristicsReady, Date().timeIntervalSince(pollStart) < pollTimeout {
+                            ble.readGasSystemStatus(silent: true)
+                            try? await Task.sleep(nanoseconds: 150_000_000)
+                            let raw = ble.lastGasSystemStatusValue
+                            let parsed: Int? = raw.split(separator: " ").first.flatMap { Int(String($0)) }
+                            if let v = parsed, v == expectedStatus {
+                                gasReached = true
+                                self.log("Gas system status 已为 \(expectedStatus): \(raw)", level: .info)
+                                break
+                            }
+                        }
+                        if gasReached {
+                            stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                            stepStatuses[step.id] = .passed
+                        } else {
+                            let elapsed = String(format: "%.1f", Date().timeIntervalSince(pollStart))
+                            self.log("错误：\(String(format: "%.1f", pollTimeout))s 内 Gas system status 未变为 \(expectedStatus)（当前: \(ble.lastGasSystemStatusValue)）", level: .error)
+                            stepResults[step.id] = "Disable diag: \(elapsed)s 内 Gas status 未变为 \(expectedStatus)"
+                            stepStatuses[step.id] = .failed
+                            if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                        }
+                    } else {
+                        stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                        stepStatuses[step.id] = .passed
+                    }
                     
                 case "step_gas_system_status": // 读取 Gas system status，解码后须为 1 (ok)
                     self.log("步骤: 读取 Gas system status", level: .info)

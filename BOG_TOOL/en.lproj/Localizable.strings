@@ -297,9 +297,12 @@
 "production_test_rules.step4_criteria" = "✓ Pass: Closed state > 1.300 mbar, Open state > 1.1 mbar.";
 "production_test_rules.step_disable_diag_title" = "Disable gas system self-check (Disable diag)";
 "production_test_rules.step_disable_diag_desc" = "Write 12 bytes 0x00 to co2PressureLimits to disable gas system self-check.";
-"production_test_rules.step_disable_diag_criteria" = "✓ Pass: Written 12×0x00 to co2PressureLimits.";
-"production_test_rules.disable_diag_config_title" = "Disable diag (wait after send)";
+"production_test_rules.step_disable_diag_criteria" = "✓ Pass: Written 12×0x00, gas status reached expected value.";
+"production_test_rules.disable_diag_config_title" = "Disable diag (wait after send & poll)";
 "production_test_rules.disable_diag_wait_seconds" = "Wait after send";
+"production_test_rules.disable_diag_poll_gas_status_enabled" = "Poll gas status until expected value";
+"production_test_rules.disable_diag_expected_gas_status" = "Expected gas status (0–9, 1=ok)";
+"production_test_rules.disable_diag_poll_timeout_seconds" = "Gas status poll timeout (s)";
 "production_test_rules.step_gas_system_status_title" = "Read Gas system status";
 "production_test_rules.step_gas_system_status_desc" = "Read and decode gas system status; must be 1 (ok) to pass.";
 "production_test_rules.step_gas_system_status_criteria" = "✓ Pass: Gas system status = 1 (ok). ✗ Fail: not 1 (e.g. 0 initially closed, 2 leak).";

@@ -109,6 +109,20 @@ struct ProductionTestRulesView: View {
     @State private var disableDiagWaitSeconds: Double = {
         UserDefaults.standard.object(forKey: "production_test_disable_diag_wait_seconds") as? Double ?? 2.0
     }()
+    /// Disable diag 轮询 Gas status 时期望的值（0–9，1=ok），默认 1
+    @State private var disableDiagExpectedGasStatus: Int = {
+        if let i = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status") as? Int { return max(0, min(9, i)) }
+        if let d = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status") as? Double { return max(0, min(9, Int(d))) }
+        return 1
+    }()
+    /// Disable diag 轮询 Gas status 超时（秒），默认 3
+    @State private var disableDiagPollTimeoutSeconds: Double = {
+        UserDefaults.standard.object(forKey: "production_test_disable_diag_poll_timeout_seconds") as? Double ?? 3.0
+    }()
+    /// Disable diag 是否轮询 Gas status 直至期望值，默认开启
+    @State private var disableDiagPollGasStatusEnabled: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_disable_diag_poll_gas_status_enabled") as? Bool ?? true
+    }()
     /// 每个测试步骤之间的等待时间（SOP 定义，单位 ms）
     @State private var stepIntervalMs: Int = {
         UserDefaults.standard.object(forKey: "production_test_step_interval_ms") as? Int ?? 100
@@ -229,6 +243,9 @@ struct ProductionTestRulesView: View {
         var deviceReconnectTimeout: Double
         var valveOpenTimeout: Double
         var disableDiagWaitSeconds: Double?
+        var disableDiagExpectedGasStatus: Int?
+        var disableDiagPollTimeoutSeconds: Double?
+        var disableDiagPollGasStatusEnabled: Bool?
         var stepIntervalMs: Int
         var bluetoothPermissionWaitSeconds: Double
         
@@ -499,6 +516,9 @@ struct ProductionTestRulesView: View {
         defaults.removeObject(forKey: "production_test_reconnect_timeout")
         defaults.removeObject(forKey: "production_test_valve_open_timeout")
         defaults.removeObject(forKey: "production_test_disable_diag_wait_seconds")
+        defaults.removeObject(forKey: "production_test_disable_diag_expected_gas_status")
+        defaults.removeObject(forKey: "production_test_disable_diag_poll_timeout_seconds")
+        defaults.removeObject(forKey: "production_test_disable_diag_poll_gas_status_enabled")
         // 压力阈值
         defaults.removeObject(forKey: "production_test_pressure_closed_min")
         defaults.removeObject(forKey: "production_test_pressure_closed_max")
@@ -547,6 +567,9 @@ struct ProductionTestRulesView: View {
         deviceReconnectTimeout = 5.0
         valveOpenTimeout = 5.0
         disableDiagWaitSeconds = 2.0
+        disableDiagExpectedGasStatus = 1
+        disableDiagPollTimeoutSeconds = 3.0
+        disableDiagPollGasStatusEnabled = true
         stepIntervalMs = 100
         bluetoothPermissionWaitSeconds = 0
         pressureClosedMin = 1000
@@ -596,6 +619,9 @@ struct ProductionTestRulesView: View {
             deviceReconnectTimeout: deviceReconnectTimeout,
             valveOpenTimeout: valveOpenTimeout,
             disableDiagWaitSeconds: disableDiagWaitSeconds,
+            disableDiagExpectedGasStatus: disableDiagExpectedGasStatus,
+            disableDiagPollTimeoutSeconds: disableDiagPollTimeoutSeconds,
+            disableDiagPollGasStatusEnabled: disableDiagPollGasStatusEnabled,
             stepIntervalMs: stepIntervalMs,
             bluetoothPermissionWaitSeconds: bluetoothPermissionWaitSeconds,
             pressureClosedMin: pressureClosedMin,
@@ -652,6 +678,9 @@ struct ProductionTestRulesView: View {
         deviceReconnectTimeout = snapshot.deviceReconnectTimeout
         valveOpenTimeout = snapshot.valveOpenTimeout
         disableDiagWaitSeconds = snapshot.disableDiagWaitSeconds ?? 2.0
+        disableDiagExpectedGasStatus = max(0, min(9, snapshot.disableDiagExpectedGasStatus ?? 1))
+        disableDiagPollTimeoutSeconds = snapshot.disableDiagPollTimeoutSeconds ?? 3.0
+        disableDiagPollGasStatusEnabled = snapshot.disableDiagPollGasStatusEnabled ?? true
         stepIntervalMs = snapshot.stepIntervalMs
         bluetoothPermissionWaitSeconds = snapshot.bluetoothPermissionWaitSeconds
 
@@ -700,6 +729,9 @@ struct ProductionTestRulesView: View {
         defaults.set(deviceReconnectTimeout, forKey: "production_test_reconnect_timeout")
         defaults.set(valveOpenTimeout, forKey: "production_test_valve_open_timeout")
         defaults.set(disableDiagWaitSeconds, forKey: "production_test_disable_diag_wait_seconds")
+        defaults.set(disableDiagExpectedGasStatus, forKey: "production_test_disable_diag_expected_gas_status")
+        defaults.set(disableDiagPollTimeoutSeconds, forKey: "production_test_disable_diag_poll_timeout_seconds")
+        defaults.set(disableDiagPollGasStatusEnabled, forKey: "production_test_disable_diag_poll_gas_status_enabled")
         defaults.set(stepIntervalMs, forKey: "production_test_step_interval_ms")
         defaults.set(bluetoothPermissionWaitSeconds, forKey: "production_test_bluetooth_permission_wait_seconds")
 
@@ -1715,17 +1747,43 @@ struct ProductionTestRulesView: View {
         .padding(8)
     }
     
-    /// 屏蔽气体自检（Disable diag）步骤配置：发送完成后等待时间
+    /// 屏蔽气体自检（Disable diag）步骤配置：发送后等待、是否轮询 Gas status、期望值与超时
     private var disableDiagConfigurationView: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(appLanguage.string("production_test_rules.disable_diag_config_title"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
+            HStack(spacing: 12) {
+                Toggle("", isOn: $disableDiagPollGasStatusEnabled)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .onChange(of: disableDiagPollGasStatusEnabled) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "production_test_disable_diag_poll_gas_status_enabled")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+                Text(appLanguage.string("production_test_rules.disable_diag_poll_gas_status_enabled"))
+                    .font(.body)
+                    .foregroundStyle(.primary)
+            }
             thresholdRow(
                 label: appLanguage.string("production_test_rules.disable_diag_wait_seconds"),
                 value: $disableDiagWaitSeconds,
                 unit: appLanguage.string("production_test_rules.unit_seconds"),
                 key: "production_test_disable_diag_wait_seconds"
+            )
+            thresholdIntRow(
+                label: appLanguage.string("production_test_rules.disable_diag_expected_gas_status"),
+                value: Binding(
+                    get: { disableDiagExpectedGasStatus },
+                    set: { disableDiagExpectedGasStatus = max(0, min(9, $0)) }
+                ),
+                key: "production_test_disable_diag_expected_gas_status"
+            )
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.disable_diag_poll_timeout_seconds"),
+                value: $disableDiagPollTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_disable_diag_poll_timeout_seconds"
             )
         }
         .padding(8)

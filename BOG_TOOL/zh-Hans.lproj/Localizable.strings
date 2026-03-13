@@ -297,9 +297,12 @@
 "production_test_rules.step4_criteria" = "✓ 通过：关闭状态 > 1.300 mbar，开启状态 > 1.1 mbar。";
 "production_test_rules.step_disable_diag_title" = "屏蔽系统气体自检（Disable diag）";
 "production_test_rules.step_disable_diag_desc" = "向 co2PressureLimits 写入 12 个 0x00 以屏蔽气体系统自检功能。";
-"production_test_rules.step_disable_diag_criteria" = "✓ 通过：已向 co2PressureLimits 写入 12×0x00。";
-"production_test_rules.disable_diag_config_title" = "Disable diag（发送后等待）";
+"production_test_rules.step_disable_diag_criteria" = "✓ 通过：已写入 12×0x00，Gas status 已为期望值。";
+"production_test_rules.disable_diag_config_title" = "Disable diag（发送后等待与轮询）";
 "production_test_rules.disable_diag_wait_seconds" = "发送后等待时间";
+"production_test_rules.disable_diag_poll_gas_status_enabled" = "轮询 Gas 状态直至期望值";
+"production_test_rules.disable_diag_expected_gas_status" = "期望 Gas 状态值（0–9，1=ok）";
+"production_test_rules.disable_diag_poll_timeout_seconds" = "轮询 Gas 状态超时（秒）";
 "production_test_rules.step_gas_system_status_title" = "读取 Gas system status";
 "production_test_rules.step_gas_system_status_desc" = "读取气体系统状态并解码，须为 1 (ok) 才通过。";
 "production_test_rules.step_gas_system_status_criteria" = "✓ 通过：Gas system status = 1 (ok)。✗ 失败：非 1（如 0 initially closed、2 leak 等）。";
