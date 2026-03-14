@@ -1043,7 +1043,8 @@ struct ProductionTestView: View {
         var steps: [TestStep] = []
         if let saved = UserDefaults.standard.array(forKey: "production_test_steps_order") as? [String] {
             for id in saved {
-                if let step = stepMap[id] {
+                let migratedId = TestStep.migrateLegacyStepId(id)
+                if let step = stepMap[migratedId] {
                     steps.append(step)
                 }
             }
@@ -1128,16 +1129,19 @@ struct ProductionTestView: View {
         // 重启、恢复出厂只允许在倒数第三步或倒数第二步（与规则页一致）
         ProductionTestRulesView.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &steps)
         
-        // 加载每个步骤的启用状态（step_reset 产测中不许启用，始终为 false）
+        // 加载每个步骤的启用状态（step_reset 产测中不许启用，始终为 false）；兼容旧版 step1～step4 的 key
         if let enabledDict = UserDefaults.standard.dictionary(forKey: "production_test_steps_enabled") as? [String: Bool] {
             for i in 0..<steps.count {
                 if steps[i].id == TestStep.reset.id {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: false)
-                } else if let enabled = enabledDict[steps[i].id] {
-                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
-                } else if (steps[i].id == TestStep.gasLeakOpen.id || steps[i].id == TestStep.gasLeakClosed.id),
-                          let legacyEnabled = enabledDict["step_gas_leak"] {
-                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: legacyEnabled)
+                } else {
+                    let enabledValue = enabledDict[steps[i].id] ?? TestStep.legacyStepId(for: steps[i].id).flatMap { enabledDict[$0] }
+                    if let enabled = enabledValue {
+                        steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
+                    } else if (steps[i].id == TestStep.gasLeakOpen.id || steps[i].id == TestStep.gasLeakClosed.id),
+                              let legacyEnabled = enabledDict["step_gas_leak"] {
+                        steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: legacyEnabled)
+                    }
                 }
             }
         }
@@ -1176,11 +1180,13 @@ struct ProductionTestView: View {
             pressureDiffCheckEnabled: UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? true,
             pressureDiffMin: UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 0,
             pressureDiffMax: UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400,
-            firmwareUpgradeEnabled: UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? true
+            firmwareUpgradeEnabled: UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? true,
+            skipFactoryResetAndDisconnectOnFail: UserDefaults.standard.object(forKey: "production_test_skip_factory_reset_and_disconnect_on_fail") as? Bool ?? false
         )
         
-        // 加载每步「失败时是否终止产测」配置；未配置的步骤沿用规则层静态默认（stepIdsFatalOnFailure）
-        let stepFatalOnFailure = UserDefaults.standard.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool] ?? [:]
+        // 加载每步「失败时是否终止产测」配置；未配置的步骤沿用规则层静态默认（stepIdsFatalOnFailure）；旧 step1～step4 迁移为语义化 id
+        let rawFatal = UserDefaults.standard.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool] ?? [:]
+        let stepFatalOnFailure = Dictionary(uniqueKeysWithValues: rawFatal.map { (TestStep.migrateLegacyStepId($0.key), $0.value) })
 
         return (steps: steps, bootloaderVersion: bootloaderVersion, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion, thresholds: thresholds, stepFatalOnFailure: stepFatalOnFailure)
     }
@@ -1210,6 +1216,7 @@ struct ProductionTestView: View {
         let pressureDiffMin: Double          // 压力差值下限（mbar）
         let pressureDiffMax: Double          // 压力差值上限（mbar）
         let firmwareUpgradeEnabled: Bool     // 是否启用固件版本升级
+        let skipFactoryResetAndDisconnectOnFail: Bool  // 测试失败时是否跳过恢复出厂与安全断开（默认 false）
     }
     
     /// 日志函数（类级别，供所有方法使用）：写入产测日志区，并同步到主日志区（格式 [FQC] 或 [FQC][OTA]:，遵循日志等级配置）
@@ -1282,10 +1289,14 @@ struct ProductionTestView: View {
         return "\(dayPart)_\(String(format: "%02d", h))0000-\(String(format: "%02d", hEnd))0000"
     }
     
+    /// 浮点数保留最多 3 位小数且 JSON 序列化时不再出现长尾（通过字符串往返避免 Double 二进制表示导致的 31.547999999998 等）
+    private static func roundDoubleForJSON(_ value: Double) -> Double {
+        Double(String(format: "%.3f", value)) ?? value
+    }
+
     /// 构建与 API 一致的产测 payload（summary），供本地写入与上传共用
     private func buildProductionTestPayload(enabledSteps: [TestStep]) -> [String: Any] {
-        /// 浮点数保留 3 位小数，避免 JSON 中出现长浮点
-        let roundTo3: (Double) -> Double = { (($0 * 1000).rounded()) / 1000 }
+        let roundTo3: (Double) -> Double = { Self.roundDoubleForJSON($0) }
         let sn = (capturedDeviceSN ?? ble.deviceSerialNumber)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let endTime = lastTestEndTime ?? Date()
         let startTime = lastTestStartTime ?? endTime
@@ -1522,13 +1533,22 @@ struct ProductionTestView: View {
         guard isFatal else { return false }
         isRunningFactoryResetBeforeExit = true
         defer { isRunningFactoryResetBeforeExit = false }
-        await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: thresholds)
+        if !thresholds.skipFactoryResetAndDisconnectOnFail {
+            await runFactoryResetIfEnabledBeforeExit(enabledSteps: enabledSteps, thresholds: thresholds)
+        } else {
+            self.log("已开启「测试失败时跳过恢复出厂与安全断开」，不执行恢复出厂", level: .info)
+        }
         isRunning = false
         expandedSteps.remove(step.id)
         currentStepId = nil
         updateTestResultStatus()
         finishProductionTestRunWithReportAndUpload(enabledSteps: enabledSteps)
         return true
+    }
+
+    /// 是否存在任意启用步骤已失败（用于「测试失败时跳过恢复出厂与安全断开」判断）；excluding 中的 stepId 不参与判断。
+    private func hasAnyEnabledStepFailed(stepStatuses: [String: StepTestStatus], enabledSteps: [TestStep], excluding: Set<String>) -> Bool {
+        enabledSteps.contains { !excluding.contains($0.id) && stepStatuses[$0.id] == .failed }
     }
 
     private func ensureValveOpen() async -> Bool {
@@ -1829,14 +1849,12 @@ struct ProductionTestView: View {
 
         // 记录本次气体泄漏检测的压降、阶段1均值、阈值和总检测/用户操作时长（用于上传 testDetails）
         let totalDurationSeconds = Double(preDur) + userActionDuration + Double(postDur)
-        /// 浮点数保留 3 位小数，避免 JSON 中出现长浮点
-        let roundTo3: (Double) -> Double = { (($0 * 1000).rounded()) / 1000 }
-        let roundTToMilliseconds: (Double) -> Double = { roundTo3($0) }
+        let roundTo3: (Double) -> Double = { Self.roundDoubleForJSON($0) }
         /// 将单点采样转为上传用字典（含双路压力、阀门状态、Gas 状态，便于产测数据更细腻）
         func sampleToDetailDict(_ s: SamplePoint, phase: Int, pressureBar: Double) -> [String: Any] {
             var d: [String: Any] = [
                 "phase": phase,
-                "t": roundTToMilliseconds(s.t),
+                "t": roundTo3(s.t),
                 "pressureBar": roundTo3(pressureBar),
             ]
             if let v = s.pressureClosed { d["pressureClosedBar"] = roundTo3(v) }
@@ -2127,7 +2145,7 @@ struct ProductionTestView: View {
         self.log("OTA: 若 FW 不匹配则触发 \(t.firmwareUpgradeEnabled ? "是" : "否")", level: .info)
         self.log("———————————————", level: .info)
         
-        /// 由 step2（确认固件版本）设置：FW 不匹配且「若 FW 不匹配则触发 OTA」开启时为 true；step_ota 据此决定是否执行 OTA
+        /// 由 step_verify_firmware（确认固件版本）设置：FW 不匹配且「若 FW 不匹配则触发 OTA」开启时为 true；step_ota 据此决定是否执行 OTA
         var fwMismatchRequiresOTA = false
         
         // 规则：若配置为“开阀压力通过则跳过关阀压力步骤”，且开阀步骤启用并通过，则在执行关阀步骤前跳过
@@ -2153,7 +2171,7 @@ struct ProductionTestView: View {
                 stepStatuses[step.id] = .running
                 appendJournal(stepId: step.id, event: "step_start", detail: nil)
                 
-                // 产测过程中若蓝牙连接丢失，直接报错并终止（仅对需要连接的步骤检查，step1/最后一步断开除外）
+                // 产测过程中若蓝牙连接丢失，直接报错并终止（仅对需要连接的步骤检查，step_connect/最后一步断开除外）
                 let stepRequiresConnection = (step.id != TestStep.connectDevice.id && step.id != TestStep.disconnectDevice.id)
                 if stepRequiresConnection && !ble.isConnected {
                     if ble.lastConnectFailureWasPairingRemoved {
@@ -2176,7 +2194,7 @@ struct ProductionTestView: View {
                 }
                 
                 switch step.id {
-                case "step1": // 连接设备：已连接且 GATT 就绪才认为连接完成
+                case "step_connect": // 连接设备：已连接且 GATT 就绪才认为连接完成
                     self.log("步骤1: 连接设备", level: .info)
                     if !ble.isConnected {
                         self.log("错误：未连接", level: .error)
@@ -2209,7 +2227,7 @@ struct ProductionTestView: View {
                     stepStatuses[step.id] = .passed
                     recordStepOutcome(stepId: step.id, outcome: "passed")
                     
-                case "step2": // 确认固件版本
+                case "step_verify_firmware": // 确认固件版本
                     self.log("步骤2: 确认固件版本", level: .info)
                     
                     // 等待设备信息读取完成（SN、FW、HW 均等待，使用配置的超时时间）
@@ -2377,7 +2395,7 @@ struct ProductionTestView: View {
                     capturedBootloaderVersion = ble.bootloaderVersion
                     capturedHardwareRevision = ble.deviceHardwareRevision
                     
-                case "step3": // 检查 RTC - 步骤1 已保证连接且 GATT 就绪，此处直接读 RTC
+                case "step_read_rtc": // 检查 RTC - step_connect 已保证连接且 GATT 就绪，此处直接读 RTC
                     self.log("步骤3: 检查 RTC", level: .info)
                     
                     let passThreshold = rules.thresholds.rtcPassThreshold
@@ -2519,7 +2537,7 @@ struct ProductionTestView: View {
                         capturedRtcTimeDiffSeconds = (diffStr != "--" ? parseTimeDiff(diffStr) : nil)
                     }
                     
-                case "step4": // 读取压力值 - 复用debug mode的方法，并验证阈值
+                case "step_read_pressure": // 读取压力值 - 复用debug mode的方法，并验证阈值
                     // 在开始压力测试前，让产线人员确认气路与阀门状态
                     do {
                         let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
@@ -2816,6 +2834,13 @@ struct ProductionTestView: View {
                     
                 case "step_factory_reset": // 恢复出厂（Testing 0x00000002）；重连若得到「Peer removed pairing」则判定恢复出厂成功
                     self.log("步骤: 恢复出厂设置", level: .info)
+                    if rules.thresholds.skipFactoryResetAndDisconnectOnFail && hasAnyEnabledStepFailed(stepStatuses: stepStatuses, enabledSteps: enabledSteps, excluding: [TestStep.factoryReset.id, TestStep.disconnectDevice.id]) {
+                        self.log("测试已失败，跳过恢复出厂设置", level: .info)
+                        stepResults[step.id] = appLanguage.string("production_test.skipped_test_failed")
+                        stepStatuses[step.id] = .skipped
+                        recordStepOutcome(stepId: step.id, outcome: "skipped")
+                        break
+                    }
                     let result = await ble.sendTestingFactoryResetCommand()
                     switch result {
                     case .sent:
@@ -2871,7 +2896,7 @@ struct ProductionTestView: View {
                         if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                     }
                     
-                case "step_ota": // 断开连接前 OTA（是否执行由 step2 的「若 FW 不匹配则触发 OTA」+ FW 比对结果决定；OTA 步骤始终在 SOP 中，无法由用户单独关闭）
+                case "step_ota": // 断开连接前 OTA（是否执行由 step_verify_firmware 的「若 FW 不匹配则触发 OTA」+ FW 比对结果决定；OTA 步骤始终在 SOP 中，无法由用户单独关闭）
                     self.log("步骤: 断开前 OTA", level: .info, category: "OTA")
                     // 若后续还有会触发 reboot 的步骤（恢复出厂/重启）且当前固件支持该命令，则 OTA 完成后不发送 reboot；否则 OTA 后发 reboot，报表提示需要重测
                     let otaIndex = enabledSteps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id })
@@ -3013,7 +3038,13 @@ struct ProductionTestView: View {
                     
                 case "step_disconnect": // 安全断开连接（阀门状态已在「确保电磁阀是开启的」步骤中确认，此处仅执行断开）
                     self.log("最后步骤: 安全断开连接", level: .info)
-                    
+                    if rules.thresholds.skipFactoryResetAndDisconnectOnFail && hasAnyEnabledStepFailed(stepStatuses: stepStatuses, enabledSteps: enabledSteps, excluding: [TestStep.factoryReset.id, TestStep.disconnectDevice.id]) {
+                        self.log("测试已失败，跳过安全断开连接", level: .info)
+                        stepResults[step.id] = appLanguage.string("production_test.skipped_test_failed")
+                        stepStatuses[step.id] = .skipped
+                        recordStepOutcome(stepId: step.id, outcome: "skipped")
+                        break
+                    }
                     if ble.isOTARebootDisconnected {
                         // 设备已因 OTA 重启断开，断开步骤直接视为通过
                         self.log("设备已因 OTA 重启断开，断开步骤视为通过", level: .info)

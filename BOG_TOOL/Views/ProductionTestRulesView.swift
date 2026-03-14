@@ -13,10 +13,10 @@ struct TestStep: Identifiable, Equatable {
     let isLocked: Bool  // 是否锁定（第一步连接设备）
     var enabled: Bool  // 是否启用此步骤
     
-    static let connectDevice = TestStep(id: "step1", key: "step1", isLocked: true, enabled: true)
-    static let verifyFirmware = TestStep(id: "step2", key: "step2", isLocked: false, enabled: true)
-    static let readRTC = TestStep(id: "step3", key: "step3", isLocked: false, enabled: true)
-    static let readPressure = TestStep(id: "step4", key: "step4", isLocked: false, enabled: true)
+    static let connectDevice = TestStep(id: "step_connect", key: "step1", isLocked: true, enabled: true)
+    static let verifyFirmware = TestStep(id: "step_verify_firmware", key: "step2", isLocked: false, enabled: true)
+    static let readRTC = TestStep(id: "step_read_rtc", key: "step3", isLocked: false, enabled: true)
+    static let readPressure = TestStep(id: "step_read_pressure", key: "step4", isLocked: false, enabled: true)
     /// 屏蔽系统气体自检：向 co2PressureLimits 写入 12 个 0x00（与 Debug 区「Disable diag」共用 BLEManager.writeCo2PressureLimitsZeros）
     static let disableDiag = TestStep(id: "step_disable_diag", key: "step_disable_diag", isLocked: false, enabled: true)
     /// 读取 Gas system status（0 initially closed, 1 ok, 2 leak…；产测要求 1 ok）
@@ -41,6 +41,18 @@ struct TestStep: Identifiable, Equatable {
 extension TestStep {
     /// 失败时应终止产测（先执行恢复出厂若已启用再 return）的 step.id 集合；其余步骤失败时只 break。
     static let stepIdsFatalOnFailure: Set<String> = [TestStep.verifyFirmware.id]
+
+    /// 旧版 step id（step1～step4）→ 语义化 id，用于 UserDefaults 加载时迁移。
+    static func migrateLegacyStepId(_ id: String) -> String {
+        let oldToNew = ["step1": "step_connect", "step2": "step_verify_firmware", "step3": "step_read_rtc", "step4": "step_read_pressure"]
+        return oldToNew[id] ?? id
+    }
+
+    /// 语义化 id → 旧版 id（供读取旧 UserDefaults 时兼容）。
+    static func legacyStepId(for newId: String) -> String? {
+        let newToOld = ["step_connect": "step1", "step_verify_firmware": "step2", "step_read_rtc": "step3", "step_read_pressure": "step4"]
+        return newToOld[newId]
+    }
 }
 
 /// 产测规则视图：定义产测SOP（标准操作程序）
@@ -69,9 +81,10 @@ struct ProductionTestRulesView: View {
     @State private var isEditingOrder: Bool = false
     // 步骤展开状态（用于显示配置项）
     @State private var expandedSteps: Set<String> = []
-    /// 每步「失败时终止产测」覆盖配置（stepId -> 是否终止）；未在此字典中的步骤沿用 TestStep.stepIdsFatalOnFailure 默认
+    /// 每步「失败时终止产测」覆盖配置（stepId -> 是否终止）；未在此字典中的步骤沿用 TestStep.stepIdsFatalOnFailure 默认；加载时旧 step1～step4 迁移为语义化 id
     @State private var stepFatalOverrides: [String: Bool] = {
-        UserDefaults.standard.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool] ?? [:]
+        let raw = UserDefaults.standard.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool] ?? [:]
+        return Dictionary(uniqueKeysWithValues: raw.map { (TestStep.migrateLegacyStepId($0.key), $0.value) })
     }()
     
     // RTC时间差阈值配置（单位：秒）
@@ -130,6 +143,10 @@ struct ProductionTestRulesView: View {
     /// 连接设备步骤完成后、下一步前等待秒数（供用户处理系统蓝牙权限/配对弹窗，0=不等待）
     @State private var bluetoothPermissionWaitSeconds: Double = {
         UserDefaults.standard.object(forKey: "production_test_bluetooth_permission_wait_seconds") as? Double ?? 0
+    }()
+    /// 测试失败时是否跳过恢复出厂设置与安全断开连接（默认不使能）
+    @State private var skipFactoryResetAndDisconnectOnFail: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_skip_factory_reset_and_disconnect_on_fail") as? Bool ?? false
     }()
     
     // 压力阈值配置（单位：mbar）
@@ -305,11 +322,12 @@ struct ProductionTestRulesView: View {
         let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
-        // 加载步骤顺序
+        // 加载步骤顺序（旧版 step1～step4 迁移为语义化 id）
         var steps: [TestStep] = []
         if let saved = UserDefaults.standard.array(forKey: "production_test_steps_order") as? [String] {
             for id in saved {
-                if let step = stepMap[id] {
+                let migratedId = TestStep.migrateLegacyStepId(id)
+                if let step = stepMap[migratedId] {
                     steps.append(step)
                 }
             }
@@ -391,24 +409,27 @@ struct ProductionTestRulesView: View {
                 steps.insert(TestStep.factoryReset, at: steps.count - 1)
             }
         }
-        // OTA 步骤必须在「确认固件版本」(step2) 之后
+        // OTA 步骤必须在「确认固件版本」(step_verify_firmware) 之后
         ProductionTestRulesView.ensureOtaAfterFirmwareVerify(steps: &steps)
         // 重启、恢复出厂只允许在倒数第三步或倒数第二步
         ProductionTestRulesView.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &steps)
         
-        // 加载每个步骤的启用状态（step_ota 不许用户关闭，始终为 true；step_reset 产测中不许启用，始终为 false）
+        // 加载每个步骤的启用状态（step_ota 不许用户关闭，始终为 true；step_reset 产测中不许启用，始终为 false）；兼容旧版 step1～step4 的 key
         if let enabledDict = UserDefaults.standard.dictionary(forKey: "production_test_steps_enabled") as? [String: Bool] {
             for i in 0..<steps.count {
                 if steps[i].id == TestStep.otaBeforeDisconnect.id {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: true)
                 } else if steps[i].id == TestStep.reset.id {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: false)
-                } else if let enabled = enabledDict[steps[i].id] {
-                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
-                } else if (steps[i].id == TestStep.gasLeakOpen.id || steps[i].id == TestStep.gasLeakClosed.id),
-                          let legacyEnabled = enabledDict["step_gas_leak"] {
-                    // 迁移：旧单步「气体泄漏检测」的启用状态应用到两个新步骤
-                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: legacyEnabled)
+                } else {
+                    let enabledValue = enabledDict[steps[i].id] ?? TestStep.legacyStepId(for: steps[i].id).flatMap { enabledDict[$0] }
+                    if let enabled = enabledValue {
+                        steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
+                    } else if (steps[i].id == TestStep.gasLeakOpen.id || steps[i].id == TestStep.gasLeakClosed.id),
+                              let legacyEnabled = enabledDict["step_gas_leak"] {
+                        // 迁移：旧单步「气体泄漏检测」的启用状态应用到两个新步骤
+                        steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: legacyEnabled)
+                    }
                 }
             }
         }
@@ -501,9 +522,11 @@ struct ProductionTestRulesView: View {
         defaults.removeObject(forKey: "production_test_steps_order")
         defaults.removeObject(forKey: "production_test_steps_enabled")
         defaults.removeObject(forKey: "production_test_steps_fatal_on_failure")
-        // 全局延时
+        // 全局延时与失败时跳过行为
         defaults.removeObject(forKey: "production_test_step_interval_ms")
         defaults.removeObject(forKey: "production_test_bluetooth_permission_wait_seconds")
+        defaults.removeObject(forKey: "production_test_skip_factory_reset_and_disconnect_on_fail")
+        skipFactoryResetAndDisconnectOnFail = false
         // RTC
         defaults.removeObject(forKey: "production_test_rtc_pass_threshold")
         defaults.removeObject(forKey: "production_test_rtc_fail_threshold")
@@ -878,6 +901,21 @@ struct ProductionTestRulesView: View {
                 .frame(maxWidth: 360, alignment: .leading)
             }
             .controlSize(.small)
+            Toggle(isOn: $skipFactoryResetAndDisconnectOnFail) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appLanguage.string("production_test_rules.skip_factory_reset_and_disconnect_on_fail_title"))
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Text(appLanguage.string("production_test_rules.skip_factory_reset_and_disconnect_on_fail_desc"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .onChange(of: skipFactoryResetAndDisconnectOnFail) { newValue in
+                UserDefaults.standard.set(newValue, forKey: "production_test_skip_factory_reset_and_disconnect_on_fail")
+                NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1108,7 +1146,7 @@ struct ProductionTestRulesView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
     
-    /// OTA 步骤必须在「确认固件版本」(step2) 之后；若违反则把 step_ota 移到 step2 之后
+    /// OTA 步骤必须在「确认固件版本」(step_verify_firmware) 之后；若违反则把 step_ota 移到 step_verify_firmware 之后
     private static func ensureOtaAfterFirmwareVerify(steps: inout [TestStep]) {
         guard let fwIndex = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }),
               let otaIndex = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) else { return }
@@ -1339,11 +1377,11 @@ struct ProductionTestRulesView: View {
             }
             
             switch step.id {
-            case "step2": // 确认固件版本
+            case "step_verify_firmware": // 确认固件版本
                 versionConfigurationView
-            case "step3": // 检查RTC
+            case "step_read_rtc": // 检查RTC
                 rtcConfigurationView
-            case "step4": // 读取压力值
+            case "step_read_pressure": // 读取压力值
                 pressureConfigurationView
             case "step_disable_diag": // 屏蔽气体自检（Disable diag）
                 disableDiagConfigurationView

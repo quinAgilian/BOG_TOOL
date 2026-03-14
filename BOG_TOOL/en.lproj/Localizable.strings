@@ -247,6 +247,7 @@
 "production_test.connected" = "Device Connected";
 "production_test.disconnected" = "Disconnected";
 "production_test.disconnected_after_ota" = "Disconnected (OTA reboot)";
+"production_test.skipped_test_failed" = "Skipped (test already failed)";
 "production_test.ota_not_triggered" = "OTA: Not triggered (FW matched or option off)";
 "production_test.sn_invalid" = "SN Invalid";
 "production_test.bootloader_too_old" = "Bootloader version too old (required ≥ 2)";
@@ -357,6 +358,8 @@
 "production_test_rules.timeouts" = "Timeout Configuration";
 "production_test_rules.step_interval_ms" = "Step interval (ms)";
 "production_test_rules.bluetooth_permission_wait_seconds" = "Bluetooth permission wait (s)";
+"production_test_rules.skip_factory_reset_and_disconnect_on_fail_title" = "Skip factory reset and disconnect when test fails";
+"production_test_rules.skip_factory_reset_and_disconnect_on_fail_desc" = "When on, if any previous step failed, factory reset and safe disconnect are skipped.";
 "production_test_rules.rtc_read_timeout" = "RTC Read Timeout";
 "production_test_rules.device_info_timeout" = "Device Info Read Timeout";
 "production_test_rules.ota_start_timeout" = "OTA Start Wait Timeout";

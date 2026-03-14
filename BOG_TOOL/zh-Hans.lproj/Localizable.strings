@@ -247,6 +247,7 @@
 "production_test.connected" = "设备已连接";
 "production_test.disconnected" = "已断开";
 "production_test.disconnected_after_ota" = "已断开（OTA 重启）";
+"production_test.skipped_test_failed" = "测试已失败，已跳过";
 "production_test.ota_not_triggered" = "OTA: 未触发（FW 已匹配或未使能）";
 "production_test.sn_invalid" = "SN无效";
 "production_test.bootloader_too_old" = "Bootloader 版本过低（要求 ≥ 2）";
@@ -357,6 +358,8 @@
 "production_test_rules.timeouts" = "等待超时配置";
 "production_test_rules.step_interval_ms" = "步骤间延时 (ms)";
 "production_test_rules.bluetooth_permission_wait_seconds" = "蓝牙权限等待 (s)";
+"production_test_rules.skip_factory_reset_and_disconnect_on_fail_title" = "测试失败时跳过恢复出厂与安全断开";
+"production_test_rules.skip_factory_reset_and_disconnect_on_fail_desc" = "开启后，若前面任一步失败，将不再执行恢复出厂设置与安全断开连接。";
 "production_test_rules.rtc_read_timeout" = "RTC读取超时";
 "production_test_rules.device_info_timeout" = "设备信息读取超时";
 "production_test_rules.ota_start_timeout" = "OTA启动等待超时";
