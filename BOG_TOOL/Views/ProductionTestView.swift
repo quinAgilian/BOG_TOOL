@@ -702,9 +702,16 @@ struct ProductionTestView: View {
         return String(format: appLanguage.string("production_test.required_rules_missing"), missing.joined(separator: "/"))
     }
     
-    // MARK: - 整体通过判定（连接、RTC、固件一致或 OTA 成功、压力、电磁阀）
+    // MARK: - 整体通过判定（连接、RTC、固件、压力、屏蔽自检、Gas 状态、气体泄漏、待定、电磁阀、恢复出厂、重启、断开）
     
-    /// 产测整体是否通过：连接成功、RTC 成功、固件一致或 FW 不一致但 OTA 成功、压力通过、电磁阀打开，全部满足才为通过
+    /// 步骤启用时：passed 或 skipped 均视为该步满足（用于 disable_diag、gas_leak、tbd、disconnect 等）
+    private func stepOkForOverall(stepId: String, enabled: [TestStep]) -> Bool {
+        guard enabled.contains(where: { $0.id == stepId }) else { return true }
+        let status = stepStatuses[stepId] ?? .pending
+        return status == .passed || status == .skipped
+    }
+    
+    /// 产测整体是否通过：所有纳入判定的步骤在启用时须为通过或跳过，未启用或跳过标定为满足。
     private var overallTestPassed: Bool {
         let enabled = currentTestSteps.filter { $0.enabled }
         guard !enabled.isEmpty else { return false }
@@ -726,12 +733,17 @@ struct ProductionTestView: View {
             fwOk = true
         }
         let pressureOk = !enabled.contains(where: { $0.id == TestStep.readPressure.id }) || stepStatuses[TestStep.readPressure.id] == .passed
+        let disableDiagOk = stepOkForOverall(stepId: TestStep.disableDiag.id, enabled: enabled)
         let gasSystemStatusOk = !enabled.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) || stepStatuses[TestStep.readGasSystemStatus.id] == .passed
+        let gasLeakOpenOk = stepOkForOverall(stepId: TestStep.gasLeakOpen.id, enabled: enabled)
+        let gasLeakClosedOk = stepOkForOverall(stepId: TestStep.gasLeakClosed.id, enabled: enabled)
+        let tbdOk = stepOkForOverall(stepId: TestStep.tbd.id, enabled: enabled)
         let valveOk = !enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) || stepStatuses[TestStep.ensureValveOpen.id] == .passed
         // 恢复出厂 / 重启：若步骤启用则必须真正执行通过，未执行（如版本不支持而跳过）则整体判失败
         let factoryResetOk = !enabled.contains(where: { $0.id == TestStep.factoryReset.id }) || stepStatuses[TestStep.factoryReset.id] == .passed
         let resetOk = !enabled.contains(where: { $0.id == TestStep.reset.id }) || stepStatuses[TestStep.reset.id] == .passed
-        return connectOk && rtcOk && fwOk && pressureOk && gasSystemStatusOk && valveOk && factoryResetOk && resetOk
+        let disconnectOk = stepOkForOverall(stepId: TestStep.disconnectDevice.id, enabled: enabled)
+        return connectOk && rtcOk && fwOk && pressureOk && disableDiagOk && gasSystemStatusOk && gasLeakOpenOk && gasLeakClosedOk && tbdOk && valveOk && factoryResetOk && resetOk && disconnectOk
     }
     
     /// 用于 overlay 报表的判定项列表：(名称, 是否通过, 是否仅警告通过, 测试数据备注)。禁用的步骤也保留，标记为警告并注明「测试跳过」。
