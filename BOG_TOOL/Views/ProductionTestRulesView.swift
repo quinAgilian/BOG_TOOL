@@ -478,9 +478,6 @@ struct ProductionTestRulesView: View {
                     
                     // 测试步骤详情（包含各步骤的配置）
                     testStepsSection
-                    
-                    // 注意事项
-                    notesSection
                 }
                 .padding()
             }
@@ -2072,37 +2069,6 @@ struct ProductionTestRulesView: View {
         .padding(8)
     }
     
-    
-    private var notesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(appLanguage.string("production_test_rules.notes_title"))
-                .font(.headline)
-                .foregroundStyle(.primary)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                noteItem(appLanguage.string("production_test_rules.note1"))
-                noteItem(appLanguage.string("production_test_rules.note2"))
-                noteItem(appLanguage.string("production_test_rules.note3"))
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-    
-    private func noteItem(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .padding(.top, 2)
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
 }
 
 #Preview {

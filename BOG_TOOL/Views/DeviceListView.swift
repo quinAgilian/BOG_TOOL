@@ -3,6 +3,7 @@ import SwiftUI
 /// 设备列表与连接区域
 struct DeviceListView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
+    @EnvironmentObject private var productionState: ProductionTestState
     @ObservedObject var ble: BLEManager
     var selectedMode: AppMode  // 当前模式：产测或Debug
     @ObservedObject var firmwareManager: FirmwareManager
