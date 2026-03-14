@@ -172,6 +172,10 @@ struct ProductionTestRulesView: View {
     @State private var pressureDiffMax: Double = {
         UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400
     }()
+    /// 压力读取失败时是否弹窗确认重新测试当前步骤（默认使能）
+    @State private var pressureFailRetryConfirmEnabled: Bool = {
+        UserDefaults.standard.object(forKey: "production_test_pressure_fail_retry_confirm_enabled") as? Bool ?? true
+    }()
     
     // 气体泄漏检测（开阀压力）步骤参数
     @State private var gasLeakOpenPreCloseDurationSeconds: Int = {
@@ -550,6 +554,7 @@ struct ProductionTestRulesView: View {
         defaults.removeObject(forKey: "production_test_pressure_diff_check_enabled")
         defaults.removeObject(forKey: "production_test_pressure_diff_min")
         defaults.removeObject(forKey: "production_test_pressure_diff_max")
+        defaults.removeObject(forKey: "production_test_pressure_fail_retry_confirm_enabled")
         // 气体泄漏（开阀）
         defaults.removeObject(forKey: "production_test_gas_leak_open_judgement_source")
         defaults.removeObject(forKey: "production_test_gas_leak_open_pre_close_duration_seconds")
@@ -602,6 +607,7 @@ struct ProductionTestRulesView: View {
         pressureDiffCheckEnabled = true
         pressureDiffMin = 0
         pressureDiffMax = 400
+        pressureFailRetryConfirmEnabled = true
         gasLeakOpenPreCloseDurationSeconds = 10
         gasLeakOpenPostCloseDurationSeconds = 15
         gasLeakOpenIntervalSeconds = 0.5
@@ -1780,6 +1786,20 @@ struct ProductionTestRulesView: View {
                     unit: appLanguage.string("production_test_rules.unit_seconds"),
                     key: "production_test_valve_open_timeout"
                 )
+                
+                Divider()
+                    .padding(.vertical, 4)
+                
+                Toggle(isOn: $pressureFailRetryConfirmEnabled) {
+                    Text(appLanguage.string("production_test_rules.pressure_fail_retry_confirm_title"))
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                }
+                .toggleStyle(.switch)
+                .onChange(of: pressureFailRetryConfirmEnabled) { newValue in
+                    UserDefaults.standard.set(newValue, forKey: "production_test_pressure_fail_retry_confirm_enabled")
+                    NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                }
             }
         }
         .padding(8)

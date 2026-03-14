@@ -374,6 +374,11 @@
 "production_test_rules.pressure_diff_check" = "Enable Pressure Difference Check";
 "production_test_rules.pressure_diff_min" = "Difference Min";
 "production_test_rules.pressure_diff_max" = "Difference Max";
+"production_test_rules.pressure_fail_retry_confirm_title" = "Confirm retry when pressure read fails";
+"production_test.pressure_fail_retry_alert_title" = "Pressure read failed";
+"production_test.pressure_fail_retry_alert_message" = "Retry this step?";
+"production_test.pressure_fail_retry_retry_action" = "Retry";
+"production_test.pressure_fail_retry_continue_action" = "Continue";
 "production_test_rules.unit_mbar" = "mbar";
 "production_test_rules.unit_bar" = "bar";
 

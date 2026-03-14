@@ -374,6 +374,11 @@
 "production_test_rules.pressure_diff_check" = "启用压力差值检查";
 "production_test_rules.pressure_diff_min" = "差值下限";
 "production_test_rules.pressure_diff_max" = "差值上限";
+"production_test_rules.pressure_fail_retry_confirm_title" = "压力读取失败时弹窗确认是否重测";
+"production_test.pressure_fail_retry_alert_title" = "压力读取失败";
+"production_test.pressure_fail_retry_alert_message" = "是否重新测试当前步骤？";
+"production_test.pressure_fail_retry_retry_action" = "重新测试";
+"production_test.pressure_fail_retry_continue_action" = "继续";
 "production_test_rules.unit_mbar" = "mbar";
 "production_test_rules.unit_bar" = "bar";
 
