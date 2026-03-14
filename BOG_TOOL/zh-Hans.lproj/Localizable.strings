@@ -322,6 +322,56 @@
 "production_test_rules.step_gas_leak_closed_desc" = "第二个泄漏检测步骤，默认用关阀压力判定；关阀前/关阀后采样与压降阈值可单独配置。";
 "production_test_rules.step_gas_leak_closed_criteria" = "✓ 通过：压降未超阈值。✗ 失败：压降超过阈值判定为泄漏。（逻辑待实现）";
 "production_test_rules.gas_leak_skip_closed_when_open_passes" = "若开阀压力检测通过则跳过本步骤";
+"production_test_rules.gas_leak_limit_source_title" = "阶段3 limit 计算基准";
+"production_test_rules.gas_leak_limit_source_phase1_avg" = "阶段1平均";
+"production_test_rules.gas_leak_limit_source_phase3_first" = "阶段3首个值";
+"production_test_rules.gas_leak_limit_floor_bar" = "判定线下限";
+"production_test_rules.gas_leak_limit_floor_bar_hint" = "不得低于 0 bar，不论基准选阶段1平均或阶段3首个，有效判定线均不低于此值。";
+
+"production_test.gas_leak_insufficient_phase1" = "阶段1有效采样不足，无法判定";
+"production_test.gas_leak_insufficient_phase2" = "阶段2有效采样不足，无法判定";
+"production_test.gas_leak_limit_ref_phase1_avg" = "阶段1平均";
+"production_test.gas_leak_limit_ref_phase3_first" = "阶段3首个值";
+"production_test.gas_leak_result_fail_format" = "泄漏：%@ %.4f bar，阶段2最低 %.4f bar，压降 %.1f mbar > 阈值 %.1f mbar";
+"production_test.gas_leak_result_pass_format" = "通过：%@ %.4f bar，阶段2最低 %.4f bar，压降 %.1f mbar ≤ 阈值 %.1f mbar";
+"production_test.gas_leak_start_pressure_below_min" = "起始压力 %.1f mbar 低于下限 %.1f mbar";
+"production_test.gas_leak_phase4_passed" = "；Phase 4 通过";
+
+"production_test.connected_gatt_ready" = "设备已连接，GATT 就绪";
+"production_test.connect_fail_pairing_removed" = "连接失败：对方已删除配对（请在系统「蓝牙」设置中删除该设备后重测）";
+"production_test.connect_fail_ble_lost" = "蓝牙连接丢失";
+"production_test.connect_fail_not_connected" = "连接失败：未连接";
+"production_test.connect_fail_gatt_not_ready" = "连接失败：GATT 未就绪";
+"production_test.server_no_firmware" = "错误：服务器未提供 %@ 产线固件";
+"production_test.rtc_fail_unreadable" = "RTC 检查失败：无法读取";
+"production_test.rtc_result_format" = "RTC: %@\n时间差: %@ %@";
+"production_test.rtc_time_diff_ok" = "✓";
+"production_test.rtc_time_diff_fail" = "✗";
+"production_test.factory_reset_not_ready" = "恢复出厂：未连接或特征未就绪";
+"production_test.reset_not_ready" = "重启：未连接或特征未就绪";
+"production_test.overlay_step_skipped_version" = "因 SOP 规则设置而跳过（版本不支持）";
+"production_test.overlay_step_skipped_open_passed" = "因 SOP 规则设置而跳过（开阀压力检测已通过）";
+"production_test.step_factory_reset_not_confirmed" = "（未确认断开）";
+"production_test.valve_open_fail" = "电磁阀：打开失败或超时";
+"production_test.ota_server_no_firmware" = "OTA：服务器未提供 %@ 产线固件";
+"production_test.ota_prepare_fail" = "OTA：无法准备 %@ 固件";
+"production_test.ota_skipped_fw_ok" = "OTA：已跳过（FW %@ ✓）";
+"production_test.ota_start_timeout_with" = "OTA：启动超时（%@）";
+"production_test.ota_start_timeout" = "OTA：启动超时";
+"production_test.ota_fail_or_cancelled" = "OTA：失败或已取消";
+"production_test.ota_done" = "OTA：完成 ✓";
+"production_test.ota_not_done" = "OTA：未完成";
+"production_test.ota_reason" = "OTA：%@";
+"production_test.step_unknown" = "未知步骤";
+
+"production_test.pressure_closed_line" = "关闭: %@ %@";
+"production_test.pressure_open_line" = "开启: %@ %@";
+"production_test.pressure_diff_line" = "差值: %.0f mbar %@";
+"production_test.pressure_diff_uncalc" = "差值: 无法计算 ⚠️";
+"production_test.pressure_mark_ok" = "✓";
+"production_test.pressure_mark_fail" = "✗";
+"production_test.pressure_mark_warn" = "⚠️";
+
 "production_test_rules.step5_title" = "待定";
 "production_test_rules.step5_desc" = "待定义的额外测试步骤。";
 "production_test_rules.step5_criteria" = "";

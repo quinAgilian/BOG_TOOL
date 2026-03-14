@@ -322,6 +322,56 @@
 "production_test_rules.step_gas_leak_closed_desc" = "Second leak step; judge by closed valve pressure. Pre/post close & threshold configurable.";
 "production_test_rules.step_gas_leak_closed_criteria" = "✓ Pass: Drop below threshold. ✗ Fail: Drop exceeds threshold (leak). (Logic TBD)";
 "production_test_rules.gas_leak_skip_closed_when_open_passes" = "Skip this step when open-pressure leak test passes";
+"production_test_rules.gas_leak_limit_source_title" = "Phase 3 limit reference";
+"production_test_rules.gas_leak_limit_source_phase1_avg" = "Phase 1 average";
+"production_test_rules.gas_leak_limit_source_phase3_first" = "Phase 3 first value";
+"production_test_rules.gas_leak_limit_floor_bar" = "Limit floor";
+"production_test_rules.gas_leak_limit_floor_bar_hint" = "Must not be below 0 bar; effective limit is never lower than this value for either reference.";
+
+"production_test.gas_leak_insufficient_phase1" = "Insufficient phase 1 samples for judgment";
+"production_test.gas_leak_insufficient_phase2" = "Insufficient phase 2 samples for judgment";
+"production_test.gas_leak_limit_ref_phase1_avg" = "Phase 1 average";
+"production_test.gas_leak_limit_ref_phase3_first" = "Phase 3 first value";
+"production_test.gas_leak_result_fail_format" = "Leak: %@ %.4f bar, phase 2 min %.4f bar, drop %.1f mbar > threshold %.1f mbar";
+"production_test.gas_leak_result_pass_format" = "Pass: %@ %.4f bar, phase 2 min %.4f bar, drop %.1f mbar ≤ threshold %.1f mbar";
+"production_test.gas_leak_start_pressure_below_min" = "Start pressure %.1f mbar below minimum %.1f mbar";
+"production_test.gas_leak_phase4_passed" = "; Phase 4 passed";
+
+"production_test.connected_gatt_ready" = "Device connected, GATT ready";
+"production_test.connect_fail_pairing_removed" = "Connect failed: peer removed pairing (remove device in system Bluetooth settings and retest)";
+"production_test.connect_fail_ble_lost" = "Bluetooth connection lost";
+"production_test.connect_fail_not_connected" = "Connect failed: not connected";
+"production_test.connect_fail_gatt_not_ready" = "Connect failed: GATT not ready";
+"production_test.server_no_firmware" = "Error: server did not provide %@ production firmware";
+"production_test.rtc_fail_unreadable" = "RTC check failed: cannot read";
+"production_test.rtc_result_format" = "RTC: %@\nTime diff: %@ %@";
+"production_test.rtc_time_diff_ok" = "✓";
+"production_test.rtc_time_diff_fail" = "✗";
+"production_test.factory_reset_not_ready" = "Factory reset: not connected or characteristic not ready";
+"production_test.reset_not_ready" = "Reboot: not connected or characteristic not ready";
+"production_test.overlay_step_skipped_version" = "Skipped due to SOP (version not supported)";
+"production_test.overlay_step_skipped_open_passed" = "Skipped due to SOP (open-pressure test passed)";
+"production_test.step_factory_reset_not_confirmed" = " (disconnect not confirmed)";
+"production_test.valve_open_fail" = "Solenoid valve: open failed or timeout";
+"production_test.ota_server_no_firmware" = "OTA: server did not provide %@ production firmware";
+"production_test.ota_prepare_fail" = "OTA: cannot prepare %@ firmware";
+"production_test.ota_skipped_fw_ok" = "OTA: skipped (FW %@ ✓)";
+"production_test.ota_start_timeout_with" = "OTA: start timeout (%@)";
+"production_test.ota_start_timeout" = "OTA: start timeout";
+"production_test.ota_fail_or_cancelled" = "OTA: failed or cancelled";
+"production_test.ota_done" = "OTA: done ✓";
+"production_test.ota_not_done" = "OTA: not done";
+"production_test.ota_reason" = "OTA: %@";
+"production_test.step_unknown" = "Unknown step";
+
+"production_test.pressure_closed_line" = "Closed: %@ %@";
+"production_test.pressure_open_line" = "Open: %@ %@";
+"production_test.pressure_diff_line" = "Diff: %.0f mbar %@";
+"production_test.pressure_diff_uncalc" = "Diff: cannot calculate ⚠️";
+"production_test.pressure_mark_ok" = "✓";
+"production_test.pressure_mark_fail" = "✗";
+"production_test.pressure_mark_warn" = "⚠️";
+
 "production_test_rules.step5_title" = "TBD";
 "production_test_rules.step5_desc" = "Additional test steps to be defined.";
 "production_test_rules.step5_criteria" = "";

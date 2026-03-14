@@ -239,6 +239,25 @@ struct ProductionTestRulesView: View {
     @State private var gasLeakSkipClosedWhenOpenPasses: Bool = {
         UserDefaults.standard.object(forKey: "production_test_gas_leak_skip_closed_when_open_passes") as? Bool ?? false
     }()
+    /// 漏气 limit 计算基准（开阀）：phase1_avg 或 phase3_first
+    @State private var gasLeakOpenLimitSource: String = {
+        let raw = UserDefaults.standard.string(forKey: "production_test_gas_leak_open_limit_source")
+        return (raw == "phase3_first" ? "phase3_first" : "phase1_avg")
+    }()
+    /// 漏气 limit 计算基准（关阀）：phase1_avg 或 phase3_first
+    @State private var gasLeakClosedLimitSource: String = {
+        let raw = UserDefaults.standard.string(forKey: "production_test_gas_leak_closed_limit_source")
+        return (raw == "phase3_first" ? "phase3_first" : "phase1_avg")
+    }()
+    /// 判定线下限（bar），不得低于 0；不论基准选哪个，有效 limit = max(计算值, 此值)
+    @State private var gasLeakOpenLimitFloorBar: Double = {
+        let v = UserDefaults.standard.object(forKey: "production_test_gas_leak_open_limit_floor_bar") as? Double ?? 0
+        return max(0, v)
+    }()
+    @State private var gasLeakClosedLimitFloorBar: Double = {
+        let v = UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_limit_floor_bar") as? Double ?? 0
+        return max(0, v)
+    }()
 
     // MARK: - 导入导出：当前规则快照
     private struct RulesSnapshot: Codable {
@@ -285,6 +304,8 @@ struct ProductionTestRulesView: View {
         var gasLeakOpenStartPressureMinMbar: Double
         var gasLeakOpenRequirePipelineReadyConfirm: Bool
         var gasLeakOpenRequireValveClosedConfirm: Bool
+        var gasLeakOpenLimitSource: String?
+        var gasLeakOpenLimitFloorBar: Double?
         
         var gasLeakClosedPreCloseDurationSeconds: Int
         var gasLeakClosedPostCloseDurationSeconds: Int
@@ -293,6 +314,8 @@ struct ProductionTestRulesView: View {
         var gasLeakClosedStartPressureMinMbar: Double
         var gasLeakClosedRequirePipelineReadyConfirm: Bool
         var gasLeakClosedRequireValveClosedConfirm: Bool
+        var gasLeakClosedLimitSource: String?
+        var gasLeakClosedLimitFloorBar: Double?
         /// Phase 4 参数（可选以兼容旧版导出）
         var gasLeakClosedPhase4Enabled: Bool?
         var gasLeakClosedPhase4MonitorDurationSeconds: Int?
@@ -565,6 +588,8 @@ struct ProductionTestRulesView: View {
         defaults.removeObject(forKey: "production_test_gas_leak_open_alarm_threshold_bar")
         defaults.removeObject(forKey: "production_test_gas_leak_open_require_pipeline_ready_confirm")
         defaults.removeObject(forKey: "production_test_gas_leak_open_require_valve_closed_confirm")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_limit_source")
+        defaults.removeObject(forKey: "production_test_gas_leak_open_limit_floor_bar")
         // 气体泄漏（关阀）
         defaults.removeObject(forKey: "production_test_gas_leak_closed_judgement_source")
         defaults.removeObject(forKey: "production_test_gas_leak_closed_pre_close_duration_seconds")
@@ -575,6 +600,8 @@ struct ProductionTestRulesView: View {
         defaults.removeObject(forKey: "production_test_gas_leak_closed_alarm_threshold_bar")
         defaults.removeObject(forKey: "production_test_gas_leak_closed_require_pipeline_ready_confirm")
         defaults.removeObject(forKey: "production_test_gas_leak_closed_require_valve_closed_confirm")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_limit_source")
+        defaults.removeObject(forKey: "production_test_gas_leak_closed_limit_floor_bar")
         defaults.removeObject(forKey: "production_test_gas_leak_closed_phase4_enabled")
         defaults.removeObject(forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds")
         defaults.removeObject(forKey: "production_test_gas_leak_closed_phase4_drop_within_seconds")
@@ -614,12 +641,16 @@ struct ProductionTestRulesView: View {
         gasLeakOpenDropThresholdMbar = 15
         gasLeakOpenRequirePipelineReadyConfirm = true
         gasLeakOpenRequireValveClosedConfirm = true
+        gasLeakOpenLimitSource = "phase1_avg"
+        gasLeakOpenLimitFloorBar = 0
         gasLeakClosedPreCloseDurationSeconds = 10
         gasLeakClosedPostCloseDurationSeconds = 15
         gasLeakClosedIntervalSeconds = 0.5
         gasLeakClosedDropThresholdMbar = 15
         gasLeakClosedRequirePipelineReadyConfirm = true
         gasLeakClosedRequireValveClosedConfirm = true
+        gasLeakClosedLimitSource = "phase1_avg"
+        gasLeakClosedLimitFloorBar = 0
         gasLeakClosedPhase4Enabled = true
         gasLeakClosedPhase4MonitorDurationSeconds = 15
         gasLeakClosedPhase4DropWithinSeconds = 5
@@ -667,6 +698,8 @@ struct ProductionTestRulesView: View {
             gasLeakOpenStartPressureMinMbar: gasLeakOpenStartPressureMinMbar,
             gasLeakOpenRequirePipelineReadyConfirm: gasLeakOpenRequirePipelineReadyConfirm,
             gasLeakOpenRequireValveClosedConfirm: gasLeakOpenRequireValveClosedConfirm,
+            gasLeakOpenLimitSource: gasLeakOpenLimitSource,
+            gasLeakOpenLimitFloorBar: gasLeakOpenLimitFloorBar,
             gasLeakClosedPreCloseDurationSeconds: gasLeakClosedPreCloseDurationSeconds,
             gasLeakClosedPostCloseDurationSeconds: gasLeakClosedPostCloseDurationSeconds,
             gasLeakClosedIntervalSeconds: gasLeakClosedIntervalSeconds,
@@ -674,6 +707,8 @@ struct ProductionTestRulesView: View {
             gasLeakClosedStartPressureMinMbar: gasLeakClosedStartPressureMinMbar,
             gasLeakClosedRequirePipelineReadyConfirm: gasLeakClosedRequirePipelineReadyConfirm,
             gasLeakClosedRequireValveClosedConfirm: gasLeakClosedRequireValveClosedConfirm,
+            gasLeakClosedLimitSource: gasLeakClosedLimitSource,
+            gasLeakClosedLimitFloorBar: gasLeakClosedLimitFloorBar,
             gasLeakClosedPhase4Enabled: gasLeakClosedPhase4Enabled,
             gasLeakClosedPhase4MonitorDurationSeconds: gasLeakClosedPhase4MonitorDurationSeconds,
             gasLeakClosedPhase4DropWithinSeconds: gasLeakClosedPhase4DropWithinSeconds,
@@ -728,6 +763,8 @@ struct ProductionTestRulesView: View {
         gasLeakOpenStartPressureMinMbar = snapshot.gasLeakOpenStartPressureMinMbar
         gasLeakOpenRequirePipelineReadyConfirm = snapshot.gasLeakOpenRequirePipelineReadyConfirm
         gasLeakOpenRequireValveClosedConfirm = snapshot.gasLeakOpenRequireValveClosedConfirm
+        gasLeakOpenLimitSource = snapshot.gasLeakOpenLimitSource ?? "phase1_avg"
+        gasLeakOpenLimitFloorBar = max(0, snapshot.gasLeakOpenLimitFloorBar ?? 0)
 
         gasLeakClosedPreCloseDurationSeconds = snapshot.gasLeakClosedPreCloseDurationSeconds
         gasLeakClosedPostCloseDurationSeconds = snapshot.gasLeakClosedPostCloseDurationSeconds
@@ -736,6 +773,8 @@ struct ProductionTestRulesView: View {
         gasLeakClosedStartPressureMinMbar = snapshot.gasLeakClosedStartPressureMinMbar
         gasLeakClosedRequirePipelineReadyConfirm = snapshot.gasLeakClosedRequirePipelineReadyConfirm
         gasLeakClosedRequireValveClosedConfirm = snapshot.gasLeakClosedRequireValveClosedConfirm
+        gasLeakClosedLimitSource = snapshot.gasLeakClosedLimitSource ?? "phase1_avg"
+        gasLeakClosedLimitFloorBar = max(0, snapshot.gasLeakClosedLimitFloorBar ?? 0)
         gasLeakClosedPhase4Enabled = snapshot.gasLeakClosedPhase4Enabled ?? true
         gasLeakClosedPhase4MonitorDurationSeconds = snapshot.gasLeakClosedPhase4MonitorDurationSeconds ?? 15
         gasLeakClosedPhase4DropWithinSeconds = snapshot.gasLeakClosedPhase4DropWithinSeconds ?? 5
@@ -779,6 +818,8 @@ struct ProductionTestRulesView: View {
         defaults.set(gasLeakOpenStartPressureMinMbar, forKey: "production_test_gas_leak_open_start_pressure_min_mbar")
         defaults.set(gasLeakOpenRequirePipelineReadyConfirm, forKey: "production_test_gas_leak_open_require_pipeline_ready_confirm")
         defaults.set(gasLeakOpenRequireValveClosedConfirm, forKey: "production_test_gas_leak_open_require_valve_closed_confirm")
+        defaults.set(gasLeakOpenLimitSource, forKey: "production_test_gas_leak_open_limit_source")
+        defaults.set(max(0, gasLeakOpenLimitFloorBar), forKey: "production_test_gas_leak_open_limit_floor_bar")
 
         defaults.set(gasLeakClosedPreCloseDurationSeconds, forKey: "production_test_gas_leak_closed_pre_close_duration_seconds")
         defaults.set(gasLeakClosedPostCloseDurationSeconds, forKey: "production_test_gas_leak_closed_post_close_duration_seconds")
@@ -787,6 +828,8 @@ struct ProductionTestRulesView: View {
         defaults.set(gasLeakClosedStartPressureMinMbar, forKey: "production_test_gas_leak_closed_start_pressure_min_mbar")
         defaults.set(gasLeakClosedRequirePipelineReadyConfirm, forKey: "production_test_gas_leak_closed_require_pipeline_ready_confirm")
         defaults.set(gasLeakClosedRequireValveClosedConfirm, forKey: "production_test_gas_leak_closed_require_valve_closed_confirm")
+        defaults.set(gasLeakClosedLimitSource, forKey: "production_test_gas_leak_closed_limit_source")
+        defaults.set(max(0, gasLeakClosedLimitFloorBar), forKey: "production_test_gas_leak_closed_limit_floor_bar")
         defaults.set(gasLeakClosedPhase4Enabled, forKey: "production_test_gas_leak_closed_phase4_enabled")
         defaults.set(gasLeakClosedPhase4MonitorDurationSeconds, forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds")
         defaults.set(gasLeakClosedPhase4DropWithinSeconds, forKey: "production_test_gas_leak_closed_phase4_drop_within_seconds")
@@ -1849,16 +1892,26 @@ struct ProductionTestRulesView: View {
     
     /// 气体泄漏检测（开阀压力）步骤配置视图
     private var gasLeakOpenConfigurationView: some View {
-        gasLeakConfigView(
-            preCloseDuration: $gasLeakOpenPreCloseDurationSeconds,
-            postCloseDuration: $gasLeakOpenPostCloseDurationSeconds,
-            intervalSeconds: $gasLeakOpenIntervalSeconds,
-            dropThresholdMbar: $gasLeakOpenDropThresholdMbar,
-            startPressureMinMbar: $gasLeakOpenStartPressureMinMbar,
-            requirePipelineReadyConfirm: $gasLeakOpenRequirePipelineReadyConfirm,
-            requireValveClosedConfirm: $gasLeakOpenRequireValveClosedConfirm,
-            keyPrefix: "production_test_gas_leak_open"
-        )
+            gasLeakConfigView(
+                preCloseDuration: $gasLeakOpenPreCloseDurationSeconds,
+                postCloseDuration: $gasLeakOpenPostCloseDurationSeconds,
+                intervalSeconds: $gasLeakOpenIntervalSeconds,
+                dropThresholdMbar: $gasLeakOpenDropThresholdMbar,
+                startPressureMinMbar: $gasLeakOpenStartPressureMinMbar,
+                limitSource: $gasLeakOpenLimitSource,
+                limitFloorBar: Binding(
+                    get: { gasLeakOpenLimitFloorBar },
+                    set: { newVal in
+                        let c = max(0, newVal)
+                        gasLeakOpenLimitFloorBar = c
+                        UserDefaults.standard.set(c, forKey: "production_test_gas_leak_open_limit_floor_bar")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+                ),
+                requirePipelineReadyConfirm: $gasLeakOpenRequirePipelineReadyConfirm,
+                requireValveClosedConfirm: $gasLeakOpenRequireValveClosedConfirm,
+                keyPrefix: "production_test_gas_leak_open"
+            )
     }
     
     /// 气体泄漏检测（关阀压力）步骤配置视图
@@ -1870,6 +1923,16 @@ struct ProductionTestRulesView: View {
                 intervalSeconds: $gasLeakClosedIntervalSeconds,
                 dropThresholdMbar: $gasLeakClosedDropThresholdMbar,
                 startPressureMinMbar: $gasLeakClosedStartPressureMinMbar,
+                limitSource: $gasLeakClosedLimitSource,
+                limitFloorBar: Binding(
+                    get: { gasLeakClosedLimitFloorBar },
+                    set: { newVal in
+                        let c = max(0, newVal)
+                        gasLeakClosedLimitFloorBar = c
+                        UserDefaults.standard.set(c, forKey: "production_test_gas_leak_closed_limit_floor_bar")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+                ),
                 requirePipelineReadyConfirm: $gasLeakClosedRequirePipelineReadyConfirm,
                 requireValveClosedConfirm: $gasLeakClosedRequireValveClosedConfirm,
                 keyPrefix: "production_test_gas_leak_closed"
@@ -1933,6 +1996,8 @@ struct ProductionTestRulesView: View {
         intervalSeconds: Binding<Double>,
         dropThresholdMbar: Binding<Double>,
         startPressureMinMbar: Binding<Double>,
+        limitSource: Binding<String>,
+        limitFloorBar: Binding<Double>,
         requirePipelineReadyConfirm: Binding<Bool>,
         requireValveClosedConfirm: Binding<Bool>,
         keyPrefix: String
@@ -1948,6 +2013,29 @@ struct ProductionTestRulesView: View {
                 thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_interval"), value: intervalSeconds, unit: appLanguage.string("production_test_rules.unit_seconds"), key: "\(keyPrefix)_interval_seconds")
                 thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_drop_threshold_mbar"), value: dropThresholdMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_drop_threshold_mbar")
                 thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_start_pressure_min"), value: startPressureMinMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_start_pressure_min_mbar")
+                
+                HStack(alignment: .center, spacing: 12) {
+                    Text(appLanguage.string("production_test_rules.gas_leak_limit_source_title"))
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Picker("", selection: limitSource) {
+                        Text(appLanguage.string("production_test_rules.gas_leak_limit_source_phase1_avg")).tag("phase1_avg")
+                        Text(appLanguage.string("production_test_rules.gas_leak_limit_source_phase3_first")).tag("phase3_first")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: limitSource.wrappedValue) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_limit_source")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+                }
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_limit_floor_bar"), value: limitFloorBar, unit: appLanguage.string("production_test_rules.unit_bar"), key: "\(keyPrefix)_limit_floor_bar")
+                    Text(appLanguage.string("production_test_rules.gas_leak_limit_floor_bar_hint"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 
                 Divider().padding(.vertical, 4)
                 Divider().padding(.vertical, 4)
