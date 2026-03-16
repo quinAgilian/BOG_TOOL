@@ -3,9 +3,9 @@ import Charts
 import AppKit
 
 private enum LeakTestPhase: String, CaseIterable {
-    case pre       // 阶段1：入口阀门操作前
-    case between   // 阶段1结束与阶段2开始之间（用户手动操作）
-    case post      // 阶段2：入口阀门关闭后的观察
+    case pre       // Phase 1：关阀前采样
+    case between   // Phase 2：用户确认关阀期间
+    case post      // Phase 3：关阀后采样
 }
 
 private enum LeakTestFlowState: String {
@@ -89,11 +89,11 @@ struct DebugModeView: View {
     @State private var leakTestJudgementSource: LeakTestJudgementSource = {
         LeakTestJudgementSource(rawValue: UserDefaults.standard.string(forKey: LeakTestKeys.judgementSource) ?? "") ?? .closed
     }()
-    /// 阶段1：用户关闭入口阀门前的采样时长（秒）
+    /// Phase 1 时长（秒）：关阀前采样
     @State private var leakTestPreCloseDurationSeconds: Int = {
         UserDefaults.standard.object(forKey: LeakTestKeys.preCloseDuration) as? Int ?? 10
     }()
-    /// 阶段2：用户关闭入口阀门后的采样时长（秒）
+    /// Phase 3 时长（秒）：关阀后采样
     @State private var leakTestPostCloseDurationSeconds: Int = {
         UserDefaults.standard.object(forKey: LeakTestKeys.postCloseDuration) as? Int ?? 15
     }()
@@ -658,13 +658,16 @@ struct DebugModeView: View {
         }
     }
 
-    /// 从 BLE 压力显示字符串解析 bar 值（如 "0.123 bar" → 0.123，"Error: ..." → nil）
+    /// 从 BLE 压力显示字符串解析 bar 值（支持 "0.123 bar" 或 "123 mbar"）
     private static func parseBarFromPressureString(_ s: String) -> Double? {
         let t = s.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty, !t.hasPrefix("Error") else { return nil }
         let parts = t.split(separator: " ")
-        guard let first = parts.first else { return nil }
-        return Double(first)
+        guard let first = parts.first, let value = Double(first) else { return nil }
+        if parts.count >= 2, parts.last?.lowercased() == "mbar" {
+            return value / 1000.0
+        }
+        return value
     }
 
     private var leakTestConfiguredTotalDurationSeconds: Int {
@@ -844,7 +847,7 @@ struct DebugModeView: View {
 
             let actualState = ble.lastValveStateValue
             let targetPressure = targetOpen ? openBar : closeBar
-            let pressureText = targetPressure.map { String(format: "%.3f bar", $0) } ?? "--"
+            let pressureText = targetPressure.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
 
             if actualState == targetState {
                 appendLeakTestStepLog(1, "Start 预动作完成：阀门状态=\(actualState)，\(pressureLabel)=\(pressureText)")
@@ -891,7 +894,7 @@ struct DebugModeView: View {
         persistLeakTestRuleValues()
         appendLeakTestStepLog(
             0,
-            "开始连续压力测试：判定压力=\(leakTestPressureSourceLabel(leakTestJudgementSource))，阶段1=\(leakTestPreCloseDurationSeconds)s，阶段2=\(leakTestPostCloseDurationSeconds)s，阈值=\(String(format: "%.1f", leakTestPressureDropThresholdMbar)) mbar"
+            "开始连续压力测试：判定压力=\(leakTestPressureSourceLabel(leakTestJudgementSource))，Phase 1=\(leakTestPreCloseDurationSeconds)s，Phase 3=\(leakTestPostCloseDurationSeconds)s，阈值=\(String(format: "%.1f", leakTestPressureDropThresholdMbar)) mbar"
         )
         ble.suppressGattLogs = true
         performLeakTestStartupValveProbe { success in
@@ -904,7 +907,7 @@ struct DebugModeView: View {
                 leakTestPendingPrompt = .pipelineReady
                 appendLeakTestStepLog(2, "等待用户确认气路已连接")
             } else {
-                appendLeakTestStepLog(2, "跳过气路确认，直接进入阶段1采样")
+                appendLeakTestStepLog(2, "跳过气路确认，直接进入 Phase 1 采样")
                 beginLeakTestPhase(.pre, startOffset: 0)
             }
         }
@@ -1039,7 +1042,7 @@ struct DebugModeView: View {
                 leakTestPendingPrompt = .valveClosed
                 appendLeakTestStepLog(4, "等待用户确认入口阀门已关闭")
             } else {
-                appendLeakTestStepLog(4, "跳过关阀确认，直接进入阶段2采样")
+                appendLeakTestStepLog(4, "跳过关阀确认，直接进入 Phase 3 采样")
                 beginLeakTestPhase(.post, startOffset: endElapsed)
             }
         case .between:
@@ -1173,7 +1176,7 @@ struct DebugModeView: View {
         let closeKey = appLanguage.string("debug.gas_leak_chart_pressure_close")
         let openKey = appLanguage.string("debug.gas_leak_chart_pressure_open")
         
-        // 纵轴范围：默认固定 0～1.5 bar；开启自动缩放时按当前采样数据计算包络
+        // 纵轴范围：展示统一为 mbar，默认固定 0～1500 mbar；开启自动缩放时按当前采样数据计算包络
         let yDomain: ClosedRange<Double>
         if leakTestAutoYScale, !leakTestSamples.isEmpty {
             var minP = leakTestSamples.first!.pressure
@@ -1195,42 +1198,41 @@ struct DebugModeView: View {
                 maxP = max(maxP, failLine)
             }
             if minP == maxP {
-                // 单点时给一个小范围，避免 flat 线导致纵轴为常数
                 minP -= 0.05
                 maxP += 0.05
             }
             let padding = (maxP - minP) * 0.1
-            let lo = max(0, minP - padding)
-            let hi = max(lo + 0.1, maxP + padding)
-            yDomain = lo...hi
+            let loMbar = max(0, minP * 1000 - padding * 1000)
+            let hiMbar = max(loMbar + 100, maxP * 1000 + padding * 1000)
+            yDomain = loMbar...hiMbar
         } else {
-            yDomain = 0...1.5
+            yDomain = 0...1500
         }
         
         let baseChart = Chart {
             ForEach(leakTestSamples) { sample in
                 LineMark(
                     x: .value(timeKey, sample.time),
-                    y: .value(closeKey, sample.pressure)
+                    y: .value(closeKey, sample.pressure * 1000)
                 )
                 .lineStyle(StrokeStyle(lineWidth: 2))
                 .foregroundStyle(by: .value("", closeKey))
                 PointMark(
                     x: .value(timeKey, sample.time),
-                    y: .value(closeKey, sample.pressure)
+                    y: .value(closeKey, sample.pressure * 1000)
                 )
                 .foregroundStyle(by: .value("", closeKey))
                 .symbolSize(leakTestSamples.count > 50 ? 0 : 20)
                 if let open = sample.pressureOpen {
                     LineMark(
                         x: .value(timeKey, sample.time),
-                        y: .value(openKey, open)
+                        y: .value(openKey, open * 1000)
                     )
                     .lineStyle(StrokeStyle(lineWidth: 2))
                     .foregroundStyle(by: .value("", openKey))
                     PointMark(
                         x: .value(timeKey, sample.time),
-                        y: .value(openKey, open)
+                        y: .value(openKey, open * 1000)
                     )
                     .foregroundStyle(by: .value("", openKey))
                     .symbolSize(leakTestSamples.count > 50 ? 0 : 20)
@@ -1242,7 +1244,7 @@ struct DebugModeView: View {
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: ev.kind == "valve" ? [] : [4, 2]))
             }
             if let avgLine = leakTestAverageLineBar {
-                RuleMark(y: .value(appLanguage.string("debug.gas_leak_chart_average_line"), avgLine))
+                RuleMark(y: .value(appLanguage.string("debug.gas_leak_chart_average_line"), avgLine * 1000))
                     .foregroundStyle(leakTestAverageLineColor.opacity(0.85))
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [8, 3]))
                     .annotation(position: .top, alignment: .leading) {
@@ -1252,7 +1254,7 @@ struct DebugModeView: View {
                     }
             }
             if let failLine = leakTestFailureLineBar {
-                RuleMark(y: .value(appLanguage.string("debug.gas_leak_chart_fail_line"), failLine))
+                RuleMark(y: .value(appLanguage.string("debug.gas_leak_chart_fail_line"), failLine * 1000))
                     .foregroundStyle(Color.red.opacity(0.9))
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
             }
@@ -1275,10 +1277,10 @@ struct DebugModeView: View {
                 }
             }
             .chartYAxis {
-                AxisMarks(values: [0, 0.5, 1.0, 1.5]) { value in
+                AxisMarks(values: [0, 500, 1000, 1500]) { value in
                     AxisGridLine()
                     if let v = value.as(Double.self) {
-                        let label = v == 0 ? "0 bar" : (v == 1 ? "1 bar" : String(format: "%.1f bar", v))
+                        let label = v == 0 ? "0 mbar" : (v == 1000 ? "1000 mbar" : String(format: "%.0f mbar", v))
                         AxisValueLabel(label)
                     }
                 }
@@ -1291,7 +1293,7 @@ struct DebugModeView: View {
                     timeKey: timeKey,
                     closeKey: closeKey,
                     openKey: openKey,
-                    failLine: leakTestFailureLineBar
+                    failLine: leakTestFailureLineBar.map { $0 * 1000 }
                 )
             }
     }
@@ -1340,8 +1342,8 @@ struct DebugModeView: View {
                     }
                 }
 
-            if let failLine,
-               let yInPlot = proxy.position(forY: failLine) {
+            if let failLineMbar = failLine,
+               let yInPlot = proxy.position(forY: failLineMbar) {
                 let labelWidth: CGFloat = 72
                 let labelHeight: CGFloat = 20
                 let x = plotFrame.maxX - labelWidth / 2 - 8
@@ -1399,8 +1401,8 @@ struct DebugModeView: View {
 
                 let gasLabel = sample.gasSystemStatus?.isEmpty == false ? sample.gasSystemStatus! : "--"
                 let timeText = String(format: "%.2f s", sample.time)
-                let closeText = String(format: "%.4f bar", sample.pressure)
-                let openText = sample.pressureOpen.map { String(format: "%.4f bar", $0) } ?? "--"
+                let closeText = String(format: "%.0f mbar", sample.pressure * 1000)
+                let openText = sample.pressureOpen.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(timeKey + ": " + timeText)
@@ -1549,16 +1551,16 @@ struct DebugModeView: View {
         }
         let first = leakTestSamples.first!.pressure
         let last = leakTestSamples.last!.pressure
-        let delta = first - last
-        if delta > 0.05 {
-            leakTestResultMessage = appLanguage.string("debug.gas_leak_result_leak") + " (Δ\(String(format: "%.3f", delta)) bar)"
+        let deltaMbar = (first - last) * 1000
+        if deltaMbar > 50 {
+            leakTestResultMessage = appLanguage.string("debug.gas_leak_result_leak") + " (Δ\(String(format: "%.0f", deltaMbar)) mbar)"
         } else {
-            leakTestResultMessage = appLanguage.string("debug.gas_leak_result_ok") + " (Δ\(String(format: "%.3f", delta)) bar)"
+            leakTestResultMessage = appLanguage.string("debug.gas_leak_result_ok") + " (Δ\(String(format: "%.0f", deltaMbar)) mbar)"
         }
         leakTestResultDetails = ""
     }
 
-    /// 根据两阶段采样点计算连续压力测试结果：阶段1与阶段2末值的压降大于阈值即失败
+    /// 根据 Phase 1 与 Phase 3 采样点计算连续压力测试结果：压降大于阈值即失败
     private func evaluateLeakResultFromSamples() {
         let source = leakTestJudgementSource
         let sourceLabel = leakTestPressureSourceLabel(source)
@@ -1585,9 +1587,9 @@ struct DebugModeView: View {
             leakTestResultDetails = String(
                 format: appLanguage.string("debug.gas_leak_result_details_format"),
                 sourceLabel,
-                beforeAverage,
-                thresholdLineTmp,
-                afterMinimum,
+                beforeAverage * 1000,
+                thresholdLineTmp * 1000,
+                afterMinimum * 1000,
                 lowestDropTmp,
                 leakTestPressureDropThresholdMbar
             )
@@ -1601,23 +1603,23 @@ struct DebugModeView: View {
         leakTestResultDetails = String(
             format: appLanguage.string("debug.gas_leak_result_details_format"),
             sourceLabel,
-            beforeAverage,
-            thresholdLine,
-            afterMinimum,
+            beforeAverage * 1000,
+            thresholdLine * 1000,
+            afterMinimum * 1000,
             lowestDropMbar,
             leakTestPressureDropThresholdMbar
         )
         if afterMinimum < thresholdLine {
             leakTestResultMessage = String(
                 format: appLanguage.string("debug.gas_leak_result_leak_with_threshold"),
-                afterMinimum,
-                thresholdLine
+                afterMinimum * 1000,
+                thresholdLine * 1000
             )
         } else {
             leakTestResultMessage = String(
                 format: appLanguage.string("debug.gas_leak_result_ok_with_threshold"),
-                afterMinimum,
-                thresholdLine
+                afterMinimum * 1000,
+                thresholdLine * 1000
             )
         }
         appendLeakTestStepLog(6, "结果判定：\(leakTestResultMessage)")
@@ -1914,6 +1916,7 @@ struct DebugModeView: View {
                         Text(appLanguage.string("debug.gas_leak_pressure_source_closed")).tag(LeakTestJudgementSource.closed)
                         Text(appLanguage.string("debug.gas_leak_pressure_source_open")).tag(LeakTestJudgementSource.open)
                     }
+                    .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(maxWidth: 120)
                     .onChange(of: leakTestJudgementSource) { _ in
@@ -1997,15 +2000,27 @@ struct DebugModeView: View {
                 .disabled(isLeakTestWorkflowActive)
             }
 
-            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
-                Toggle(appLanguage.string("debug.gas_leak_require_pipeline_ready_confirm"), isOn: $leakTestRequirePipelineReadyConfirm)
-                    .toggleStyle(.checkbox)
-                    .onChange(of: leakTestRequirePipelineReadyConfirm) { _ in persistLeakTestRuleValues() }
-                    .disabled(isLeakTestWorkflowActive)
-                Toggle(appLanguage.string("debug.gas_leak_require_valve_closed_confirm"), isOn: $leakTestRequireValveClosedConfirm)
-                    .toggleStyle(.checkbox)
-                    .onChange(of: leakTestRequireValveClosedConfirm) { _ in persistLeakTestRuleValues() }
-                    .disabled(isLeakTestWorkflowActive)
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.lg) {
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("debug.gas_leak_require_pipeline_ready_confirm"))
+                        .font(UIDesignSystem.Typography.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Toggle("", isOn: $leakTestRequirePipelineReadyConfirm)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: leakTestRequirePipelineReadyConfirm) { _ in persistLeakTestRuleValues() }
+                        .disabled(isLeakTestWorkflowActive)
+                }
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("debug.gas_leak_require_valve_closed_confirm"))
+                        .font(UIDesignSystem.Typography.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Toggle("", isOn: $leakTestRequireValveClosedConfirm)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: leakTestRequireValveClosedConfirm) { _ in persistLeakTestRuleValues() }
+                        .disabled(isLeakTestWorkflowActive)
+                }
                 Spacer()
                 Text("\(appLanguage.string("debug.gas_leak_total_duration")) \(leakTestConfiguredTotalDurationSeconds) s")
                     .font(UIDesignSystem.Typography.caption)
@@ -2064,8 +2079,9 @@ struct DebugModeView: View {
                     Text(appLanguage.string("debug.gas_leak_chart_show_last_300s")).tag(300 as Int?)
                     Text(appLanguage.string("debug.gas_leak_chart_show_last_600s")).tag(600 as Int?)
                 }
+                .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(maxWidth: 140)
+                .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, maxWidth: 140)
                 .disabled(leakTestChartLocked)
                 Button {
                     if leakTestChartLocked {
@@ -2165,13 +2181,13 @@ struct DebugModeView: View {
                 Text("·")
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                Text("\(appLanguage.string("debug.close_pressure")) \(leakTestCurrentPressureBar != nil ? String(format: "%.3f bar", leakTestCurrentPressureBar!) : "--")")
+                Text("\(appLanguage.string("debug.close_pressure")) \(leakTestCurrentPressureBar != nil ? String(format: "%.0f mbar", leakTestCurrentPressureBar! * 1000) : "--")")
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 Text("·")
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                Text("\(appLanguage.string("debug.open_pressure")) \(leakTestCurrentPressureOpenBar != nil ? String(format: "%.3f bar", leakTestCurrentPressureOpenBar!) : "--")")
+                Text("\(appLanguage.string("debug.open_pressure")) \(leakTestCurrentPressureOpenBar != nil ? String(format: "%.0f mbar", leakTestCurrentPressureOpenBar! * 1000) : "--")")
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 if showPhase {

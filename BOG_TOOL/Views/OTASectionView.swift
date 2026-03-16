@@ -209,7 +209,8 @@ struct OTASectionView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .labelsHidden()
+                    .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, maxWidth: .infinity, alignment: .leading)
                     .disabled(firmwareManager.serverItemsLoading)
                     .onChange(of: pickerChoice, perform: { new in applyServerFirmwareSelection(new) })
                     if firmwareManager.serverItemsLoading {
@@ -282,7 +283,8 @@ struct OTASectionView: View {
                                 }
                             }
                             .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .labelsHidden()
+                            .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, maxWidth: .infinity, alignment: .leading)
                             .disabled(firmwareManager.serverItemsLoading)
                             .onChange(of: pickerChoice, perform: { applyServerFirmwareSelection($0) })
                             if firmwareManager.serverItemsLoading {

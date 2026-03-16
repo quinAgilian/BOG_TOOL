@@ -63,6 +63,11 @@ open BOG_TOOL.xcodeproj
 - 菜单栏选 **Product → Run**，或直接按 **⌘R**。  
 - 第一次运行若弹出蓝牙权限，到 **系统设置 → 隐私与安全性 → 蓝牙** 里允许本应用使用蓝牙。
 
+## 分发给其他 Mac（避免被系统拦截）
+
+若要把 app 分享给另一台 Mac，需完成 **Apple Developer 账号协议/账单**、**Developer ID 签名** 和 **公证（Notarization）**，否则会被 Gatekeeper 拦截。  
+完整步骤（含账号完善、打包、公证、对方电脑处理）见：**[docs/分发与公证指南.md](docs/分发与公证指南.md)**。
+
 ## GATT 与参数配置（不硬编码）
 
 BLE 协议由 **`BOG_TOOL/Config/GattServices.json`** 定义，运行时由 **`GattMapping.swift`** 加载，代码中不硬编码 UUID。

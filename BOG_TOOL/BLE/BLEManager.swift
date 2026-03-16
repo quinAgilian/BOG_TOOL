@@ -156,11 +156,19 @@ final class BLEManager: NSObject, ObservableObject {
         case warning
         case error
     }
-    /// 单条日志：等级 + 整行文案（含时间戳）
+    /// 单条日志：等级 + 整行文案（含时间戳）；可选 payloadPreviewId 表示该行可点击预览关联的 JSON payload
     struct LogEntry: Identifiable {
-        let id = UUID()
+        let id: UUID
         let level: LogLevel
         let line: String
+        /// 非 nil 时 UI 显示「预览」按钮，点击后展示 payloadPreviewStore 中该 id 对应的 JSON
+        let payloadPreviewId: UUID?
+        init(level: LogLevel, line: String, payloadPreviewId: UUID? = nil) {
+            self.id = UUID()
+            self.level = level
+            self.line = line
+            self.payloadPreviewId = payloadPreviewId
+        }
     }
     /// 日志后台缓冲（仅内部写入）；UI 通过 displayedLogEntries 节流更新
     private var logEntriesBacking: [LogEntry] = []
@@ -190,10 +198,12 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var scanFilterRSSIEnabled: Bool = false
     /// 最小 RSSI（仅显示 rssi >= 此值）
     @Published var scanFilterMinRSSI: Int = -100
-    /// 名称前缀规则使能（默认开启，按名称关键词过滤）
+    /// 名称前缀规则使能（默认开启，按名称关键词过滤，白名单）
     @Published var scanFilterNameEnabled: Bool = true
-    /// 设备名称关键词，逗号分隔，满足其一即可（默认 CO2,BOG）
+    /// 设备名称白名单关键词，逗号分隔，满足其一即可（默认 CO2,BOG）
     @Published var scanFilterNamePrefix: String = "CO2,BOG"
+    /// 设备名称黑名单关键词，逗号分隔，只要命中任一则排除（例如 mac）
+    @Published var scanFilterNameExcludeKeywords: String = ""
     /// 是否过滤无名设备（空名称 / 未知设备），默认勾选
     @Published var scanFilterExcludeUnnamed: Bool = true
     /// 连接后是否已发现并缓存了 GATT 特征（压力/RTC 等），为 true 后才应发起读/写，避免「未连接或特征不可用」和连接超时
@@ -392,7 +402,7 @@ final class BLEManager: NSObject, ObservableObject {
         appendLog("停止扫描")
     }
     
-    /// 名称过滤关键词（逗号分隔，满足其一即可，如 "BOG,CO2"）
+    /// 名称过滤白名单关键词（逗号分隔，满足其一即可，如 "BOG,CO2"）
     private var nameFilterKeywords: [String] {
         scanFilterNamePrefix
             .split(separator: ",")
@@ -400,11 +410,27 @@ final class BLEManager: NSObject, ObservableObject {
             .filter { !$0.isEmpty }
     }
     
+    /// 名称过滤黑名单关键词（逗号分隔，命中其一即排除，如 "mac"）
+    private var nameExcludeKeywords: [String] {
+        scanFilterNameExcludeKeywords
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+    
     /// 设备名是否匹配名称过滤（含任一关键词即可）
     private func deviceMatchesNameFilter(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        
+        // 1. 黑名单优先：若命中任一黑名单关键词，直接排除
+        let excludes = nameExcludeKeywords
+        if !excludes.isEmpty, excludes.contains(where: { lower.contains($0.lowercased()) }) {
+            return false
+        }
+        
+        // 2. 白名单：若配置了白名单关键词，则名称需包含任一白名单关键词
         let keywords = nameFilterKeywords
         if keywords.isEmpty { return true }
-        let lower = name.lowercased()
         return keywords.contains { lower.contains($0.lowercased()) }
     }
     
@@ -543,6 +569,16 @@ final class BLEManager: NSObject, ObservableObject {
     func readPressureOpen(silent: Bool = false) {
         readCharacteristic(pressureOpenCharacteristic)
         if !silent { appendLog("请求读取开阀压力") }
+    }
+    
+    /// 产测步骤「读取压力」前清空上次结果，便于轮询等待本次读取回调（避免沿用旧值或误判超时）
+    func clearLastPressureValue() {
+        lastPressureValue = "--"
+    }
+    
+    /// 产测步骤「读取压力」前清空上次结果，便于轮询等待本次读取回调
+    func clearLastPressureOpenValue() {
+        lastPressureOpenValue = "--"
     }
     
     /// 读取 Gas system status（00000001-AEF1-...）；silent 为 true 时不打日志
@@ -1413,12 +1449,14 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
     
-    /// 清空日志
+    /// 清空日志（同时清空 payload 预览缓存）
     func clearLog() {
         logEntriesBacking.removeAll()
         displayedLogEntries = []
         logDisplayFlushScheduled = false
         otaProgressLogLine = nil
+        payloadPreviewStore.removeAll()
+        payloadPreviewOrder.removeAll()
     }
     
     // MARK: - Private Helpers
@@ -1455,6 +1493,51 @@ final class BLEManager: NSObject, ObservableObject {
         logEntriesBacking.append(LogEntry(level: level, line: line))
         trimLogEntriesIfNeeded()
         scheduleDisplayFlushIfNeeded()
+    }
+    
+    /// 产测 payload 预览缓存：按 UUID 存 JSON 字符串，FIFO 淘汰，最多保留 payloadPreviewMaxCount 条
+    private var payloadPreviewStore: [UUID: String] = [:]
+    private var payloadPreviewOrder: [UUID] = []
+    private static let payloadPreviewMaxCount = 20
+    
+    /// 追加一条带「点击预览」的日志：不把完整 payload 写入日志行，而是存到 payloadPreviewStore，行上显示短文案 + 预览入口
+    func appendLogWithPayloadPreview(_ msg: String, payloadJson: String, level: LogLevel = .info, category: String? = nil) {
+        if suppressGattLogs, let cat = category, cat == "GATT" {
+            return
+        }
+        let previewId = UUID()
+        payloadPreviewStore[previewId] = payloadJson
+        payloadPreviewOrder.append(previewId)
+        while payloadPreviewOrder.count > Self.payloadPreviewMaxCount, let old = payloadPreviewOrder.first {
+            payloadPreviewOrder.removeFirst()
+            payloadPreviewStore.removeValue(forKey: old)
+        }
+        let line: String
+        if msg.hasPrefix("[FQC]") {
+            line = "\(formattedTime()) \(msg)"
+        } else {
+            let tag: String
+            let body: String
+            if msg.hasPrefix("[OTA] ") {
+                tag = "[DBG][OTA]:"
+                body = String(msg.dropFirst(6))
+            } else if msg.hasPrefix("[OTA]") {
+                tag = "[DBG][OTA]:"
+                body = String(msg.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            } else {
+                tag = "[DBG]"
+                body = msg
+            }
+            line = "\(formattedTime()) \(tag) \(body)"
+        }
+        logEntriesBacking.append(LogEntry(level: level, line: line, payloadPreviewId: previewId))
+        trimLogEntriesIfNeeded()
+        scheduleDisplayFlushIfNeeded()
+    }
+    
+    /// 根据 id 取回预览用 JSON 字符串；若已淘汰则返回 nil
+    func getPayloadPreview(id: UUID) -> String? {
+        payloadPreviewStore[id]
     }
     
     /// 追加一条已格式化行（不加重算时间戳），用于保留 \r 式刷新的「最后一条」进度行到主日志
@@ -2172,18 +2255,15 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
     
-    /// 解码压力：设备上报为 mbar（2 字节有符号或 4 字节无符号），转换为 bar 显示，保留 3 位小数
-    /// 1 bar = 1000 mbar，故 bar = mbar / 1000
+    /// 解码压力：设备上报为 mbar（2 字节有符号或 4 字节无符号），展示统一为 mbar
     @MainActor private func formatPressureData(_ data: Data) -> String {
         if data.count >= 2 {
             let mbar = Double(data.withUnsafeBytes { $0.load(as: Int16.self) })
-            let bar = mbar / 1000.0
-            return String(format: "%.3f bar", bar)
+            return String(format: "%.0f mbar", mbar)
         }
         if data.count >= 4 {
             let mbar = Double(data.withUnsafeBytes { $0.load(as: UInt32.self) })
-            let bar = mbar / 1000.0
-            return String(format: "%.3f bar", bar)
+            return String(format: "%.0f mbar", mbar)
         }
         return "Error: expected 2 or 4 bytes, got \(data.count)"
     }

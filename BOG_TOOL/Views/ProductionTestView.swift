@@ -49,7 +49,7 @@ enum TestResultStatus {
     case allFailed     // 全部失败
 }
 
-/// 漏气 limit 计算基准：phase1_avg = 阶段1平均，phase3_first = 阶段3首个值
+/// 漏气 limit 计算基准：phase1_avg = Phase 1 平均，phase3_first = Phase 3 首个值
 let kGasLeakLimitSourcePhase1Avg = "phase1_avg"
 let kGasLeakLimitSourcePhase3First = "phase3_first"
 
@@ -149,7 +149,7 @@ struct ProductionTestView: View {
     /// 本次产测执行过程流水账（步骤开始/结束等），结束时与 summary 一起写入本地文件
     @State private var journalEntries: [[String: Any]] = []
     
-    /// 气体泄漏检测步骤中的用户确认弹窗（阶段1前气路确认 / 阶段2前关阀确认）
+    /// 气体泄漏检测步骤中的用户确认弹窗（Phase 1 前气路确认 / Phase 2 前关阀确认）
     @State private var showGasLeakConfirmAlert = false
     @State private var gasLeakConfirmTitle = ""
     @State private var gasLeakConfirmMessage = ""
@@ -276,12 +276,14 @@ struct ProductionTestView: View {
                 }
                 .padding(.horizontal, UIDesignSystem.Padding.xs)
                 
-                ScrollView {
-                    testStepsSection
-                        .padding(.horizontal, UIDesignSystem.Padding.xs)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                ScrollViewReader { _ in
+                    ScrollView {
+                        testStepsSection
+                            .padding(.horizontal, UIDesignSystem.Padding.xs)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 320, maxHeight: .infinity)
                 }
-                .frame(minHeight: 320, maxHeight: .infinity)
             }
             .frame(maxHeight: .infinity)
             .layoutPriority(1)
@@ -522,6 +524,7 @@ struct ProductionTestView: View {
         return VStack(spacing: UIDesignSystem.Spacing.xs) {
             ForEach(Array(enabledSteps.enumerated()), id: \.element.id) { index, step in
                 stepRow(step: step, stepNumber: index + 1)
+                    .id(step.id)
             }
         }
     }
@@ -1004,6 +1007,7 @@ struct ProductionTestView: View {
                     Text(appLanguage.string("ota.cancel_upgrade"))
                 }
                 .buttonStyle(.borderedProminent)
+                .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
                 .tint(.orange)
             }
         }
@@ -1205,6 +1209,14 @@ struct ProductionTestView: View {
             disableDiagWaitSeconds: UserDefaults.standard.object(forKey: "production_test_disable_diag_wait_seconds") as? Double ?? 2.0,
             disableDiagExpectedGasStatus: {
                 let v = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status")
+                // 兼容多值文本，例如 "0,1"
+                if let s = v as? String {
+                    if let first = s.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " }).first,
+                       let intVal = Int(first) {
+                        return max(0, min(9, intVal))
+                    }
+                    return 1
+                }
                 if let i = v as? Int { return max(0, min(9, i)) }
                 if let d = v as? Double { return max(0, min(9, Int(d))) }
                 return 1
@@ -1294,6 +1306,29 @@ struct ProductionTestView: View {
         case .error: bleLevel = .error
         }
         ble.appendLog(fqcLine, level: bleLevel)
+    }
+    
+    /// 与 log 类似，但将大段 payload 不写入日志行，而是通过 BLEManager 的「点击预览」机制展示；用于上传产测记录 payload 等避免刷屏
+    private func logWithPayloadPreview(_ shortMessage: String, payloadJson: String, level: LogLevel = .info) {
+        let prefix: String
+        switch level {
+        case .error: prefix = "❌"
+        case .warning: prefix = "⚠️"
+        case .info: prefix = "ℹ️"
+        case .debug: prefix = "🔍"
+        }
+        let line = "\(stepIndex): \(prefix) \(shortMessage)"
+        testLog.append(line)
+        stepIndex += 1
+        let fqcLine = "[FQC] \(line)"
+        let bleLevel: BLEManager.LogLevel
+        switch level {
+        case .debug: bleLevel = .debug
+        case .info: bleLevel = .info
+        case .warning: bleLevel = .warning
+        case .error: bleLevel = .error
+        }
+        ble.appendLogWithPayloadPreview(fqcLine, payloadJson: payloadJson, level: bleLevel)
     }
     
     /// 流水账：追加一条执行过程记录（步骤开始/结束等），结束时与 summary 一起写入本地文件
@@ -1669,13 +1704,31 @@ struct ProductionTestView: View {
         return false
     }
     
-    /// 从 BLE 压力显示字符串解析 bar 值（与 Debug 模式一致）
+    /// 轮询等待压力读取结果，直到值有效（非 "--" 且非空、非 "Error..."）或超时。用于产测步骤4：BLE 读是异步的，固定 500ms 可能尚未收到回调，导致 lastPressureValue 仍为 "--" 无法解析。
+    private func waitForPressureValue(getValue: @Sendable @escaping () -> String, timeoutSeconds: Double, pollIntervalMs: Int, label: String) async -> String {
+        let pollNs = UInt64(pollIntervalMs) * 1_000_000
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            let value = await MainActor.run(body: getValue)
+            let trimmed = value.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty && trimmed != "--" && !trimmed.hasPrefix("Error") {
+                return value
+            }
+            try? await Task.sleep(nanoseconds: pollNs)
+        }
+        return await MainActor.run(body: getValue)
+    }
+    
+    /// 从 BLE 压力显示字符串解析 bar 值（支持 "0.123 bar" 或 "123 mbar"）
     private static func parseBarFromPressureString(_ s: String) -> Double? {
         let t = s.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty, !t.hasPrefix("Error") else { return nil }
         let parts = t.split(separator: " ")
-        guard let first = parts.first else { return nil }
-        return Double(first)
+        guard let first = parts.first, let value = Double(first) else { return nil }
+        if parts.count >= 2, parts.last?.lowercased() == "mbar" {
+            return value / 1000.0
+        }
+        return value
     }
     
     /// 从 UserDefaults 加载产测气体泄漏步骤配置（keyPrefix 为 production_test_gas_leak_open 或 production_test_gas_leak_closed）
@@ -1697,7 +1750,7 @@ struct ProductionTestView: View {
         )
     }
     
-    /// 执行产测气体泄漏检测步骤：阀门预置 → 可选阶段1前确认 → 阶段1采样 (phase=1, pre) → 用户关阀/操作采样 (phase=2, between) → 阶段2采样 (phase=3, post) → 判定
+    /// 执行产测气体泄漏检测步骤：阀门预置 → 可选 Phase 1 前气路确认 → Phase 1 采样 → Phase 2 用户确认关阀/采样 → Phase 3 采样 → 判定；关阀压力步骤可选 Phase 4 开阀泄压检测
     private func runProductionGasLeakStep(stepId: String, stepLabel: String, config: ProductionGasLeakConfig) async -> (passed: Bool, message: String) {
         // 产测泄漏检测期间抑制 GATT 底层 rd/wr 日志，只保留高层压力/阀门/判定日志
         ble.suppressGattLogs = true
@@ -1713,7 +1766,10 @@ struct ProductionTestView: View {
         let interval = max(0.1, min(3.0, config.intervalSeconds))
         let thresholdMbar = max(0, config.dropThresholdMbar)
         
-        self.log("\(stepLabel)：判定压力=\(useOpenPressure ? "开阀" : "关阀")，阶段1=\(preDur)s，阶段2=\(postDur)s，间隔=\(String(format: "%.2f", interval))s，阈值=\(String(format: "%.1f", thresholdMbar)) mbar", level: .info)
+        self.log(
+            "\(stepLabel)：判定压力=\(useOpenPressure ? "开阀" : "关阀")，Phase 1=\(preDur)s，Phase 3=\(postDur)s，间隔=\(String(format: "%.2f", interval))s，阈值=\(String(format: "%.1f", thresholdMbar)) mbar，limitSource=\(config.limitSource)，floor=\(String(format: "%.0f", config.limitFloorBar * 1000)) mbar",
+            level: .info
+        )
         
         // 1. 阀门预置：切换到判定压力对应状态
         let valveOk = await ensureValveState(open: useOpenPressure)
@@ -1726,7 +1782,10 @@ struct ProductionTestView: View {
         ble.readValveState()
         try? await Task.sleep(nanoseconds: 700_000_000)
         
-        // 2. 阶段1前确认（可选）
+        // 2. Phase 1 前气路确认（可选）
+        if !config.requirePipelineReadyConfirm {
+            self.log("\(stepLabel)：\(appLanguage.string("production_test.gas_leak_phase1_confirm_skipped"))", level: .info)
+        }
         if config.requirePipelineReadyConfirm {
             let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
                 DispatchQueue.main.async {
@@ -1742,7 +1801,7 @@ struct ProductionTestView: View {
             }
         }
         
-        // 3. 阶段1采样（pre：phase=1）
+        // 3. Phase 1 采样（关阀前）
         struct SamplePoint {
             let t: Double
             let pressureClosed: Double?
@@ -1757,6 +1816,10 @@ struct ProductionTestView: View {
         var phase2Samples: [SamplePoint] = []
         var phaseElapsed: Double = 0
         let afterReadWaitNs: UInt64 = 600_000_000
+        // 为后续判定流程缓存 Phase 1 平均值，避免多次独立计算导致日志与判定存在细微数值差异
+        var cachedPhase1Avg: Double?
+        // 统一根据当前步骤使用的压力通道（开阀/关阀）提取用于判定的压力值
+        func value(for p: SamplePoint) -> Double? { useOpenPressure ? p.pressureOpen : p.pressureClosed }
         
         while phaseElapsed <= Double(preDur) {
             guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
@@ -1774,9 +1837,9 @@ struct ProductionTestView: View {
             if closeBar != nil || openBar != nil {
                 phase1Samples.append(SamplePoint(t: phaseElapsed, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
                 let tStr = String(format: "%.1f", phaseElapsed)
-                let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
-                let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
-                self.log("\(stepLabel)：[阶段1] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
+                let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                self.log("\(stepLabel)：[Phase 1] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
             }
             phaseElapsed += interval
             if phaseElapsed <= Double(preDur) {
@@ -1785,10 +1848,24 @@ struct ProductionTestView: View {
             }
         }
         
-        self.log("\(stepLabel)：阶段1采样完成，共 \(phase1Samples.count) 点", level: .info)
+        self.log("\(stepLabel)：Phase 1 采样完成，共 \(phase1Samples.count) 点", level: .info)
+        // 在 Phase 1 结束时立即计算并记录 Phase 1 平均值；若规则使用 Phase 1 平均作为 reference，则在此时明确声明
+        let phase1ValuesForDecision = phase1Samples.compactMap { value(for: $0) }
+        if !phase1ValuesForDecision.isEmpty {
+            let avg = phase1ValuesForDecision.reduce(0, +) / Double(phase1ValuesForDecision.count)
+            cachedPhase1Avg = avg
+            let avgMbarStr = String(format: "%.1f", avg * 1000)
+            self.log("\(stepLabel)：Phase 1 平均=\(avgMbarStr) mbar", level: .info)
+            if config.limitSource == kGasLeakLimitSourcePhase1Avg {
+                self.log("\(stepLabel)：本次规则使用 Phase 1 平均 \(avgMbarStr) mbar 作为 reference（后续泄漏判定基准）", level: .info)
+            }
+        }
         
-        // 4. 用户关阀/操作期间采样（between：phase=2），并统计耗时
+        // 4. Phase 2：用户确认关阀期间采样，并统计耗时
         var userActionDuration: Double = 0
+        if !config.requireValveClosedConfirm {
+            self.log("\(stepLabel)：\(appLanguage.string("production_test.gas_leak_phase2_skipped"))", level: .info)
+        }
         if config.requireValveClosedConfirm {
             let userActionStart = Date()
             var betweenElapsed: Double = 0
@@ -1822,9 +1899,9 @@ struct ProductionTestView: View {
                 if closeBar != nil || openBar != nil {
                     betweenSamples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
                     let tStr = String(format: "%.1f", t)
-                    let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
-                    let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
-                    self.log("\(stepLabel)：[关阀操作] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
+                    let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                    let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                    self.log("\(stepLabel)：[Phase 2] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
                 }
                 betweenElapsed += interval
                 if betweenElapsed > 3600 { break } // 安全上限，避免意外长时间阻塞
@@ -1838,11 +1915,12 @@ struct ProductionTestView: View {
             }
             userActionDuration = Date().timeIntervalSince(userActionStart)
             let durationStr = String(format: "%.2f", userActionDuration)
-            self.log("\(stepLabel)：用户操作期间采样完成，共 \(betweenSamples.count) 点，耗时 \(durationStr) 秒", level: .info)
+            self.log("\(stepLabel)：Phase 2 采样完成，共 \(betweenSamples.count) 点，耗时 \(durationStr) 秒", level: .info)
         }
         
-        // 5. 阶段2采样（post：phase=3）
+        // 5. Phase 3 采样（关阀后）
         phaseElapsed = 0
+        var hasLoggedPhase3FirstRef = false
         while phaseElapsed <= Double(postDur) {
             guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
                 return (false, "连接丢失或用户终止")
@@ -1859,10 +1937,18 @@ struct ProductionTestView: View {
             let t = Double(preDur) + userActionDuration + phaseElapsed
             if closeBar != nil || openBar != nil {
                 phase2Samples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
+                // 若规则选择 Phase 3 首采样值作为 reference，则在首个有效采样点出现时立即记录 reference 决策
+                if config.limitSource == kGasLeakLimitSourcePhase3First,
+                   !hasLoggedPhase3FirstRef,
+                   let firstRefBar = value(for: phase2Samples[0]) {
+                    let refMbarStr = String(format: "%.1f", firstRefBar * 1000)
+                    self.log("\(stepLabel)：Phase 3 首采样值=\(refMbarStr) mbar，将作为本次泄漏判定的 reference", level: .info)
+                    hasLoggedPhase3FirstRef = true
+                }
                 let tStr = String(format: "%.1f", t)
-                let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
-                let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
-                self.log("\(stepLabel)：[阶段2] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
+                let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                self.log("\(stepLabel)：[Phase 3] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
             }
             phaseElapsed += interval
             if phaseElapsed <= Double(postDur) {
@@ -1871,10 +1957,9 @@ struct ProductionTestView: View {
             }
         }
         
-        self.log("\(stepLabel)：阶段2采样完成，共 \(phase2Samples.count) 点", level: .info)
+        self.log("\(stepLabel)：Phase 3 采样完成，共 \(phase2Samples.count) 点", level: .info)
         
-        // 6. 判定：按配置的 limit 基准（阶段1平均 或 阶段3首个值）计算 limit，阶段2最低低于 limit 则失败
-        func value(for p: SamplePoint) -> Double? { useOpenPressure ? p.pressureOpen : p.pressureClosed }
+        // 6. 判定：按配置的 limit 基准（Phase 1 平均或 Phase 3 首个值）计算判定线，Phase 3 最低压力低于判定线则失败
         let phase1Values = phase1Samples.compactMap { value(for: $0) }
         let phase2Values = phase2Samples.compactMap { value(for: $0) }
         guard !phase1Values.isEmpty else {
@@ -1883,7 +1968,8 @@ struct ProductionTestView: View {
         guard !phase2Values.isEmpty else {
             return (false, appLanguage.string("production_test.gas_leak_insufficient_phase2"))
         }
-        let phase1Avg = phase1Values.reduce(0, +) / Double(phase1Values.count)
+        // 若前面已在 Phase 1 结束时计算过平均值，则此处重用缓存结果，保证日志与判定使用完全一致的数值
+        let phase1Avg = cachedPhase1Avg ?? (phase1Values.reduce(0, +) / Double(phase1Values.count))
         let phase2Min = phase2Values.min()!
         let phase3First = phase2Values.first
         let thresholdBar = thresholdMbar / 1000.0
@@ -1898,9 +1984,12 @@ struct ProductionTestView: View {
         }
         let thresholdLineBar = referenceBar - thresholdBar
         let effectiveLimitBar = max(thresholdLineBar, config.limitFloorBar)
-        let dropMbar = (phase1Avg - phase2Min) * 1000.0
 
-        // 起始压力下限判定（单位 mbar）：阶段1平均压力低于下限则直接失败
+        // 两种压降：基于 Phase 1 平均值的压降（用于上传与历史兼容），以及基于当前参考值 referenceBar 的压降（用于日志文案）
+        let dropFromPhase1Mbar = (phase1Avg - phase2Min) * 1000.0
+        let dropFromRefMbar = (referenceBar - phase2Min) * 1000.0
+
+        // 起始压力下限判定（单位 mbar）：Phase 1 平均压力低于下限则直接失败
         let startMbar = phase1Avg * 1000.0
         if startMbar < config.startPressureMinMbar {
             let msg = String(format: appLanguage.string("production_test.gas_leak_start_pressure_below_min"), startMbar, config.startPressureMinMbar)
@@ -1908,7 +1997,13 @@ struct ProductionTestView: View {
             return (false, msg)
         }
 
-        // 记录本次气体泄漏检测的压降、阶段1均值、阈值和总检测/用户操作时长（用于上传 testDetails）
+        // 记录 Phase 1 与 Phase 3 的关键统计值，便于后续日志与报表理解
+        self.log(
+            "\(stepLabel)：Phase 1 平均=\(String(format: "%.1f", phase1Avg * 1000)) mbar，Phase 3 最低=\(String(format: "%.1f", phase2Min * 1000)) mbar，参考=\(String(format: "%.1f", referenceBar * 1000)) mbar，判定线=max(参考−阈值, floor)=\(String(format: "%.1f", effectiveLimitBar * 1000)) mbar",
+            level: .info
+        )
+
+        // 记录本次气体泄漏检测的压降、Phase 1 均值、阈值和总检测/用户操作时长（用于上传 testDetails）
         let totalDurationSeconds = Double(preDur) + userActionDuration + Double(postDur)
         let roundTo3: (Double) -> Double = { Self.roundDoubleForJSON($0) }
         /// 将单点采样转为上传用字典（含双路压力、阀门状态、Gas 状态，便于产测数据更细腻）
@@ -1925,7 +2020,8 @@ struct ProductionTestView: View {
             return d
         }
         if useOpenPressure {
-            capturedGasLeakOpenDeltaMbar = dropMbar
+            // 统一定义：Delta 始终为 referenceBar → Phase 3 最低值的压降（由 limitSource 决定参考值）
+            capturedGasLeakOpenDeltaMbar = dropFromRefMbar
             capturedGasLeakOpenDurationSeconds = totalDurationSeconds
             capturedGasLeakOpenPhase1AvgBar = phase1Avg
             capturedGasLeakOpenThresholdMbar = thresholdMbar
@@ -1949,7 +2045,8 @@ struct ProductionTestView: View {
             }
             capturedGasLeakOpenSamples = allSamples.isEmpty ? nil : allSamples
         } else {
-            capturedGasLeakClosedDeltaMbar = dropMbar
+            // 统一定义：Delta 始终为 referenceBar → Phase 3 最低值的压降（由 limitSource 决定参考值）
+            capturedGasLeakClosedDeltaMbar = dropFromRefMbar
             capturedGasLeakClosedDurationSeconds = totalDurationSeconds
             capturedGasLeakClosedPhase1AvgBar = phase1Avg
             capturedGasLeakClosedThresholdMbar = thresholdMbar
@@ -1975,16 +2072,36 @@ struct ProductionTestView: View {
         }
 
         if phase2Min < effectiveLimitBar {
-            let msg = String(format: appLanguage.string("production_test.gas_leak_result_fail_format"), refLabel, referenceBar, phase2Min, dropMbar, thresholdMbar)
+            // 区分失败原因：若有效判定线取的是「判定线下限」，则失败原因是 P2 低于下限；否则是压降超过阈值
+            let failDueToFloor = (effectiveLimitBar == config.limitFloorBar)
+            let msg: String
+            if failDueToFloor {
+                msg = String(format: appLanguage.string("production_test.gas_leak_result_fail_below_floor_format"), refLabel, referenceBar * 1000, phase2Min * 1000, config.limitFloorBar * 1000)
+            } else {
+                // 此处 Δ 统一按「参考值 referenceBar → Phase 3 最低」的压降描述，确保与判定基准一致
+                msg = String(format: appLanguage.string("production_test.gas_leak_result_fail_format"), refLabel, referenceBar * 1000, phase2Min * 1000, dropFromRefMbar, thresholdMbar)
+            }
             self.log("\(stepLabel)：✗ \(msg)", level: .error)
             return (false, msg)
         }
-        let msgPhase3 = String(format: appLanguage.string("production_test.gas_leak_result_pass_format"), refLabel, referenceBar, phase2Min, dropMbar, thresholdMbar)
+
+        // 通过场景同样使用基于 referenceBar 的压降描述，避免与文案中的参考值不一致
+        let msgPhase3 = String(
+            format: appLanguage.string("production_test.gas_leak_result_pass_format"),
+            refLabel,
+            referenceBar * 1000,
+            phase2Min * 1000,
+            dropFromRefMbar,
+            thresholdMbar
+        )
         self.log("\(stepLabel)：✓ \(msgPhase3)", level: .info)
 
-        // 关阀压力：可选 Phase 4（Phase 3 与 Phase 4 均成功本步才成功；判定用开阀压力）
+        // 关阀压力步骤：可选 Phase 4 开阀泄压检测（Phase 3 与 Phase 4 均成功本步才成功）
         if stepId == TestStep.gasLeakClosed.id {
             let phase4Enabled = UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_enabled") as? Bool ?? true
+            if !phase4Enabled {
+                self.log("\(stepLabel)：\(appLanguage.string("production_test.gas_leak_phase4_skipped"))", level: .info)
+            }
             if phase4Enabled {
                 let monitorDur = max(0, UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds") as? Int ?? 15)
                 let dropWithin = max(0, UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_drop_within_seconds") as? Int ?? 5)
@@ -2023,14 +2140,14 @@ struct ProductionTestView: View {
                         if phase4Elapsed <= Double(dropWithin) && openMbar < belowMbar {
                             phase4DropAchieved = true
                             phase4Samples.append(point)
-                            self.log("\(stepLabel)：[阶段4] t=\(String(format: "%.1f", phase4Elapsed))s 开阀压力 \(String(format: "%.0f", openMbar)) mbar < \(String(format: "%.0f", belowMbar)) mbar，达标，立即判定通过", level: .info)
+                            self.log("\(stepLabel)：[Phase 4] t=\(String(format: "%.1f", phase4Elapsed))s 开阀压力 \(String(format: "%.0f", openMbar)) mbar < \(String(format: "%.0f", belowMbar)) mbar，达标，立即判定通过", level: .info)
                             break
                         }
                         phase4Samples.append(point)
                         let tStr = String(format: "%.1f", phase4Elapsed)
-                        let closeStr = closeBar.map { String(format: "%.3f bar", $0) } ?? "--"
-                        let openStr = openBar.map { String(format: "%.3f bar", $0) } ?? "--"
-                        self.log("\(stepLabel)：[阶段4] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
+                        let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                        let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                        self.log("\(stepLabel)：[Phase 4] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
                     }
                     phase4Elapsed += phase4Interval
                     if phase4Elapsed <= Double(monitorDur) {
@@ -2039,7 +2156,7 @@ struct ProductionTestView: View {
                     }
                 }
 
-                self.log("\(stepLabel)：Phase 4 采样完成，共 \(phase4Samples.count) 点", level: .info)
+                self.log("\(stepLabel)：Phase 4 开阀泄压采样完成，共 \(phase4Samples.count) 点", level: .info)
                 if !phase4DropAchieved {
                     let failMsg = String(format: "Phase 4：在 %d s 内开阀压力未低于 %.0f mbar", dropWithin, belowMbar)
                     self.log("\(stepLabel)：✗ \(failMsg)", level: .error)
@@ -2047,7 +2164,7 @@ struct ProductionTestView: View {
                 }
                 self.log("\(stepLabel)：✓ Phase 4 通过（开阀压力已在 \(dropWithin)s 内低于 \(String(format: "%.0f", belowMbar)) mbar）", level: .info)
 
-                // 将 Phase 4 采样并入上传的 raw data（phase 1～4 一起上传）
+                // 将 Phase 4 采样并入上传的 raw data（Phase 1～4 一起上传）
                 var closedSamples = capturedGasLeakClosedSamples ?? []
                 for s in phase4Samples {
                     let pressureBar = s.pressureOpen ?? s.pressureClosed ?? 0
@@ -2229,12 +2346,15 @@ struct ProductionTestView: View {
                 // 记录步骤开始时的日志索引
                 let logStartIndex = testLog.count
                 
-                // 步骤开始时：折叠上一步（若有），展开当前步
-                if let prev = currentStepId { expandedSteps.remove(prev) }
-                currentStepId = step.id
-                expandedSteps.insert(step.id)
+                // 步骤开始时：折叠上一步（若有），展开当前步，并让 UI 有机会刷新
+                await MainActor.run {
+                    if let prev = currentStepId { expandedSteps.remove(prev) }
+                    currentStepId = step.id
+                    expandedSteps.insert(step.id)
+                }
                 stepStatuses[step.id] = .running
                 appendJournal(stepId: step.id, event: "step_start", detail: nil)
+                try? await Task.sleep(nanoseconds: 50_000_000) // 50ms，确保步骤列表展开动画/滚动有机会渲染
                 
                 // 产测过程中若蓝牙连接丢失，直接报错并终止（仅对需要连接的步骤检查，step_connect/最后一步断开除外）
                 let stepRequiresConnection = (step.id != TestStep.connectDevice.id && step.id != TestStep.disconnectDevice.id)
@@ -2462,6 +2582,7 @@ struct ProductionTestView: View {
                     
                 case "step_read_rtc": // 检查 RTC - step_connect 已保证连接且 GATT 就绪，此处直接读 RTC
                     self.log("步骤3: 检查 RTC", level: .info)
+                    self.log("步骤3 判定准则：读取设备 RTC 与系统时间比对，时间差在 ±\(rules.thresholds.rtcPassThreshold)s 内为通过，超过 ±\(rules.thresholds.rtcFailThreshold)s 为失败，中间区间按配置尝试写入/重试。", level: .info)
                     
                     let passThreshold = rules.thresholds.rtcPassThreshold
                     let failThreshold = rules.thresholds.rtcFailThreshold
@@ -2603,6 +2724,7 @@ struct ProductionTestView: View {
                     }
                     
                 case "step_read_pressure": // 读取压力值 - 复用debug mode的方法，并验证阈值；失败且开关打开时可弹窗确认重测
+                    self.log("步骤4 判定准则：关阀压力需在 \(rules.thresholds.pressureClosedMin)~\(rules.thresholds.pressureClosedMax) mbar 区间内，开阀压力需在 \(rules.thresholds.pressureOpenMin)~\(rules.thresholds.pressureOpenMax) mbar 区间内；若开启差值检查，则 |开−关| 在 \(Int(rules.thresholds.pressureDiffMin))~\(Int(rules.thresholds.pressureDiffMax)) mbar 区间。", level: .info)
                     var closedPressureValue: Double? = nil
                     var openPressureValue: Double? = nil
                     pressureRetryLoop: while true {
@@ -2642,22 +2764,23 @@ struct ProductionTestView: View {
                             self.log("警告：阀门状态异常（当前: \(ble.lastValveStateValue)）", level: .warning)
                         }
                         
-                        // 2. 等待 100ms 后读取开阀压力
+                        // 2. 读取开阀压力（清空旧值后发起读取，轮询等待设备响应，避免固定 500ms 未收到回调导致仍为 "--"）
                         try? await Task.sleep(nanoseconds: 100_000_000)
                         self.log("读取开启状态压力...", level: .info)
+                        ble.clearLastPressureOpenValue()
                         ble.readPressureOpen()
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        let openPressureStr = ble.lastPressureOpenValue
+                        let openPressureStr = await waitForPressureValue(
+                            getValue: { ble.lastPressureOpenValue },
+                            timeoutSeconds: 2.5,
+                            pollIntervalMs: 100,
+                            label: "开阀压力"
+                        )
                         if openPressureStr.isEmpty || openPressureStr == "--" {
-                            self.log("警告：开启压力读取失败或为空", level: .warning)
+                            self.log(appLanguage.string("production_test.pressure_read_timeout_open"), level: .warning)
                         } else {
                             self.log("开启压力: \(openPressureStr)", level: .info)
                         }
-                        openPressureValue = nil
-                        if let barRange = openPressureStr.range(of: "bar") {
-                            let valueStr = String(openPressureStr[..<barRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-                            openPressureValue = Double(valueStr)
-                        }
+                        openPressureValue = Self.parseBarFromPressureString(openPressureStr)
                         
                         // 3. 关闭阀门并确保关闭成功
                         self.log("关闭阀门...", level: .info)
@@ -2669,38 +2792,43 @@ struct ProductionTestView: View {
                             self.log("警告：阀门状态异常（当前: \(ble.lastValveStateValue)）", level: .warning)
                         }
                         
-                        // 4. 读取关闭状态压力
+                        // 4. 读取关闭状态压力（同样轮询等待响应）
                         self.log("读取关闭状态压力...", level: .info)
+                        ble.clearLastPressureValue()
                         ble.readPressure()
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        let closedPressureStr = ble.lastPressureValue
+                        let closedPressureStr = await waitForPressureValue(
+                            getValue: { ble.lastPressureValue },
+                            timeoutSeconds: 2.5,
+                            pollIntervalMs: 100,
+                            label: "关阀压力"
+                        )
                         if closedPressureStr.isEmpty || closedPressureStr == "--" {
-                            self.log("警告：关闭压力读取失败或为空", level: .warning)
+                            self.log(appLanguage.string("production_test.pressure_read_timeout_closed"), level: .warning)
                         } else {
                             self.log("关闭压力: \(closedPressureStr)", level: .info)
                         }
-                        closedPressureValue = nil
-                        if let barRange = closedPressureStr.range(of: "bar") {
-                            let valueStr = String(closedPressureStr[..<barRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-                            closedPressureValue = Double(valueStr)
-                        }
+                        closedPressureValue = Self.parseBarFromPressureString(closedPressureStr)
                         
                         var pressurePassed = true
                         var pressureMessages: [String] = []
+                        let closedRangeStr = String(format: "%.0f~%.0f mbar", pressureClosedMin, pressureClosedMax)
+                        let openRangeStr = String(format: "%.0f~%.0f mbar", pressureOpenMin, pressureOpenMax)
+                        let closedDisplayStr = closedPressureValue.map { String(format: "%.0f mbar", $0 * 1000) } ?? "-- mbar"
+                        let openDisplayStr = openPressureValue.map { String(format: "%.0f mbar", $0 * 1000) } ?? "-- mbar"
                         
                         if let closedBar = closedPressureValue {
                             let closedMbar = closedBar * 1000.0
                             if closedMbar >= pressureClosedMin && closedMbar <= pressureClosedMax {
                                 self.log("✓ 关闭压力验证通过: \(closedMbar) mbar（\(pressureClosedMin)~\(pressureClosedMax) mbar）", level: .info)
-                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedPressureStr, appLanguage.string("production_test.pressure_mark_ok")))
+                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
                             } else {
                                 self.log("✗ 关闭压力验证失败: \(closedMbar) mbar（应在 \(pressureClosedMin)~\(pressureClosedMax) mbar）", level: .error)
-                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedPressureStr, appLanguage.string("production_test.pressure_mark_fail")))
+                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
                                 pressurePassed = false
                             }
                         } else {
                             self.log("警告：无法解析关闭压力值", level: .warning)
-                            pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedPressureStr, appLanguage.string("production_test.pressure_mark_warn")))
+                            pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_warn")))
                             pressurePassed = false
                         }
                         
@@ -2708,40 +2836,43 @@ struct ProductionTestView: View {
                             let openMbar = openBar * 1000.0
                             if openMbar >= pressureOpenMin && openMbar <= pressureOpenMax {
                                 self.log("✓ 开启压力验证通过: \(openMbar) mbar（\(pressureOpenMin)~\(pressureOpenMax) mbar）", level: .info)
-                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openPressureStr, appLanguage.string("production_test.pressure_mark_ok")))
+                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
                             } else {
                                 self.log("✗ 开启压力验证失败: \(openMbar) mbar（应在 \(pressureOpenMin)~\(pressureOpenMax) mbar）", level: .error)
-                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openPressureStr, appLanguage.string("production_test.pressure_mark_fail")))
+                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
                                 pressurePassed = false
                             }
                         } else {
                             self.log("警告：无法解析开启压力值", level: .warning)
-                            pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openPressureStr, appLanguage.string("production_test.pressure_mark_warn")))
+                            pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_warn")))
                             pressurePassed = false
                         }
                         
                         if rules.thresholds.pressureDiffCheckEnabled {
+                            let diffMin = rules.thresholds.pressureDiffMin
+                            let diffMax = rules.thresholds.pressureDiffMax
+                            let diffRangeStr = "\(Int(diffMin))~\(Int(diffMax)) mbar"
                             if let closedMbar = closedPressureValue.map({ $0 * 1000.0 }),
                                let openMbar = openPressureValue.map({ $0 * 1000.0 }) {
                                 let diff = abs(openMbar - closedMbar)
-                                let diffMin = rules.thresholds.pressureDiffMin
-                                let diffMax = rules.thresholds.pressureDiffMax
                                 if diff >= diffMin && diff <= diffMax {
                                     self.log("✓ 压力差值验证通过: \(String(format: "%.0f", diff)) mbar（\(Int(diffMin))~\(Int(diffMax)) mbar）", level: .info)
-                                    pressureMessages.append(String(format: appLanguage.string("production_test.pressure_diff_line"), diff, appLanguage.string("production_test.pressure_mark_ok")))
+                                    pressureMessages.append(String(format: appLanguage.string("production_test.pressure_diff_line"), diff, diffRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
                                 } else {
                                     self.log("✗ 压力差值验证失败: \(String(format: "%.0f", diff)) mbar（应在 \(Int(diffMin))~\(Int(diffMax)) mbar）", level: .error)
-                                    pressureMessages.append(String(format: appLanguage.string("production_test.pressure_diff_line"), diff, appLanguage.string("production_test.pressure_mark_fail")))
+                                    pressureMessages.append(String(format: appLanguage.string("production_test.pressure_diff_line"), diff, diffRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
                                     pressurePassed = false
                                 }
                             } else {
-                                self.log("警告：无法计算压力差值（缺少压力值）", level: .warning)
+                                let closedReason = closedPressureValue == nil ? appLanguage.string("production_test.pressure_value_missing") : appLanguage.string("production_test.pressure_value_read")
+                                let openReason = openPressureValue == nil ? appLanguage.string("production_test.pressure_value_missing") : appLanguage.string("production_test.pressure_value_read")
+                                self.log(String(format: appLanguage.string("production_test.pressure_diff_uncalc_reason"), closedReason, openReason), level: .warning)
                                 pressureMessages.append(appLanguage.string("production_test.pressure_diff_uncalc"))
                                 pressurePassed = false
                             }
                         }
                         
-                        stepResults[step.id] = pressureMessages.joined(separator: "\n")
+                        stepResults[step.id] = pressureMessages.joined(separator: " ") + " " + appLanguage.string("production_test.pressure_criteria_hint")
                         stepStatuses[step.id] = pressurePassed ? .passed : .failed
                         if pressurePassed {
                             recordStepOutcome(stepId: step.id, outcome: "passed")
@@ -2773,6 +2904,24 @@ struct ProductionTestView: View {
                     
                 case "step_disable_diag": // 屏蔽系统气体自检：写入 12×0x00 后等待可配置秒数，再轮询 Gas status 直至等于 SOP 配置的期望值或超时
                     self.log("步骤: 屏蔽气体自检（Disable diag）", level: .info)
+                    // 从 UserDefaults 读取期望的 Gas status 集合（支持单值或多值，如 "0,1"）
+                    let expectedStatusesRaw = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status")
+                    let expectedStatuses: [Int]
+                    if let s = expectedStatusesRaw as? String {
+                        let parsed = s.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " }).compactMap { Int($0) }.map { max(0, min(9, $0)) }
+                        expectedStatuses = parsed.isEmpty ? [1] : parsed
+                    } else if let i = expectedStatusesRaw as? Int {
+                        expectedStatuses = [max(0, min(9, i))]
+                    } else if let d = expectedStatusesRaw as? Double {
+                        expectedStatuses = [max(0, min(9, Int(d)))]
+                    } else {
+                        expectedStatuses = [1]
+                    }
+                    let expectedDescription = expectedStatuses.map(String.init).joined(separator: ",")
+                    let waitSecondsStr = String(format: "%.1f", rules.thresholds.disableDiagWaitSeconds)
+                    let pollTimeoutStr = String(format: "%.1f", rules.thresholds.disableDiagPollTimeoutSeconds)
+
+                    self.log("Disable diag 判定准则：向 CO2 Pressure Limits 写入 12×0x00 后，等待 \(waitSecondsStr) 秒，再在 \(pollTimeoutStr) 秒轮询内，Gas system status 必须变为期望值集合中的任意一个：\(expectedDescription)。", level: .info)
                     ble.writeCo2PressureLimitsZeros()
                     let waitSec = max(0, rules.thresholds.disableDiagWaitSeconds)
                     if waitSec > 0 {
@@ -2780,9 +2929,9 @@ struct ProductionTestView: View {
                         try? await Task.sleep(nanoseconds: UInt64(waitSec * 1_000_000_000))
                     }
                     if rules.thresholds.disableDiagPollGasStatusEnabled {
-                        let expectedStatus = rules.thresholds.disableDiagExpectedGasStatus
                         let pollTimeout = max(0.1, rules.thresholds.disableDiagPollTimeoutSeconds)
-                        self.log("轮询 Gas system status 直至为 \(expectedStatus)（超时 \(String(format: "%.1f", pollTimeout))s）…", level: .info)
+                        let pollTimeoutStr = String(format: "%.1f", pollTimeout)
+                        self.log("轮询 Gas system status 直至为集合中的任意一个值 [\(expectedDescription)]（超时 \(pollTimeoutStr)s）…", level: .info)
                         let pollStart = Date()
                         var gasReached = false
                         while isRunning, ble.isConnected, ble.areCharacteristicsReady, Date().timeIntervalSince(pollStart) < pollTimeout {
@@ -2790,9 +2939,9 @@ struct ProductionTestView: View {
                             try? await Task.sleep(nanoseconds: 150_000_000)
                             let raw = ble.lastGasSystemStatusValue
                             let parsed: Int? = raw.split(separator: " ").first.flatMap { Int(String($0)) }
-                            if let v = parsed, v == expectedStatus {
+                            if let v = parsed, expectedStatuses.contains(v) {
                                 gasReached = true
-                                self.log("Gas system status 已为 \(expectedStatus): \(raw)", level: .info)
+                                self.log("Gas system status 已满足期望集合 [\(expectedDescription)]: \(raw)", level: .info)
                                 break
                             }
                         }
@@ -2802,8 +2951,9 @@ struct ProductionTestView: View {
                     recordStepOutcome(stepId: step.id, outcome: "passed")
                         } else {
                             let elapsed = String(format: "%.1f", Date().timeIntervalSince(pollStart))
-                            self.log("错误：\(String(format: "%.1f", pollTimeout))s 内 Gas system status 未变为 \(expectedStatus)（当前: \(ble.lastGasSystemStatusValue)）", level: .error)
-                            stepResults[step.id] = String(format: appLanguage.string("production_test_rules.step_disable_diag_fail_timeout"), elapsed, expectedStatus)
+                            let pollTimeoutStr = String(format: "%.1f", pollTimeout)
+                            self.log("错误：\(pollTimeoutStr)s 内 Gas system status 未进入期望集合 [\(expectedDescription)]（当前: \(ble.lastGasSystemStatusValue)）", level: .error)
+                            stepResults[step.id] = String(format: appLanguage.string("production_test_rules.step_disable_diag_fail_timeout"), elapsed, expectedDescription)
                             stepStatuses[step.id] = .failed
                     recordStepOutcome(stepId: step.id, outcome: "failed")
                             if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
@@ -2928,10 +3078,10 @@ struct ProductionTestView: View {
                 case "step_factory_reset": // 恢复出厂（Testing 0x00000002）；重连若得到「Peer removed pairing」则判定恢复出厂成功
                     self.log("步骤: 恢复出厂设置", level: .info)
                     if rules.thresholds.skipFactoryResetAndDisconnectOnFail && hasAnyEnabledStepFailed(stepStatuses: stepStatuses, enabledSteps: enabledSteps, excluding: [TestStep.factoryReset.id, TestStep.disconnectDevice.id]) {
-                        self.log("测试已失败，跳过恢复出厂设置", level: .info)
+                        self.log(appLanguage.string("production_test.log_factory_reset_skipped_error"), level: .error)
                         stepResults[step.id] = appLanguage.string("production_test.skipped_test_failed")
-                        stepStatuses[step.id] = .skipped
-                        recordStepOutcome(stepId: step.id, outcome: "skipped")
+                        stepStatuses[step.id] = .failed
+                        recordStepOutcome(stepId: step.id, outcome: "failed")
                         break
                     }
                     let result = await ble.sendTestingFactoryResetCommand()
@@ -3132,10 +3282,10 @@ struct ProductionTestView: View {
                 case "step_disconnect": // 安全断开连接（阀门状态已在「确保电磁阀是开启的」步骤中确认，此处仅执行断开）
                     self.log("最后步骤: 安全断开连接", level: .info)
                     if rules.thresholds.skipFactoryResetAndDisconnectOnFail && hasAnyEnabledStepFailed(stepStatuses: stepStatuses, enabledSteps: enabledSteps, excluding: [TestStep.factoryReset.id, TestStep.disconnectDevice.id]) {
-                        self.log("测试已失败，跳过安全断开连接", level: .info)
+                        self.log(appLanguage.string("production_test.log_disconnect_skipped_error"), level: .error)
                         stepResults[step.id] = appLanguage.string("production_test.skipped_test_failed")
-                        stepStatuses[step.id] = .skipped
-                        recordStepOutcome(stepId: step.id, outcome: "skipped")
+                        stepStatuses[step.id] = .failed
+                        recordStepOutcome(stepId: step.id, outcome: "failed")
                         break
                     }
                     if ble.isOTARebootDisconnected {
@@ -3166,9 +3316,11 @@ struct ProductionTestView: View {
                 let logEndIndex = testLog.count
                 stepLogRanges[step.id] = (start: logStartIndex, end: logEndIndex)
                 
-                // 当前步骤结束：折叠该步骤并清除标记
-                expandedSteps.remove(step.id)
-                currentStepId = nil
+                // 当前步骤结束：折叠该步骤并清除标记（主线程更新以便 UI 立即反映）
+                await MainActor.run {
+                    expandedSteps.remove(step.id)
+                    currentStepId = nil
+                }
                 
                 // 步骤间延时（SOP 定义，单位 ms）；步骤1 后可选：等待蓝牙权限/配对弹窗
                 if step.id != enabledSteps.last?.id {
@@ -3204,10 +3356,10 @@ struct ProductionTestView: View {
             self.log("上传跳过：无设备 SN（步骤2 未通过或未执行）", level: .warning)
             return
         }
-        // 在日志区输出将要上传的完整 payload，便于排查
+        // 日志区只显示短文案 + 预览入口，点击后在弹窗中查看完整 payload，避免刷屏
         if let jsonData = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted]),
            let jsonString = String(data: jsonData, encoding: .utf8) {
-            self.log("上传产测记录 payload:\n\(jsonString)", level: .info)
+            self.logWithPayloadPreview(appLanguage.string("log.upload_payload_preview_line"), payloadJson: jsonString, level: .info)
         } else {
             self.log("上传产测记录 payload 构造完成（JSON 序列化失败，仅记录结构体）: \(body)", level: .warning)
         }
@@ -3233,7 +3385,7 @@ struct ProductionTestView: View {
                 self.log("上传失败: \(e.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
                 if retriable { serverSettings.savePendingUpload(body: body) }
             case .missingConfiguration, .encodingFailed:
-                self.log("上传失败: \(err.localizedDescription ?? "")", level: .error)
+                self.log("上传失败: \(err.localizedDescription)", level: .error)
             }
         } catch {
             self.log("上传失败: \(error.localizedDescription)；结果已写入本地，下次启动将自动重传", level: .error)
@@ -3265,6 +3417,8 @@ struct ProductionTestView: View {
         formatter.locale = Locale(identifier: "en_POSIX")
         let timeStr = formatter.string(from: Date())
         
+        self.log("", level: .info)
+        self.log("", level: .info)
         self.log("────────── 产测报表 ──────────", level: .info)
         self.log("时间: \(timeStr)", level: .info)
         if needRetestAfterOtaReboot {
@@ -3299,6 +3453,8 @@ struct ProductionTestView: View {
             }
         }
         self.log("──────────────────────────────", level: .info)
+        self.log("", level: .info)
+        self.log("", level: .info)
     }
 }
 
@@ -3443,6 +3599,7 @@ private struct BluetoothPermissionConfirmSheet: View {
                     onContinue()
                 }
                 .buttonStyle(.borderedProminent)
+                .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
                 .keyboardShortcut(.defaultAction)
             }
         }

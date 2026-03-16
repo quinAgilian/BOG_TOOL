@@ -24,7 +24,7 @@ struct DeviceListView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
             if let msg = connectionErrorMessage {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -73,6 +73,7 @@ struct DeviceListView: View {
                     } else {
                         Button(appLanguage.string("device_list.scan")) { ble.startScan() }
                             .buttonStyle(.borderedProminent)
+                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
                     }
                 }
             }
@@ -81,8 +82,8 @@ struct DeviceListView: View {
                 DeviceTableSection(ble: ble, selectedId: $selectedId, selectedMode: selectedMode)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, UIDesignSystem.Padding.lg)
+        .padding(.vertical, UIDesignSystem.Padding.sm)
         .sheet(isPresented: $showProductionTestRules) {
             ProductionTestRulesView(ble: ble, firmwareManager: firmwareManager)
         }
@@ -121,7 +122,7 @@ struct DeviceTableSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
             Table(sortedDevices, selection: $selectedId, sortOrder: $sortOrder) {
                 TableColumn(appLanguage.string("device_list.name_column"), value: \.name)
                 TableColumn(appLanguage.string("device_list.rssi_column"), value: \.sortKeyForRssi) { (device: BLEDevice) in
@@ -140,61 +141,85 @@ struct ScanFilterRuleView: View {
     @ObservedObject var ble: BLEManager
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xl) {
             Text(appLanguage.string("filter.title"))
-                .font(.headline)
+                .font(UIDesignSystem.Typography.sectionTitle)
 
-            // RSSI：右侧开关 + 最小值（文本左对齐，开关右对齐）
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
+            // RSSI：标签左 + 开关右（统一表单行）
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
                     Text(appLanguage.string("filter.rssi"))
-                    Spacer(minLength: 8)
+                        .font(UIDesignSystem.Typography.body)
+                        .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+                    Spacer(minLength: UIDesignSystem.Spacing.md)
                     Toggle("", isOn: $ble.scanFilterRSSIEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
                 }
                 TextField(appLanguage.string("filter.min_dbm"), value: $ble.scanFilterMinRSSI, format: .number)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
+                    .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
                     .disabled(!ble.scanFilterRSSIEnabled)
                 Text(appLanguage.string("filter.signal_hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
             .onChange(of: ble.scanFilterRSSIEnabled) { _ in ble.reapplyScanFilter() }
             .onChange(of: ble.scanFilterMinRSSI) { _ in if ble.scanFilterRSSIEnabled { ble.reapplyScanFilter() } }
 
-            // 名称：右侧开关 + 关键词（逗号分隔，满足其一即可）
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
+            // 名称：标签左 + 开关右
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
                     Text(appLanguage.string("filter.name"))
-                    Spacer(minLength: 8)
+                        .font(UIDesignSystem.Typography.body)
+                        .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+                    Spacer(minLength: UIDesignSystem.Spacing.md)
                     Toggle("", isOn: $ble.scanFilterNameEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
                 }
                 TextField(appLanguage.string("filter.name_placeholder"), text: $ble.scanFilterNamePrefix)
                     .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: UIDesignSystem.FormRow.textFieldWidth)
                     .disabled(!ble.scanFilterNameEnabled)
                 Text(appLanguage.string("filter.name_hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
             .onChange(of: ble.scanFilterNameEnabled) { _ in ble.reapplyScanFilter() }
             .onChange(of: ble.scanFilterNamePrefix) { _ in if ble.scanFilterNameEnabled { ble.reapplyScanFilter() } }
 
-            // 无名设备：右侧开关
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
+            // 名称黑名单：优先排除（例如包含 mac 的设备）
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("filter.name_exclude"))
+                        .font(UIDesignSystem.Typography.body)
+                        .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+                    Spacer(minLength: UIDesignSystem.Spacing.md)
+                }
+                TextField(appLanguage.string("filter.name_exclude_placeholder"), text: $ble.scanFilterNameExcludeKeywords)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: UIDesignSystem.FormRow.textFieldWidth)
+                Text(appLanguage.string("filter.name_exclude_hint"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            }
+            .onChange(of: ble.scanFilterNameExcludeKeywords) { _ in ble.reapplyScanFilter() }
+
+            // 无名设备：标签左 + 开关右
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
                     Text(appLanguage.string("filter.exclude_unnamed"))
-                    Spacer(minLength: 8)
+                        .font(UIDesignSystem.Typography.body)
+                        .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+                    Spacer(minLength: UIDesignSystem.Spacing.md)
                     Toggle("", isOn: $ble.scanFilterExcludeUnnamed)
                         .labelsHidden()
                         .toggleStyle(.switch)
                 }
                 Text(appLanguage.string("filter.empty_hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
             .onChange(of: ble.scanFilterExcludeUnnamed) { _ in ble.reapplyScanFilter() }
         }

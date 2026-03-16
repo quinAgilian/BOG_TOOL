@@ -226,7 +226,7 @@ struct ContentView: View {
                     
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LogContentTextView(entries: ble.displayedLogEntries, progressLine: ble.otaProgressLogLine)
+                            LogContentTextView(entries: ble.displayedLogEntries, progressLine: ble.otaProgressLogLine, ble: ble)
                                 .equatable()
                                 .padding(UIDesignSystem.Padding.sm)
                         }
@@ -603,10 +603,11 @@ private struct DeviceInfoStrip: View {
     }
 }
 
-/// 日志正文：按行 ForEach 渲染，新日志只追加一行、不整块重算；Equatable 避免 BLE 其他 @Published 触发本 View 重算
+/// 日志正文：按行 ForEach 渲染，新日志只追加一行、不整块重算；带 payloadPreviewId 的行显示「预览」按钮，点击后 Sheet 展示 JSON
 private struct LogContentTextView: View, Equatable {
     let entries: [BLEManager.LogEntry]
     let progressLine: String?
+    let ble: BLEManager
 
     static func == (l: LogContentTextView, r: LogContentTextView) -> Bool {
         l.entries.map(\.id) == r.entries.map(\.id) && l.progressLine == r.progressLine
@@ -615,11 +616,28 @@ private struct LogContentTextView: View, Equatable {
     /// 最后一行用固定 id，便于 ScrollViewReader 滚到底部
     static let logBottomId = "logBottom"
 
+    @State private var previewPayloadId: UUID?
+    @EnvironmentObject private var appLanguage: AppLanguage
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(entries) { entry in
-                Text(entry.line)
-                    .foregroundStyle(LogLevelColor.color(entry.level))
+                if let pid = entry.payloadPreviewId {
+                    HStack(alignment: .top, spacing: UIDesignSystem.Spacing.sm) {
+                        Text(entry.line)
+                            .foregroundStyle(LogLevelColor.color(entry.level))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button(appLanguage.string("log.preview_payload")) {
+                            previewPayloadId = pid
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                } else {
+                    Text(entry.line)
+                        .foregroundStyle(LogLevelColor.color(entry.level))
+                }
             }
             if let progress = progressLine {
                 Text(progress)
@@ -631,6 +649,55 @@ private struct LogContentTextView: View, Equatable {
         .font(UIDesignSystem.Typography.monospacedCaption)
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
+        .sheet(isPresented: Binding(
+            get: { previewPayloadId != nil },
+            set: { if !$0 { previewPayloadId = nil } }
+        )) {
+            if let id = previewPayloadId {
+                PayloadPreviewSheetView(payloadId: id, ble: ble)
+                    .environmentObject(appLanguage)
+            }
+        }
+    }
+}
+
+/// 产测 payload 预览弹窗：只读 JSON + 复制、关闭
+private struct PayloadPreviewSheetView: View {
+    let payloadId: UUID
+    let ble: BLEManager
+    @EnvironmentObject private var appLanguage: AppLanguage
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+            Text(appLanguage.string("log.payload_preview_title"))
+                .font(UIDesignSystem.Typography.sectionTitle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let json = ble.getPayloadPreview(id: payloadId) {
+                TextEditor(text: .constant(json))
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .background(UIDesignSystem.Background.text)
+                    .frame(minWidth: 400, minHeight: 300)
+                    .textSelection(.enabled)
+                HStack(spacing: UIDesignSystem.Spacing.md) {
+                    Button(appLanguage.string("log.payload_preview_copy")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(json, forType: .string)
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                    Button(appLanguage.string("error.dismiss")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                }
+            } else {
+                Text(appLanguage.string("log.payload_preview_expired"))
+                    .foregroundStyle(.secondary)
+                Button(appLanguage.string("error.dismiss")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(UIDesignSystem.Padding.lg)
+        .frame(minWidth: 420, minHeight: 360)
     }
 }
 

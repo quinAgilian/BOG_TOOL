@@ -21,6 +21,7 @@ struct RTCTestView: View {
                         ble.writeRTCTrigger(hexString: hexInput)
                     }
                     .buttonStyle(.borderedProminent)
+                    .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
                 }
                 
                 HStack(spacing: 12) {

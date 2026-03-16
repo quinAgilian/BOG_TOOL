@@ -18,6 +18,7 @@ struct FirmwareManagerView: View {
                     addFirmware()
                 }
                 .buttonStyle(.borderedProminent)
+                .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
                 Button(appLanguage.string("firmware_manager.close")) {
                     dismiss()
                 }

@@ -294,7 +294,7 @@ struct ServerSettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xxl) {
             HStack {
                 Text(appLanguage.string("server.settings_title"))
                     .font(.title2.weight(.semibold))
@@ -304,27 +304,31 @@ struct ServerSettingsView: View {
             }
 
             // 服务器环境（固定枚举，禁止手动输入）
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
                 Text(appLanguage.string("server.base_url_label"))
-                    .font(.subheadline.weight(.medium))
+                    .font(UIDesignSystem.Typography.subsectionTitle)
                 Picker("", selection: $selectedEnvironment) {
                     ForEach(ServerEnvironment.allCases) { env in
                         Text(env.displayName).tag(env)
                     }
                 }
                 .pickerStyle(.radioGroup)
+                .labelsHidden()
                 .onChange(of: selectedEnvironment) { newValue in
                     serverSettings.serverBaseURL = newValue.baseURL
                 }
                 Text(serverSettings.effectiveBaseURL)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .font(UIDesignSystem.Typography.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
 
-            // 是否上传至服务器
+            // 是否上传至服务器（标签左 + 开关右，统一 Toggle 行）
             Toggle(isOn: $serverSettings.uploadToServerEnabled) {
                 Text(appLanguage.string("server.upload_enabled"))
+                    .font(UIDesignSystem.Typography.body)
             }
+            .toggleStyle(.switch)
 
             Divider()
 
@@ -332,8 +336,9 @@ struct ServerSettingsView: View {
                 serverSettings.openPreviewInBrowser()
             }
             .buttonStyle(.borderedProminent)
+            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
         }
-        .padding(24)
+        .padding(UIDesignSystem.Padding.xxl)
         .frame(minWidth: 420, minHeight: 300)
     }
 }

@@ -122,10 +122,26 @@ struct ProductionTestRulesView: View {
     @State private var disableDiagWaitSeconds: Double = {
         UserDefaults.standard.object(forKey: "production_test_disable_diag_wait_seconds") as? Double ?? 2.0
     }()
-    /// Disable diag 轮询 Gas status 时期望的值（0–9，1=ok），默认 1
+    /// Disable diag 轮询 Gas status 时期望的值文本（支持多值，例如 "0,1"），默认 "1"
+    @State private var disableDiagExpectedGasStatusText: String = {
+        let v = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status")
+        if let s = v as? String { return s }
+        if let i = v as? Int { return String(i) }
+        if let d = v as? Double { return String(Int(d)) }
+        return "1"
+    }()
+    /// Disable diag 轮询 Gas status 时期望值的首个数字（兼容旧逻辑与导入导出），默认 1
     @State private var disableDiagExpectedGasStatus: Int = {
-        if let i = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status") as? Int { return max(0, min(9, i)) }
-        if let d = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status") as? Double { return max(0, min(9, Int(d))) }
+        let v = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status")
+        if let s = v as? String {
+            if let first = s.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " }).first,
+               let intVal = Int(first) {
+                return max(0, min(9, intVal))
+            }
+            return 1
+        }
+        if let i = v as? Int { return max(0, min(9, i)) }
+        if let d = v as? Double { return max(0, min(9, Int(d))) }
         return 1
     }()
     /// Disable diag 轮询 Gas status 超时（秒），默认 3
@@ -222,7 +238,7 @@ struct ProductionTestRulesView: View {
     @State private var gasLeakClosedRequireValveClosedConfirm: Bool = {
         UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_require_valve_closed_confirm") as? Bool ?? true
     }()
-    // 关阀压力 Phase 4：Phase 3 通过后开阀，连续监测，要求在规定时间内压力低于阈值
+    // 关阀压力 Phase 4（开阀泄压检测）：Phase 3 通过后开阀，连续监测，要求在规定时间内开阀压力低于设定值
     @State private var gasLeakClosedPhase4MonitorDurationSeconds: Int = {
         UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds") as? Int ?? 15
     }()
@@ -239,12 +255,12 @@ struct ProductionTestRulesView: View {
     @State private var gasLeakSkipClosedWhenOpenPasses: Bool = {
         UserDefaults.standard.object(forKey: "production_test_gas_leak_skip_closed_when_open_passes") as? Bool ?? false
     }()
-    /// 漏气 limit 计算基准（开阀）：phase1_avg 或 phase3_first
+    /// 漏气判定线基准（开阀）：Phase 1 平均(phase1_avg) 或 Phase 3 首个值(phase3_first)
     @State private var gasLeakOpenLimitSource: String = {
         let raw = UserDefaults.standard.string(forKey: "production_test_gas_leak_open_limit_source")
         return (raw == "phase3_first" ? "phase3_first" : "phase1_avg")
     }()
-    /// 漏气 limit 计算基准（关阀）：phase1_avg 或 phase3_first
+    /// 漏气判定线基准（关阀）：Phase 1 平均(phase1_avg) 或 Phase 3 首个值(phase3_first)
     @State private var gasLeakClosedLimitSource: String = {
         let raw = UserDefaults.standard.string(forKey: "production_test_gas_leak_closed_limit_source")
         return (raw == "phase3_first" ? "phase3_first" : "phase1_avg")
@@ -469,7 +485,7 @@ struct ProductionTestRulesView: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                     // 产测流程说明
                     testProcedureSection
                     
@@ -487,7 +503,7 @@ struct ProductionTestRulesView: View {
     }
     
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
             HStack {
                 Text(appLanguage.string("production_test_rules.title"))
                     .font(.title2.weight(.semibold))
@@ -500,12 +516,12 @@ struct ProductionTestRulesView: View {
                 
                 Spacer()
                 
-                HStack(spacing: 8) {
+                HStack(spacing: UIDesignSystem.Spacing.md) {
                     Button {
                         saveRulesToFile()
                     } label: {
                         Text(appLanguage.string("production_test_rules.export_rules"))
-                            .font(.caption)
+                            .font(UIDesignSystem.Typography.caption)
                     }
                     .buttonStyle(.bordered)
                     .disabled(isReadOnly)
@@ -514,7 +530,7 @@ struct ProductionTestRulesView: View {
                         loadRulesFromFile()
                     } label: {
                         Text(appLanguage.string("production_test_rules.import_rules"))
-                            .font(.caption)
+                            .font(UIDesignSystem.Typography.caption)
                     }
                     .buttonStyle(.bordered)
                     .disabled(isReadOnly)
@@ -523,7 +539,7 @@ struct ProductionTestRulesView: View {
                         resetToDefaultRules()
                     } label: {
                         Text(appLanguage.string("common.reset_to_default"))
-                            .font(.caption)
+                            .font(UIDesignSystem.Typography.caption)
                     }
                     .buttonStyle(.bordered)
                     .disabled(isReadOnly)
@@ -619,6 +635,7 @@ struct ProductionTestRulesView: View {
         deviceReconnectTimeout = 5.0
         valveOpenTimeout = 5.0
         disableDiagWaitSeconds = 2.0
+        disableDiagExpectedGasStatusText = "1"
         disableDiagExpectedGasStatus = 1
         disableDiagPollTimeoutSeconds = 3.0
         disableDiagPollGasStatusEnabled = true
@@ -740,6 +757,7 @@ struct ProductionTestRulesView: View {
         valveOpenTimeout = snapshot.valveOpenTimeout
         disableDiagWaitSeconds = snapshot.disableDiagWaitSeconds ?? 2.0
         disableDiagExpectedGasStatus = max(0, min(9, snapshot.disableDiagExpectedGasStatus ?? 1))
+        disableDiagExpectedGasStatusText = String(disableDiagExpectedGasStatus)
         disableDiagPollTimeoutSeconds = snapshot.disableDiagPollTimeoutSeconds ?? 3.0
         disableDiagPollGasStatusEnabled = snapshot.disableDiagPollGasStatusEnabled ?? true
         stepIntervalMs = snapshot.stepIntervalMs
@@ -794,7 +812,7 @@ struct ProductionTestRulesView: View {
         defaults.set(deviceReconnectTimeout, forKey: "production_test_reconnect_timeout")
         defaults.set(valveOpenTimeout, forKey: "production_test_valve_open_timeout")
         defaults.set(disableDiagWaitSeconds, forKey: "production_test_disable_diag_wait_seconds")
-        defaults.set(disableDiagExpectedGasStatus, forKey: "production_test_disable_diag_expected_gas_status")
+        defaults.set(disableDiagExpectedGasStatusText, forKey: "production_test_disable_diag_expected_gas_status")
         defaults.set(disableDiagPollTimeoutSeconds, forKey: "production_test_disable_diag_poll_timeout_seconds")
         defaults.set(disableDiagPollGasStatusEnabled, forKey: "production_test_disable_diag_poll_gas_status_enabled")
         defaults.set(stepIntervalMs, forKey: "production_test_step_interval_ms")
@@ -906,31 +924,31 @@ struct ProductionTestRulesView: View {
     }
     
     private var testProcedureSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.procedure_title"))
-                .font(.headline)
+                .font(UIDesignSystem.Typography.sectionTitle)
                 .foregroundStyle(.primary)
             
             Text(appLanguage.string("production_test_rules.procedure_description"))
-                .font(.body)
+                .font(UIDesignSystem.Typography.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(12)
+        .padding(UIDesignSystem.Padding.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(UIDesignSystem.Background.card)
+        .clipShape(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.md, style: .continuous))
     }
     
     /// 全局延时设定：步骤间延时（适用于所有步骤之间，非步骤2专属）
     private var globalStepDelaySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
             Text(appLanguage.string("production_test_rules.global_step_delay_section"))
-                .font(.headline)
+                .font(UIDesignSystem.Typography.sectionTitle)
                 .foregroundStyle(.primary)
 
             // 步骤间延时（ms）与蓝牙权限等待（s）放在同一行，提升布局利用率
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 thresholdIntRow(
                     label: appLanguage.string("production_test_rules.step_interval_ms"),
                     value: $stepIntervalMs,
@@ -948,12 +966,12 @@ struct ProductionTestRulesView: View {
             }
             .controlSize(.small)
             Toggle(isOn: $skipFactoryResetAndDisconnectOnFail) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                     Text(appLanguage.string("production_test_rules.skip_factory_reset_and_disconnect_on_fail_title"))
-                        .font(.body)
+                        .font(UIDesignSystem.Typography.body)
                         .foregroundStyle(.primary)
                     Text(appLanguage.string("production_test_rules.skip_factory_reset_and_disconnect_on_fail_desc"))
-                        .font(.caption)
+                        .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -963,50 +981,50 @@ struct ProductionTestRulesView: View {
                 NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
             }
         }
-        .padding(12)
+        .padding(UIDesignSystem.Padding.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(UIDesignSystem.Background.card)
+        .clipShape(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.md, style: .continuous))
     }
     
     
     private func thresholdRow(label: String, value: Binding<Double>, unit: String, key: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
             Text(label)
-                .font(.body)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: 180, alignment: .leading)
+                .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
             
             TextField("", value: value, format: .number.precision(.fractionLength(1)))
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 80)
+                .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
                 .onChange(of: value.wrappedValue) { newValue in
                     UserDefaults.standard.set(newValue, forKey: key)
                     NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                 }
             
             Text(unit)
-                .font(.body)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
             
             Spacer()
         }
     }
     
     private func thresholdIntRow(label: String, value: Binding<Int>, key: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
             Text(label)
-                .font(.body)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: 180, alignment: .leading)
+                .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
             
             TextField("", value: value, format: .number)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 80)
+                .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
                 .onChange(of: value.wrappedValue) { newValue in
                     UserDefaults.standard.set(newValue, forKey: key)
                     NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
@@ -1033,34 +1051,34 @@ struct ProductionTestRulesView: View {
     }
     
     private var testStepsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             HStack {
                 Text(appLanguage.string("production_test_rules.steps_title"))
-                    .font(.headline)
+                    .font(UIDesignSystem.Typography.sectionTitle)
                     .foregroundStyle(.primary)
                 Spacer()
                 Button {
                     isEditingOrder.toggle()
                 } label: {
                     Text(isEditingOrder ? appLanguage.string("production_test_rules.done_editing") : appLanguage.string("production_test_rules.edit_order"))
-                        .font(.caption)
+                        .font(UIDesignSystem.Typography.caption)
                 }
                 .buttonStyle(.bordered)
                 Text(appLanguage.string("production_test_rules.drag_hint"))
-                    .font(.caption)
+                    .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(.secondary)
             }
             
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
                 ForEach(Array(testSteps.enumerated()), id: \.element.id) { index, step in
                     let isPositionLocked = (index == 0 && step.id == TestStep.connectDevice.id) ||
                                            (index == testSteps.count - 1 && step.id == TestStep.disconnectDevice.id)
                     let isEnableLocked = isPositionLocked || step.id == TestStep.otaBeforeDisconnect.id || step.id == TestStep.reset.id // step_ota 不许关闭；step_reset 产测中不许启用，仅隐藏开关
-                    HStack(spacing: 8) {
+                    HStack(spacing: UIDesignSystem.Spacing.md) {
                         // 拖拽手柄（编辑模式下显示）
                         if isEditingOrder && !isPositionLocked {
                             Image(systemName: "line.3.horizontal")
-                                .font(.caption)
+                                .font(UIDesignSystem.Typography.caption)
                                 .foregroundStyle(.secondary)
                                 .frame(width: 20)
                         } else {
@@ -1070,12 +1088,12 @@ struct ProductionTestRulesView: View {
                         
                         // 上下移动按钮（位置锁定步骤不显示）
                         if !isPositionLocked {
-                            VStack(spacing: 4) {
+                            VStack(spacing: UIDesignSystem.Spacing.xs) {
                                 Button {
                                     moveStepUp(at: index)
                                 } label: {
                                     Image(systemName: "chevron.up")
-                                        .font(.caption)
+                                        .font(UIDesignSystem.Typography.caption)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(
@@ -1089,7 +1107,7 @@ struct ProductionTestRulesView: View {
                                     moveStepDown(at: index)
                                 } label: {
                                     Image(systemName: "chevron.down")
-                                        .font(.caption)
+                                        .font(UIDesignSystem.Typography.caption)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(
@@ -1186,9 +1204,9 @@ struct ProductionTestRulesView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(UIDesignSystem.Padding.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(UIDesignSystem.Background.card)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
     
@@ -1323,7 +1341,7 @@ struct ProductionTestRulesView: View {
     }
     
     private func stepItem(number: Int, step: TestStep, isLocked: Bool, isExpanded: Bool) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: UIDesignSystem.Spacing.lg) {
             // 步骤编号
             ZStack {
                 Text("\(number)")
@@ -1346,10 +1364,10 @@ struct ProductionTestRulesView: View {
                 }
             }
             
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
                 HStack {
                     Text(appLanguage.string("production_test_rules.\(step.key)_title"))
-                        .font(.subheadline.weight(.medium))
+                        .font(UIDesignSystem.Typography.subsectionTitle)
                         .foregroundStyle(step.enabled ? .primary : .secondary)
                     if isLocked {
                         Image(systemName: "lock.fill")
@@ -1368,7 +1386,7 @@ struct ProductionTestRulesView: View {
                     }
                 }
                 Text(appLanguage.string("production_test_rules.\(step.key)_desc"))
-                    .font(.caption)
+                    .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(step.enabled ? 1.0 : 0.6)
@@ -1376,7 +1394,7 @@ struct ProductionTestRulesView: View {
                 let criteriaKey = "production_test_rules.\(step.key)_criteria"
                 let criteria = appLanguage.string(criteriaKey)
                 if !criteria.isEmpty && criteria != criteriaKey && step.enabled { // 检查是否真的存在本地化字符串
-                    HStack(alignment: .top, spacing: 6) {
+                    HStack(alignment: .top, spacing: UIDesignSystem.Spacing.sm) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.caption2)
                             .foregroundStyle(.green)
@@ -1398,13 +1416,13 @@ struct ProductionTestRulesView: View {
     
     /// 步骤配置视图（展开时显示）
     private func stepConfigurationView(step: TestStep) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Divider()
                 .padding(.vertical, 4)
             
             // 每步可单独设置：失败后终止产测 或 仅本步失败继续后续步骤
             if !isEditingOrder {
-                HStack(spacing: 8) {
+                HStack(spacing: UIDesignSystem.Spacing.md) {
                     Toggle(isOn: Binding(
                         get: { stepFatalOverrides[step.id] ?? TestStep.stepIdsFatalOnFailure.contains(step.id) },
                         set: { newVal in
@@ -1414,7 +1432,7 @@ struct ProductionTestRulesView: View {
                         }
                     )) {
                         Text(appLanguage.string("production_test_rules.step_fatal_on_failure_title"))
-                            .font(.subheadline)
+                            .font(UIDesignSystem.Typography.subsectionTitle)
                             .foregroundStyle(.primary)
                     }
                     .toggleStyle(.switch)
@@ -1446,18 +1464,18 @@ struct ProductionTestRulesView: View {
     
     /// 版本配置视图（步骤2）
     private var versionConfigurationView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.firmware_version_title"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                 // Bootloader 版本
-                HStack(spacing: 12) {
+                HStack(spacing: UIDesignSystem.Spacing.lg) {
                     Text(appLanguage.string("production_test_rules.bootloader_version_label"))
-                        .font(.body)
+                        .font(UIDesignSystem.Typography.body)
                         .foregroundStyle(.secondary)
-                        .frame(width: 100, alignment: .leading)
+                        .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
                     
                     TextField(
                         appLanguage.string("production_test_rules.bootloader_version_placeholder"),
@@ -1472,12 +1490,12 @@ struct ProductionTestRulesView: View {
                 }
                 
                 // FW 版本：从服务器可用固件列表下拉选择，产测 OTA 步骤直接使用此版本；当恢复出厂/重启启用时仅允许选择支持该命令的版本（>=1.1.2 或 0.x>0.4.1）
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                    HStack(spacing: UIDesignSystem.Spacing.lg) {
                         Text(appLanguage.string("production_test_rules.firmware_version_label"))
-                            .font(.body)
+                            .font(UIDesignSystem.Typography.body)
                             .foregroundStyle(.secondary)
-                            .frame(width: 100, alignment: .leading)
+                            .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
                         
                         Picker("", selection: $firmwareVersion) {
                             Text(appLanguage.string("ota.not_selected")).tag("")
@@ -1487,7 +1505,8 @@ struct ProductionTestRulesView: View {
                             }
                         }
                         .pickerStyle(.menu)
-                        .frame(minWidth: 200, alignment: .leading)
+                        .labelsHidden()
+                        .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, alignment: .leading)
                         .onChange(of: firmwareVersion) { newValue in
                             UserDefaults.standard.set(newValue, forKey: "production_test_firmware_version")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
@@ -1509,7 +1528,7 @@ struct ProductionTestRulesView: View {
                             }
                         } label: {
                             Text(appLanguage.string("ota.refresh_firmware_list"))
-                                .font(.caption)
+                                .font(UIDesignSystem.Typography.caption)
                         }
                         .buttonStyle(.bordered)
                         .disabled(firmwareManager.serverItemsLoading)
@@ -1527,7 +1546,7 @@ struct ProductionTestRulesView: View {
                         .padding(.leading, 112)
                     
                     if firmwareManager.serverItemsForProduction.isEmpty {
-                        HStack(spacing: 4) {
+                        HStack(spacing: UIDesignSystem.Spacing.xs) {
                             Image(systemName: "info.circle.fill")
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
@@ -1542,9 +1561,9 @@ struct ProductionTestRulesView: View {
                         .padding(.vertical, 4)
                     
                     // 固件版本升级开关（靠右对齐）
-                    HStack(spacing: 12) {
+                    HStack(spacing: UIDesignSystem.Spacing.lg) {
                         Text(appLanguage.string("production_test_rules.firmware_upgrade_enabled"))
-                            .font(.body)
+                            .font(UIDesignSystem.Typography.body)
                             .foregroundStyle(.primary)
                         
                         Spacer()
@@ -1597,13 +1616,13 @@ struct ProductionTestRulesView: View {
                 }
                 
                 // HW 版本（可输入 + 下拉预设）
-                HStack(spacing: 12) {
+                HStack(spacing: UIDesignSystem.Spacing.lg) {
                     Text(appLanguage.string("production_test_rules.hardware_version_label"))
-                        .font(.body)
+                        .font(UIDesignSystem.Typography.body)
                         .foregroundStyle(.secondary)
-                        .frame(width: 100, alignment: .leading)
+                        .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
                     
-                    HStack(spacing: 8) {
+                    HStack(spacing: UIDesignSystem.Spacing.md) {
                         TextField(
                             appLanguage.string("production_test_rules.hardware_version_placeholder"),
                             text: $hardwareVersion
@@ -1634,7 +1653,7 @@ struct ProductionTestRulesView: View {
                 }
                 
                 // SN 验证提示（另起一行，小字体）
-                HStack(spacing: 6) {
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Image(systemName: "info.circle.fill")
                         .font(.caption2)
                         .foregroundStyle(.blue)
@@ -1653,8 +1672,8 @@ struct ProductionTestRulesView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
                 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .center, spacing: 24) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+                    HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
                         thresholdRow(
                             label: appLanguage.string("production_test_rules.device_info_timeout"),
                             value: $deviceInfoReadTimeout,
@@ -1670,7 +1689,7 @@ struct ProductionTestRulesView: View {
                         )
                     }
                     
-                    HStack(alignment: .center, spacing: 24) {
+                    HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
                         thresholdRow(
                             label: appLanguage.string("production_test_rules.reconnect_timeout"),
                             value: $deviceReconnectTimeout,
@@ -1682,17 +1701,17 @@ struct ProductionTestRulesView: View {
                 }
             }
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
     }
     
     /// RTC配置视图（步骤3）
     private var rtcConfigurationView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.rtc_time_diff"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                 thresholdRow(
                     label: appLanguage.string("production_test_rules.rtc_pass_threshold"),
                     value: $rtcTimeDiffPassThreshold,
@@ -1710,9 +1729,9 @@ struct ProductionTestRulesView: View {
                     .padding(.vertical, 4)
                 
                 // RTC写入开关（靠右对齐）
-                HStack(spacing: 12) {
+                HStack(spacing: UIDesignSystem.Spacing.lg) {
                     Text(appLanguage.string("production_test_rules.rtc_write_enabled"))
-                        .font(.body)
+                        .font(UIDesignSystem.Typography.body)
                         .foregroundStyle(.primary)
                     
                     Spacer()
@@ -1743,17 +1762,17 @@ struct ProductionTestRulesView: View {
                 )
             }
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
     }
     
     /// 压力配置视图（步骤4）
     private var pressureConfigurationView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.pressure_thresholds"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                 thresholdRow(
                     label: appLanguage.string("production_test_rules.pressure_closed_min"),
                     value: $pressureClosedMin,
@@ -1782,21 +1801,19 @@ struct ProductionTestRulesView: View {
                 Divider()
                     .padding(.vertical, 4)
                 
-                // 压力差值检查
-                HStack(spacing: 12) {
+                // 压力差值检查（标签左 + 开关右）
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.pressure_diff_check"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     Toggle("", isOn: $pressureDiffCheckEnabled)
-                        .toggleStyle(.switch)
                         .labelsHidden()
+                        .toggleStyle(.switch)
                         .onChange(of: pressureDiffCheckEnabled) { newValue in
                             UserDefaults.standard.set(newValue, forKey: "production_test_pressure_diff_check_enabled")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                         }
-                    
-                    Text(appLanguage.string("production_test_rules.pressure_diff_check"))
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                    
-                    Spacer()
                 }
                 
                 if pressureDiffCheckEnabled {
@@ -1832,7 +1849,7 @@ struct ProductionTestRulesView: View {
                 
                 Toggle(isOn: $pressureFailRetryConfirmEnabled) {
                     Text(appLanguage.string("production_test_rules.pressure_fail_retry_confirm_title"))
-                        .font(.body)
+                        .font(UIDesignSystem.Typography.body)
                         .foregroundStyle(.primary)
                 }
                 .toggleStyle(.switch)
@@ -1842,26 +1859,27 @@ struct ProductionTestRulesView: View {
                 }
             }
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
     }
     
     /// 屏蔽气体自检（Disable diag）步骤配置：发送后等待、是否轮询 Gas status、期望值与超时
     private var disableDiagConfigurationView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.disable_diag_config_title"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
-            HStack(spacing: 12) {
+            HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                Text(appLanguage.string("production_test_rules.disable_diag_poll_gas_status_enabled"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(UIDesignSystem.Foreground.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Toggle("", isOn: $disableDiagPollGasStatusEnabled)
-                    .toggleStyle(.switch)
                     .labelsHidden()
+                    .toggleStyle(.switch)
                     .onChange(of: disableDiagPollGasStatusEnabled) { newValue in
                         UserDefaults.standard.set(newValue, forKey: "production_test_disable_diag_poll_gas_status_enabled")
                         NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                     }
-                Text(appLanguage.string("production_test_rules.disable_diag_poll_gas_status_enabled"))
-                    .font(.body)
-                    .foregroundStyle(.primary)
             }
             thresholdRow(
                 label: appLanguage.string("production_test_rules.disable_diag_wait_seconds"),
@@ -1869,14 +1887,32 @@ struct ProductionTestRulesView: View {
                 unit: appLanguage.string("production_test_rules.unit_seconds"),
                 key: "production_test_disable_diag_wait_seconds"
             )
-            thresholdIntRow(
-                label: appLanguage.string("production_test_rules.disable_diag_expected_gas_status"),
-                value: Binding(
-                    get: { disableDiagExpectedGasStatus },
-                    set: { disableDiagExpectedGasStatus = max(0, min(9, $0)) }
-                ),
-                key: "production_test_disable_diag_expected_gas_status"
-            )
+            HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                Text(appLanguage.string("production_test_rules.disable_diag_expected_gas_status"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+
+                TextField("", text: $disableDiagExpectedGasStatusText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
+                    .onChange(of: disableDiagExpectedGasStatusText) { newValue in
+                        // 保存原始文本（允许 "0,1" 等多值）
+                        UserDefaults.standard.set(newValue, forKey: "production_test_disable_diag_expected_gas_status")
+                        // 同步首个数字到整型状态，便于导入/导出和向后兼容
+                        if let first = newValue.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " }).first,
+                           let intVal = Int(first) {
+                            disableDiagExpectedGasStatus = max(0, min(9, intVal))
+                        } else {
+                            disableDiagExpectedGasStatus = 1
+                        }
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+
+                Spacer()
+            }
             thresholdRow(
                 label: appLanguage.string("production_test_rules.disable_diag_poll_timeout_seconds"),
                 value: $disableDiagPollTimeoutSeconds,
@@ -1884,7 +1920,7 @@ struct ProductionTestRulesView: View {
                 key: "production_test_disable_diag_poll_timeout_seconds"
             )
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
     }
     
     /// 气体泄漏检测（开阀压力）步骤配置视图
@@ -1897,11 +1933,11 @@ struct ProductionTestRulesView: View {
                 startPressureMinMbar: $gasLeakOpenStartPressureMinMbar,
                 limitSource: $gasLeakOpenLimitSource,
                 limitFloorBar: Binding(
-                    get: { gasLeakOpenLimitFloorBar },
-                    set: { newVal in
-                        let c = max(0, newVal)
-                        gasLeakOpenLimitFloorBar = c
-                        UserDefaults.standard.set(c, forKey: "production_test_gas_leak_open_limit_floor_bar")
+                    get: { gasLeakOpenLimitFloorBar * 1000 },
+                    set: { mbar in
+                        let bar = max(0, mbar / 1000)
+                        gasLeakOpenLimitFloorBar = bar
+                        UserDefaults.standard.set(bar, forKey: "production_test_gas_leak_open_limit_floor_bar")
                         NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                     }
                 ),
@@ -1911,9 +1947,26 @@ struct ProductionTestRulesView: View {
             )
     }
     
-    /// 气体泄漏检测（关阀压力）步骤配置视图
+    /// 气体泄漏检测（关阀压力）步骤配置视图（按执行顺序布局：是否跳过本步 → 气路/关阀确认 → Phase 1/3 参数 → Phase 4）
     private var gasLeakClosedConfigurationView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            // 1. 步骤级：开阀压力通过时是否跳过本步骤（执行前决定是否运行）
+            HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                Text(appLanguage.string("production_test_rules.gas_leak_skip_closed_when_open_passes"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(UIDesignSystem.Foreground.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Toggle("", isOn: $gasLeakSkipClosedWhenOpenPasses)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .onChange(of: gasLeakSkipClosedWhenOpenPasses) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "production_test_gas_leak_skip_closed_when_open_passes")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+            }
+            Divider()
+                .padding(.vertical, 4)
+            // 2. Phase 1 前确认、Phase 2 前确认、Phase 1/3 时长与判定参数（gasLeakConfigView 内已按执行顺序）
             gasLeakConfigView(
                 preCloseDuration: $gasLeakClosedPreCloseDurationSeconds,
                 postCloseDuration: $gasLeakClosedPostCloseDurationSeconds,
@@ -1922,11 +1975,11 @@ struct ProductionTestRulesView: View {
                 startPressureMinMbar: $gasLeakClosedStartPressureMinMbar,
                 limitSource: $gasLeakClosedLimitSource,
                 limitFloorBar: Binding(
-                    get: { gasLeakClosedLimitFloorBar },
-                    set: { newVal in
-                        let c = max(0, newVal)
-                        gasLeakClosedLimitFloorBar = c
-                        UserDefaults.standard.set(c, forKey: "production_test_gas_leak_closed_limit_floor_bar")
+                    get: { gasLeakClosedLimitFloorBar * 1000 },
+                    set: { mbar in
+                        let bar = max(0, mbar / 1000)
+                        gasLeakClosedLimitFloorBar = bar
+                        UserDefaults.standard.set(bar, forKey: "production_test_gas_leak_closed_limit_floor_bar")
                         NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                     }
                 ),
@@ -1934,54 +1987,32 @@ struct ProductionTestRulesView: View {
                 requireValveClosedConfirm: $gasLeakClosedRequireValveClosedConfirm,
                 keyPrefix: "production_test_gas_leak_closed"
             )
-            
             Divider()
                 .padding(.vertical, 4)
-            
-            // Phase 4：Phase 3 通过后开阀，连续监测，要求在规定时间内开阀压力低于阈值（独立开关）
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
+            // 3. Phase 4（Phase 3 通过后开阀泄压检测）
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.gas_leak_closed_phase4_enabled"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     Toggle("", isOn: $gasLeakClosedPhase4Enabled)
-                        .toggleStyle(.switch)
                         .labelsHidden()
+                        .toggleStyle(.switch)
                         .onChange(of: gasLeakClosedPhase4Enabled) { newValue in
                             UserDefaults.standard.set(newValue, forKey: "production_test_gas_leak_closed_phase4_enabled")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                         }
-                    Text(appLanguage.string("production_test_rules.gas_leak_closed_phase4_enabled"))
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                    Spacer()
                 }
                 Text(appLanguage.string("production_test_rules.gas_leak_closed_phase4_title"))
-                    .font(.caption)
+                    .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                     thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_monitor_duration"), value: $gasLeakClosedPhase4MonitorDurationSeconds, key: "production_test_gas_leak_closed_phase4_monitor_duration_seconds")
                     thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_drop_within"), value: $gasLeakClosedPhase4DropWithinSeconds, key: "production_test_gas_leak_closed_phase4_drop_within_seconds")
                     thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_pressure_below"), value: $gasLeakClosedPhase4PressureBelowMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "production_test_gas_leak_closed_phase4_pressure_below_mbar")
                 }
-                .padding(8)
-            }
-            
-            Divider()
-                .padding(.vertical, 4)
-            
-            // 开阀压力通过时是否跳过本步骤
-            HStack(spacing: 12) {
-                Toggle("", isOn: $gasLeakSkipClosedWhenOpenPasses)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .onChange(of: gasLeakSkipClosedWhenOpenPasses) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "production_test_gas_leak_skip_closed_when_open_passes")
-                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
-                    }
-                
-                Text(appLanguage.string("production_test_rules.gas_leak_skip_closed_when_open_passes"))
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                
-                Spacer()
+                .padding(UIDesignSystem.Padding.md)
             }
         }
     }
@@ -1999,74 +2030,71 @@ struct ProductionTestRulesView: View {
         requireValveClosedConfirm: Binding<Bool>,
         keyPrefix: String
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.gas_leak_params_title"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+                // 按执行顺序：Phase 1 前确认 → Phase 2 前确认 → Phase 1/3 时长与判定参数
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.gas_leak_require_pipeline_ready_confirm"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Toggle("", isOn: requirePipelineReadyConfirm)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: requirePipelineReadyConfirm.wrappedValue) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_pipeline_ready_confirm")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                }
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.gas_leak_require_valve_closed_confirm"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Toggle("", isOn: requireValveClosedConfirm)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: requireValveClosedConfirm.wrappedValue) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_valve_closed_confirm")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                }
+                Divider().padding(.vertical, 4)
                 thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_pre_close_duration"), value: preCloseDuration, key: "\(keyPrefix)_pre_close_duration_seconds")
                 thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_post_close_duration"), value: postCloseDuration, key: "\(keyPrefix)_post_close_duration_seconds")
                 thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_interval"), value: intervalSeconds, unit: appLanguage.string("production_test_rules.unit_seconds"), key: "\(keyPrefix)_interval_seconds")
                 thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_drop_threshold_mbar"), value: dropThresholdMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_drop_threshold_mbar")
                 thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_start_pressure_min"), value: startPressureMinMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_start_pressure_min_mbar")
-                
-                HStack(alignment: .center, spacing: 12) {
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
                     Text(appLanguage.string("production_test_rules.gas_leak_limit_source_title"))
-                        .font(.body)
-                        .foregroundStyle(.primary)
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
                     Picker("", selection: limitSource) {
                         Text(appLanguage.string("production_test_rules.gas_leak_limit_source_phase1_avg")).tag("phase1_avg")
                         Text(appLanguage.string("production_test_rules.gas_leak_limit_source_phase3_first")).tag("phase3_first")
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     .labelsHidden()
+                    .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, alignment: .leading)
                     .onChange(of: limitSource.wrappedValue) { newValue in
                         UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_limit_source")
                         NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                     }
                 }
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_limit_floor_bar"), value: limitFloorBar, unit: appLanguage.string("production_test_rules.unit_bar"), key: "\(keyPrefix)_limit_floor_bar")
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                    thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_limit_floor_bar"), value: limitFloorBar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_limit_floor_bar")
                     Text(appLanguage.string("production_test_rules.gas_leak_limit_floor_bar_hint"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                
-                Divider().padding(.vertical, 4)
-                Divider().padding(.vertical, 4)
-                
-                HStack(spacing: 12) {
-                    Toggle("", isOn: requirePipelineReadyConfirm)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                        .onChange(of: requirePipelineReadyConfirm.wrappedValue) { newValue in
-                            UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_pipeline_ready_confirm")
-                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
-                        }
-                    Text(appLanguage.string("production_test_rules.gas_leak_require_pipeline_ready_confirm"))
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                }
-                
-                HStack(spacing: 12) {
-                    Toggle("", isOn: requireValveClosedConfirm)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                        .onChange(of: requireValveClosedConfirm.wrappedValue) { newValue in
-                            UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_valve_closed_confirm")
-                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
-                        }
-                    Text(appLanguage.string("production_test_rules.gas_leak_require_valve_closed_confirm"))
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                }
             }
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
     }
     
 }

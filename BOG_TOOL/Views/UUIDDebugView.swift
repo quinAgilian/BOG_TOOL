@@ -123,7 +123,7 @@ struct UUIDDebugView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(minWidth: 200, maxWidth: .infinity)
+                    .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, maxWidth: .infinity)
                     .onChange(of: selectedWriteUUID, perform: { _ in
                         selectedWritePresetValue = nil
                         if isTimeWriteSelected {
@@ -204,7 +204,7 @@ struct UUIDDebugView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(minWidth: 200, maxWidth: .infinity)
+                    .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, maxWidth: .infinity)
                     Spacer(minLength: UIDesignSystem.Spacing.lg)
                     Button {
                         ble.readCharacteristic(uuidString: selectedReadUUID)

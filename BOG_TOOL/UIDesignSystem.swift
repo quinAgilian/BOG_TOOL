@@ -43,6 +43,9 @@ enum UIDesignSystem {
         
         /// 超大内边距（16pt）：页面级别、大对话框
         static let xl: CGFloat = 16
+        
+        /// 极大内边距（24pt）：设置面板、大弹窗
+        static let xxl: CGFloat = 24
     }
     
     // MARK: - Typography（字体系统）
@@ -145,6 +148,24 @@ enum UIDesignSystem {
         
         /// 测试日志区域高度
         static let testLogHeight: CGFloat = 88
+    }
+    
+    // MARK: - Form Row（表单行：标签+控件统一尺寸与间距）
+    
+    /// 标准表单行：标签列宽、输入框宽度、Picker 最小宽度；行内间距使用 Spacing.md
+    enum FormRow {
+        /// 表单标签列宽（Label 左对齐固定宽度）
+        static let labelWidth: CGFloat = 180
+        /// 短标签列宽（如版本号等较短的 label）
+        static let labelWidthShort: CGFloat = 100
+        /// 数字输入框宽度（TextField + Stepper 等）
+        static let numericFieldWidth: CGFloat = 80
+        /// 文本输入框宽度（较长文本）
+        static let textFieldWidth: CGFloat = 180
+        /// 表单内 Picker 最小宽度（menu 下拉）
+        static let pickerMinWidth: CGFloat = 200
+        /// 表单行内 HStack 间距（与 Spacing.lg 一致）
+        static let rowSpacing: CGFloat = 12
     }
     
     // MARK: - Window Sizes（窗口尺寸）
