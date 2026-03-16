@@ -202,8 +202,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var scanFilterNameEnabled: Bool = true
     /// 设备名称白名单关键词，逗号分隔，满足其一即可（默认 CO2,BOG）
     @Published var scanFilterNamePrefix: String = "CO2,BOG"
-    /// 设备名称黑名单关键词，逗号分隔，只要命中任一则排除（例如 mac）
-    @Published var scanFilterNameExcludeKeywords: String = ""
+    /// 设备名称黑名单关键词，逗号分隔，只要命中任一则排除（默认 mac,iphone）
+    @Published var scanFilterNameExcludeKeywords: String = "mac,iphone"
     /// 是否过滤无名设备（空名称 / 未知设备），默认勾选
     @Published var scanFilterExcludeUnnamed: Bool = true
     /// 连接后是否已发现并缓存了 GATT 特征（压力/RTC 等），为 true 后才应发起读/写，避免「未连接或特征不可用」和连接超时

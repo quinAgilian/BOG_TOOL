@@ -74,6 +74,7 @@ struct ProductionTestView: View {
     @EnvironmentObject private var serverSettings: ServerSettings
     @EnvironmentObject private var serverClient: ServerClient
     @EnvironmentObject private var productionState: ProductionTestState
+    @EnvironmentObject private var productionRulesStore: ProductionRulesStore
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var isRunning = false
@@ -394,6 +395,7 @@ struct ProductionTestView: View {
         .sheet(isPresented: $showBluetoothPermissionConfirmation) {
             BluetoothPermissionConfirmSheet(
                 onContinue: {
+                    log("[User] Bluetooth permission dialog: user chose Continue", level: .info)
                     bluetoothPermissionContinuation?()
                     bluetoothPermissionContinuation = nil
                     showBluetoothPermissionConfirmation = false
@@ -403,11 +405,13 @@ struct ProductionTestView: View {
         }
         .alert(gasLeakConfirmTitle, isPresented: $showGasLeakConfirmAlert) {
             Button(appLanguage.string("debug.gas_leak_confirm_action")) {
+                log("[User] Gas leak confirm: user tapped Confirm (\(gasLeakConfirmTitle))", level: .info)
                 gasLeakConfirmResume?(true)
                 gasLeakConfirmResume = nil
                 showGasLeakConfirmAlert = false
             }
             Button(appLanguage.string("debug.gas_leak_cancel_action"), role: .cancel) {
+                log("[User] Gas leak confirm: user tapped Cancel (\(gasLeakConfirmTitle))", level: .info)
                 gasLeakConfirmResume?(false)
                 gasLeakConfirmResume = nil
                 showGasLeakConfirmAlert = false
@@ -417,11 +421,13 @@ struct ProductionTestView: View {
         }
         .alert(appLanguage.string("production_test.pressure_fail_retry_alert_title"), isPresented: $showPressureRetryAlert) {
             Button(appLanguage.string("production_test.pressure_fail_retry_retry_action")) {
+                log("[User] Pressure retry dialog: user chose Retry", level: .info)
                 pressureRetryResume?(true)
                 pressureRetryResume = nil
                 showPressureRetryAlert = false
             }
             Button(appLanguage.string("production_test.pressure_fail_retry_continue_action"), role: .cancel) {
+                log("[User] Pressure retry dialog: user chose Continue", level: .info)
                 pressureRetryResume?(false)
                 pressureRetryResume = nil
                 showPressureRetryAlert = false
@@ -1076,24 +1082,39 @@ struct ProductionTestView: View {
         return appLanguage.string("ota.ready")
     }
 
-    /// 加载测试规则配置
+    /// 加载测试规则配置：**仅从 ProductionRules(JSON) 获取，不再依赖 UserDefaults**
     private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds, stepFatalOnFailure: [String: Bool]) {
-        // 加载步骤顺序和启用状态（含断开前 OTA、确保电磁阀开启、重启、恢复出厂、气体泄漏检测、屏蔽气体自检等步骤）
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
-            .reduce(into: [:]) { $0[$1.id] = $1 }
-        
+        let rules = productionRulesStore.rules
+
+        // 1. 构建步骤顺序与启用状态
+        let baseSteps: [TestStep] = [
+            .connectDevice,
+            .verifyFirmware,
+            .readRTC,
+            .readPressure,
+            .disableDiag,
+            .readGasSystemStatus,
+            .gasLeakOpen,
+            .gasLeakClosed,
+            .tbd,
+            .ensureValveOpen,
+            .reset,
+            .factoryReset,
+            .otaBeforeDisconnect,
+            .disconnectDevice
+        ]
+        let stepMap = baseSteps.reduce(into: [String: TestStep]()) { $0[$1.id] = $1 }
+
         var steps: [TestStep] = []
-        if let saved = UserDefaults.standard.array(forKey: "production_test_steps_order") as? [String] {
-            for id in saved {
-                let migratedId = TestStep.migrateLegacyStepId(id)
-                if let step = stepMap[migratedId] {
-                    steps.append(step)
-                }
-            }
-        } else {
-            steps = [.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .ensureValveOpen, .reset, .factoryReset, .tbd, .otaBeforeDisconnect, .disconnectDevice]
+        for stepRule in rules.steps.sorted(by: { $0.order < $1.order }) {
+            guard var base = stepMap[stepRule.id] else { continue }
+            base = TestStep(id: base.id, key: base.key, isLocked: base.isLocked, enabled: stepRule.enabled)
+            steps.append(base)
         }
-        
+        // 若 JSON 中缺少某些步骤，则按默认顺序追加（保持兼容）
+        for base in baseSteps where !steps.contains(where: { $0.id == base.id }) {
+            steps.append(base)
+        }
         // 确保第一步和最后一步在正确位置
         if !steps.isEmpty && steps[0].id != TestStep.connectDevice.id {
             steps.removeAll { $0.id == TestStep.connectDevice.id }
@@ -1103,141 +1124,101 @@ struct ProductionTestView: View {
             steps.removeAll { $0.id == TestStep.disconnectDevice.id }
             steps.append(TestStep.disconnectDevice)
         }
-        // 迁移：若旧配置中无「断开前 OTA」步骤，则插入在断开连接之前，默认启用
-        if !steps.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
-            steps.insert(TestStep.otaBeforeDisconnect, at: steps.count - 1)
-        }
-        // 迁移：若旧配置中无「确保电磁阀开启」步骤，则插入在断开连接之前
-        if !steps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
-            steps.insert(TestStep.ensureValveOpen, at: steps.count - 1)
-        }
-        // 迁移：若旧配置中无「屏蔽气体自检」步骤，则插入在读取压力之后
-        if !steps.contains(where: { $0.id == TestStep.disableDiag.id }) {
-            if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
-                steps.insert(TestStep.disableDiag, at: idx + 1)
-            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readGasSystemStatus.id }) {
-                steps.insert(TestStep.disableDiag, at: idx)
-            } else {
-                steps.insert(TestStep.disableDiag, at: steps.count - 1)
-            }
-        }
-        // 迁移：若旧配置中无「读取 Gas system status」步骤，则插入在读取压力/屏蔽自检之后、确保电磁阀之前
-        if !steps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
-            if let idx = steps.firstIndex(where: { $0.id == TestStep.disableDiag.id }) {
-                steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
-            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
-                steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
-            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
-                steps.insert(TestStep.readGasSystemStatus, at: idx)
-            } else {
-                steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
-            }
-        }
-        // 迁移：若旧配置中无「气体泄漏检测（开阀压力）」步骤，则插入在读取 Gas system status 之后
-        if !steps.contains(where: { $0.id == TestStep.gasLeakOpen.id }) {
-            if let idx = steps.firstIndex(where: { $0.id == TestStep.readGasSystemStatus.id }) {
-                steps.insert(TestStep.gasLeakOpen, at: idx + 1)
-            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
-                steps.insert(TestStep.gasLeakOpen, at: idx)
-            } else {
-                steps.insert(TestStep.gasLeakOpen, at: steps.count - 1)
-            }
-        }
-        // 迁移：若旧配置中无「气体泄漏检测（关阀压力）」步骤，则插入在开阀压力步骤之后
-        if !steps.contains(where: { $0.id == TestStep.gasLeakClosed.id }) {
-            if let idx = steps.firstIndex(where: { $0.id == TestStep.gasLeakOpen.id }) {
-                steps.insert(TestStep.gasLeakClosed, at: idx + 1)
-            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
-                steps.insert(TestStep.gasLeakClosed, at: idx)
-            } else {
-                steps.insert(TestStep.gasLeakClosed, at: steps.count - 1)
-            }
-        }
-        // 迁移：若旧配置中无「重启」「恢复出厂」步骤，则插入在断开连接之前
-        if !steps.contains(where: { $0.id == TestStep.reset.id }) {
-            if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
-                steps.insert(TestStep.reset, at: idx)
-            } else {
-                steps.insert(TestStep.reset, at: steps.count - 1)
-            }
-        }
-        if !steps.contains(where: { $0.id == TestStep.factoryReset.id }) {
-            if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
-                steps.insert(TestStep.factoryReset, at: idx)
-            } else {
-                steps.insert(TestStep.factoryReset, at: steps.count - 1)
-            }
-        }
         // 重启、恢复出厂只允许在倒数第三步或倒数第二步（与规则页一致）
         ProductionTestRulesView.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &steps)
-        
-        // 加载每个步骤的启用状态（step_reset 产测中不许启用，始终为 false）；兼容旧版 step1～step4 的 key
-        if let enabledDict = UserDefaults.standard.dictionary(forKey: "production_test_steps_enabled") as? [String: Bool] {
-            for i in 0..<steps.count {
-                if steps[i].id == TestStep.reset.id {
-                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: false)
-                } else {
-                    let enabledValue = enabledDict[steps[i].id] ?? TestStep.legacyStepId(for: steps[i].id).flatMap { enabledDict[$0] }
-                    if let enabled = enabledValue {
-                        steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
-                    } else if (steps[i].id == TestStep.gasLeakOpen.id || steps[i].id == TestStep.gasLeakClosed.id),
-                              let legacyEnabled = enabledDict["step_gas_leak"] {
-                        steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: legacyEnabled)
-                    }
-                }
+
+        // 2. 从 step_verify_firmware 配置解析版本限制
+        let verifyCfg = rules.steps.first(where: { $0.id == TestStep.verifyFirmware.id })?.config
+        let bootloaderVersion = (verifyCfg?.allowedBootloaderVersions?.first).flatMap { $0.isEmpty ? nil : $0 } ?? "2"
+        let firmwareVersion = verifyCfg?.allowedFirmwareVersions?.first ?? ""
+        let hardwareVersion = verifyCfg?.allowedHardwareVersions?.first ?? ""
+
+        // 3. 全局阈值配置（部分来自 global，部分来自各步骤 config）
+        // step_connect
+        let connectCfg = rules.steps.first(where: { $0.id == TestStep.connectDevice.id })?.config
+        let bluetoothPermissionWaitSeconds = connectCfg?.bluetoothPermissionWaitSeconds ?? 0
+
+        // step_read_rtc
+        let rtcCfg = rules.steps.first(where: { $0.id == TestStep.readRTC.id })?.config
+        let rtcPassThreshold = rtcCfg?.passThresholdSeconds ?? 2.0
+        let rtcFailThreshold = rtcCfg?.failThresholdSeconds ?? 5.0
+        let rtcWriteEnabled = rtcCfg?.writeEnabled ?? true
+        let rtcWriteRetryCount = rtcCfg?.writeRetryCount ?? 3
+        let rtcReadTimeout = rtcCfg?.readTimeoutSeconds ?? 2.0
+
+        // 设备信息/OTA/重连超时：目前规则 JSON 未显式拆出，先沿用旧默认值；如后续需要可扩展 schema
+        let deviceInfoReadTimeout = 3.0
+        let otaStartWaitTimeout = 5.0
+        let deviceReconnectTimeout = 5.0
+
+        // step_valve
+        let valveCfg = rules.steps.first(where: { $0.id == TestStep.ensureValveOpen.id })?.config
+        let valveOpenTimeout = valveCfg?.openTimeoutSeconds ?? 5.0
+
+        // step_disable_diag
+        let disableCfg = rules.steps.first(where: { $0.id == TestStep.disableDiag.id })?.config
+        let disableDiagWaitSeconds = disableCfg?.waitSeconds ?? 2.0
+        let disableDiagExpectedGasStatus = (disableCfg?.expectedGasStatusValues?.first).map { max(0, min(9, $0)) } ?? 1
+        let disableDiagPollTimeoutSeconds = disableCfg?.pollTimeoutSeconds ?? 3.0
+        let disableDiagPollGasStatusEnabled = disableCfg?.pollEnabled ?? true
+
+        // step_read_pressure
+        let pressureCfg = rules.steps.first(where: { $0.id == TestStep.readPressure.id })?.config
+        let pressureClosedMin = pressureCfg?.closedMinMbar ?? 1000
+        let pressureClosedMax = pressureCfg?.closedMaxMbar ?? 1350
+        let pressureOpenMin = pressureCfg?.openMinMbar ?? 1000
+        let pressureOpenMax = pressureCfg?.openMaxMbar ?? 1500
+        let pressureDiffCheckEnabled = pressureCfg?.diffCheckEnabled ?? true
+        let pressureDiffMin = pressureCfg?.diffMinMbar ?? 0
+        let pressureDiffMax = pressureCfg?.diffMaxMbar ?? 400
+        let pressureFailRetryConfirmEnabled = pressureCfg?.failRetryConfirmEnabled ?? true
+
+        // firmware upgrade / fail 时跳过恢复出厂和断开
+        let firmwareUpgradeEnabled = verifyCfg?.firmwareUpgradeEnabled ?? true
+        let skipFactoryResetAndDisconnectOnFail = rules.global.skipFactoryResetAndDisconnectOnFail
+
+        let thresholds = TestThresholds(
+            stepIntervalMs: rules.global.stepIntervalMs,
+            bluetoothPermissionWaitSeconds: bluetoothPermissionWaitSeconds,
+            rtcPassThreshold: rtcPassThreshold,
+            rtcFailThreshold: rtcFailThreshold,
+            rtcWriteEnabled: rtcWriteEnabled,
+            rtcWriteRetryCount: rtcWriteRetryCount,
+            rtcReadTimeout: rtcReadTimeout,
+            deviceInfoReadTimeout: deviceInfoReadTimeout,
+            otaStartWaitTimeout: otaStartWaitTimeout,
+            deviceReconnectTimeout: deviceReconnectTimeout,
+            valveOpenTimeout: valveOpenTimeout,
+            disableDiagWaitSeconds: disableDiagWaitSeconds,
+            disableDiagExpectedGasStatus: disableDiagExpectedGasStatus,
+            disableDiagPollTimeoutSeconds: disableDiagPollTimeoutSeconds,
+            disableDiagPollGasStatusEnabled: disableDiagPollGasStatusEnabled,
+            pressureClosedMin: pressureClosedMin,
+            pressureClosedMax: pressureClosedMax,
+            pressureOpenMin: pressureOpenMin,
+            pressureOpenMax: pressureOpenMax,
+            pressureDiffCheckEnabled: pressureDiffCheckEnabled,
+            pressureDiffMin: pressureDiffMin,
+            pressureDiffMax: pressureDiffMax,
+            firmwareUpgradeEnabled: firmwareUpgradeEnabled,
+            skipFactoryResetAndDisconnectOnFail: skipFactoryResetAndDisconnectOnFail,
+            pressureFailRetryConfirmEnabled: pressureFailRetryConfirmEnabled
+        )
+
+        // 4. 每步「失败时是否终止产测」：优先 step.fatalOnFailure，否则沿用 global.failurePolicy
+        var stepFatalOnFailure: [String: Bool] = [:]
+        let fatalDefault = Set(rules.global.failurePolicy.fatalDefault)
+        let overrides = rules.global.failurePolicy.overrides
+        for stepRule in rules.steps {
+            let id = stepRule.id
+            if let v = stepRule.fatalOnFailure {
+                stepFatalOnFailure[id] = v
+            } else if let override = overrides[id] {
+                stepFatalOnFailure[id] = override
+            } else {
+                stepFatalOnFailure[id] = fatalDefault.contains(id)
             }
         }
-        
-        // 加载版本配置（BOOTLOADER 默认为 2；固件版本从服务器拉取 OTA 列表，本地已有缓存则不重复拉取）
-        let bootloaderVersion = UserDefaults.standard.string(forKey: "production_test_bootloader_version").flatMap { $0.isEmpty ? nil : $0 } ?? "2"
-        let firmwareVersion = UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? ""
-        let hardwareVersion = UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? ""
-        
-        // 加载阈值配置
-        let thresholds = TestThresholds(
-            stepIntervalMs: UserDefaults.standard.object(forKey: "production_test_step_interval_ms") as? Int ?? 100,
-            bluetoothPermissionWaitSeconds: UserDefaults.standard.object(forKey: "production_test_bluetooth_permission_wait_seconds") as? Double ?? 0,
-            rtcPassThreshold: UserDefaults.standard.object(forKey: "production_test_rtc_pass_threshold") as? Double ?? 2.0,
-            rtcFailThreshold: UserDefaults.standard.object(forKey: "production_test_rtc_fail_threshold") as? Double ?? 5.0,
-            rtcWriteEnabled: UserDefaults.standard.object(forKey: "production_test_rtc_write_enabled") as? Bool ?? true,
-            rtcWriteRetryCount: UserDefaults.standard.object(forKey: "production_test_rtc_write_retry_count") as? Int ?? 3,
-            rtcReadTimeout: UserDefaults.standard.object(forKey: "production_test_rtc_read_timeout") as? Double ?? 2.0,
-            deviceInfoReadTimeout: UserDefaults.standard.object(forKey: "production_test_device_info_timeout") as? Double ?? 3.0,
-            otaStartWaitTimeout: UserDefaults.standard.object(forKey: "production_test_ota_start_timeout") as? Double ?? 5.0,
-            deviceReconnectTimeout: UserDefaults.standard.object(forKey: "production_test_reconnect_timeout") as? Double ?? 5.0,
-            valveOpenTimeout: UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 5.0,
-            disableDiagWaitSeconds: UserDefaults.standard.object(forKey: "production_test_disable_diag_wait_seconds") as? Double ?? 2.0,
-            disableDiagExpectedGasStatus: {
-                let v = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status")
-                // 兼容多值文本，例如 "0,1"
-                if let s = v as? String {
-                    if let first = s.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " }).first,
-                       let intVal = Int(first) {
-                        return max(0, min(9, intVal))
-                    }
-                    return 1
-                }
-                if let i = v as? Int { return max(0, min(9, i)) }
-                if let d = v as? Double { return max(0, min(9, Int(d))) }
-                return 1
-            }(),
-            disableDiagPollTimeoutSeconds: UserDefaults.standard.object(forKey: "production_test_disable_diag_poll_timeout_seconds") as? Double ?? 3.0,
-            disableDiagPollGasStatusEnabled: UserDefaults.standard.object(forKey: "production_test_disable_diag_poll_gas_status_enabled") as? Bool ?? true,
-            pressureClosedMin: UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1000,
-            pressureClosedMax: UserDefaults.standard.object(forKey: "production_test_pressure_closed_max") as? Double ?? 1350,
-            pressureOpenMin: UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1000,
-            pressureOpenMax: UserDefaults.standard.object(forKey: "production_test_pressure_open_max") as? Double ?? 1500,
-            pressureDiffCheckEnabled: UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? true,
-            pressureDiffMin: UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 0,
-            pressureDiffMax: UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400,
-            firmwareUpgradeEnabled: UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? true,
-            skipFactoryResetAndDisconnectOnFail: UserDefaults.standard.object(forKey: "production_test_skip_factory_reset_and_disconnect_on_fail") as? Bool ?? false,
-            pressureFailRetryConfirmEnabled: UserDefaults.standard.object(forKey: "production_test_pressure_fail_retry_confirm_enabled") as? Bool ?? true
-        )
-        
-        // 加载每步「失败时是否终止产测」配置；未配置的步骤沿用规则层静态默认（stepIdsFatalOnFailure）；旧 step1～step4 迁移为语义化 id
-        let rawFatal = UserDefaults.standard.dictionary(forKey: "production_test_steps_fatal_on_failure") as? [String: Bool] ?? [:]
-        let stepFatalOnFailure = Dictionary(uniqueKeysWithValues: rawFatal.map { (TestStep.migrateLegacyStepId($0.key), $0.value) })
 
         return (steps: steps, bootloaderVersion: bootloaderVersion, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion, thresholds: thresholds, stepFatalOnFailure: stepFatalOnFailure)
     }
@@ -1731,20 +1712,36 @@ struct ProductionTestView: View {
         return value
     }
     
-    /// 从 UserDefaults 加载产测气体泄漏步骤配置（keyPrefix 为 production_test_gas_leak_open 或 production_test_gas_leak_closed）
+    /// 从 ProductionRules(JSON) 加载产测气体泄漏步骤配置
     private func loadProductionGasLeakConfig(keyPrefix: String) -> ProductionGasLeakConfig {
-        let raw = UserDefaults.standard.string(forKey: "\(keyPrefix)_limit_source")
-        let limitSource = (raw == kGasLeakLimitSourcePhase3First ? kGasLeakLimitSourcePhase3First : kGasLeakLimitSourcePhase1Avg)
-        let rawFloor = UserDefaults.standard.object(forKey: "\(keyPrefix)_limit_floor_bar") as? Double ?? 0
+        let rules = productionRulesStore.rules
+        let useClosed = (keyPrefix.contains("closed"))
+        let targetId = useClosed ? TestStep.gasLeakClosed.id : TestStep.gasLeakOpen.id
+        guard let cfg = rules.steps.first(where: { $0.id == targetId })?.config else {
+            // 若 JSON 中缺失，退回默认 JSON 中的典型值
+            return ProductionGasLeakConfig(
+                preCloseDurationSeconds: 10,
+                postCloseDurationSeconds: 15,
+                intervalSeconds: 0.5,
+                dropThresholdMbar: 15,
+                startPressureMinMbar: 1300,
+                requirePipelineReadyConfirm: true,
+                requireValveClosedConfirm: true,
+                limitSource: kGasLeakLimitSourcePhase1Avg,
+                limitFloorBar: 0
+            )
+        }
+        let limitSource = cfg.limitSource == kGasLeakLimitSourcePhase3First ? kGasLeakLimitSourcePhase3First : kGasLeakLimitSourcePhase1Avg
+        let rawFloor = cfg.limitFloorBar ?? 0
         let limitFloorBar = max(0, rawFloor)
         return ProductionGasLeakConfig(
-            preCloseDurationSeconds: UserDefaults.standard.object(forKey: "\(keyPrefix)_pre_close_duration_seconds") as? Int ?? 10,
-            postCloseDurationSeconds: UserDefaults.standard.object(forKey: "\(keyPrefix)_post_close_duration_seconds") as? Int ?? 15,
-            intervalSeconds: UserDefaults.standard.object(forKey: "\(keyPrefix)_interval_seconds") as? Double ?? 0.5,
-            dropThresholdMbar: UserDefaults.standard.object(forKey: "\(keyPrefix)_drop_threshold_mbar") as? Double ?? 15,
-            startPressureMinMbar: UserDefaults.standard.object(forKey: "\(keyPrefix)_start_pressure_min_mbar") as? Double ?? 1300,
-            requirePipelineReadyConfirm: UserDefaults.standard.object(forKey: "\(keyPrefix)_require_pipeline_ready_confirm") as? Bool ?? true,
-            requireValveClosedConfirm: UserDefaults.standard.object(forKey: "\(keyPrefix)_require_valve_closed_confirm") as? Bool ?? true,
+            preCloseDurationSeconds: cfg.preCloseDurationSeconds ?? 10,
+            postCloseDurationSeconds: cfg.postCloseDurationSeconds ?? 15,
+            intervalSeconds: cfg.intervalSeconds ?? 0.5,
+            dropThresholdMbar: cfg.dropThresholdMbar ?? 15,
+            startPressureMinMbar: cfg.startPressureMinMbar ?? 1300,
+            requirePipelineReadyConfirm: cfg.requirePipelineReadyConfirm ?? true,
+            requireValveClosedConfirm: cfg.requireValveClosedConfirm ?? true,
             limitSource: limitSource,
             limitFloorBar: limitFloorBar
         )
@@ -1870,6 +1867,7 @@ struct ProductionTestView: View {
             let userActionStart = Date()
             var betweenElapsed: Double = 0
             var userConfirmed = false
+            var userResponded = false
             
             // 弹出确认弹窗（关阀确认）
             let confirmationTask = Task {
@@ -1883,9 +1881,11 @@ struct ProductionTestView: View {
                     }
                 }
                 userConfirmed = confirmed
+                userResponded = true
             }
             
-            while isRunning, ble.isConnected, ble.areCharacteristicsReady, !userConfirmed {
+            // Phase 2 采样：在用户尚未响应弹窗期间采样，用户一旦确认/取消就立即结束采样
+            while isRunning, ble.isConnected, ble.areCharacteristicsReady, !userResponded {
                 ble.readPressure(silent: true)
                 ble.readPressureOpen(silent: true)
                 ble.readValveState()
@@ -1911,7 +1911,9 @@ struct ProductionTestView: View {
             
             await confirmationTask.value
             guard userConfirmed else {
-                return (false, appLanguage.string("debug.gas_leak_stop_reason_valve_not_confirmed"))
+                let msg = appLanguage.string("debug.gas_leak_stop_reason_valve_not_confirmed")
+                self.log("\(stepLabel)：✗ \(msg)", level: .warning)
+                return (false, msg)
             }
             userActionDuration = Date().timeIntervalSince(userActionStart)
             let durationStr = String(format: "%.2f", userActionDuration)

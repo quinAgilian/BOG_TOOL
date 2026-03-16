@@ -8,7 +8,7 @@
 |--------------|------------|------|
 | 产测顺序     | **否**     | 步骤顺序仍由 `production_test_steps_order` 控制，逻辑与 key 未改。 |
 | 判定规则     | **否**     | 阈值、判定线下限、limit 基准等仍按原 key 存 bar/mbar，仅 UI 展示改为 mbar。 |
-| API 契约     | **否**     | 请求体结构与字段名、数值单位与 API_SPEC 一致，未新增/删除/改型。 |
+| API 契约     | **是（向后兼容扩展）**     | 为上传当前规则快照与按规则版本统计历史记录，新增可选字段 `rules` 及查询接口 `/api/production_rules/versions`，旧客户端不受影响。 |
 
 ---
 
@@ -60,7 +60,7 @@
 
 与 `server/API_SPEC.md` 及现有服务端一致：
 
-- **顶层**：`deviceSerialNumber`、`overallPassed`、`needRetest`、`startTime`、`endTime`、`durationSeconds`、`deviceName`、设备版本字段、`stepsSummary`、`stepResults`、`testDetails`。
+- **顶层**：`deviceSerialNumber`、`overallPassed`、`needRetest`、`startTime`、`endTime`、`durationSeconds`、`deviceName`、设备版本字段、`stepsSummary`、`stepResults`、`testDetails`，以及**新增的可选字段** `rules`（本次产测使用的完整规则 JSON 快照）。
 - **stepsSummary**：仍为 `stepIndex`、`stepName`、`stepId`、`status`；顺序与 enabledSteps 一致，未改。
 - **stepResults**：仍为 `{ [stepId: string]: string }`。仅 value 的**文案内容**由「x.xx bar」改为「xxx mbar」等，key 与类型未改；服务端按原样存并展示，契约不变。
 
@@ -80,7 +80,10 @@
 - 服务端：`testDetails` 仍为 `Optional[Dict[str, Any]]`，未改 schema。
 - Dashboard：仍按 `pressureClosedMbar`（mbar）、`pressureBar`（bar）、`gasLeakClosedLimitBar`（bar）等解析与展示；客户端上传单位未变，故**无影响**。
 
-**结论**：API 契约与现有服务端/Dashboard **不受**本次未提交变更影响；仅 stepResults 中的自然语言描述由 bar 改为 mbar，不涉及结构化字段或单位。
+**结论**：在保持原有字段与单位不变的前提下，API 契约新增了**向后兼容的扩展字段与只读查询接口**：
+
+- `POST /api/production-test` / `/api/production-test/batch`：新增可选字段 `rules`，用于上传当前规则快照（`ProductionRules` JSON），旧客户端不传该字段仍然兼容；
+- `GET /api/production_rules/versions`：新增只读查询接口，用于按规则版本维度查看历史使用情况。
 
 ---
 
