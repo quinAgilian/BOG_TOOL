@@ -794,6 +794,7 @@ struct ProductionTestView: View {
     }
     
     /// 用于 overlay 报表的判定项列表：(名称, 是否通过, 是否仅警告通过, 测试数据备注)。禁用的步骤也保留，标记为警告并注明「测试跳过」。
+    /// 注意：这里只组织展示用的数据结构，不改变任何真实判定逻辑。
     private var overallTestCriteria: [(name: String, ok: Bool, isWarning: Bool, detail: String?)] {
         let enabled = currentTestSteps.filter { $0.enabled }
         let skippedDetail = appLanguage.string("production_test.overlay_step_skipped")
@@ -3447,11 +3448,18 @@ struct ProductionTestView: View {
                 statusStr = "?"
                 stepLevel = .info
             }
-            let oneLine = result.replacingOccurrences(of: "\n", with: " ")
-            if oneLine.isEmpty {
-                self.log("  \(index + 1). \(title) \(statusStr)", level: stepLevel)
-            } else {
-                self.log("  \(index + 1). \(title) \(statusStr) \(oneLine)", level: stepLevel)
+            
+            let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            // 标题行：只展示步骤名称与结果符号
+            self.log("  \(index + 1). \(title) \(statusStr)", level: stepLevel)
+            // 详情行：按原有 result 中的换行拆分，每行单独输出并缩进，提升可读性
+            if !trimmed.isEmpty {
+                let lines = trimmed.components(separatedBy: .newlines)
+                for line in lines {
+                    let l = line.trimmingCharacters(in: .whitespaces)
+                    guard !l.isEmpty else { continue }
+                    self.log("       \(l)", level: stepLevel)
+                }
             }
         }
         self.log("──────────────────────────────", level: .info)
@@ -3460,7 +3468,7 @@ struct ProductionTestView: View {
     }
 }
 
-// MARK: - 产测结果 Overlay（极简报表：通过=绿，失败=红，仅警告通过=橙）
+// MARK: - 产测结果 Overlay（多行高可读性：失败行红色突出，其余中性/轻强调）
 private struct ProductionTestResultOverlay: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     let passed: Bool
@@ -3479,17 +3487,18 @@ private struct ProductionTestResultOverlay: View {
         return passed ? Color(red: 0.2, green: 0.45, blue: 0.78) : Color(red: 0.75, green: 0.28, blue: 0.28)
     }
     
-    private func rowColor(ok: Bool, isWarning: Bool) -> Color {
-        if !ok { return Color(red: 0.72, green: 0.3, blue: 0.3) }       // 红色（不深）
-        if isWarning { return Color(red: 0.85, green: 0.65, blue: 0.35) } // 浅橙（图标/勾）
-        return Color(red: 0.2, green: 0.45, blue: 0.78)               // 蓝色（通过）
+    /// 行标题图标/文字颜色：仅失败用红色，其余使用系统 label 颜色；警告用轻微橙色点缀
+    private func rowIconColor(ok: Bool, isWarning: Bool) -> Color {
+        if !ok { return Color(red: 0.78, green: 0.22, blue: 0.22) }       // 红色（失败）
+        if isWarning { return Color(red: 0.85, green: 0.55, blue: 0.20) } // 橙色（警告）
+        return Color(NSColor.secondaryLabelColor)                         // 中性（通过）
     }
     
-    /// 每行通过/失败/跳过的背景色：通过=蓝，失败=浅红，跳过=非常浅橙
+    /// 行背景色：失败用浅红底，其余用很淡的分隔背景
     private func rowBackgroundColor(ok: Bool, isWarning: Bool) -> Color {
-        if !ok { return Color(red: 0.96, green: 0.45, blue: 0.45) }     // 浅红
-        if isWarning { return Color(red: 1.0, green: 0.95, blue: 0.88) } // 非常浅橙
-        return Color(red: 0.35, green: 0.58, blue: 0.88)               // 蓝
+        if !ok { return Color(red: 0.99, green: 0.90, blue: 0.90) }       // 失败：浅红底
+        if isWarning { return Color(red: 1.0, green: 0.97, blue: 0.90) }  // 警告：浅橙底
+        return Color(NSColor.controlBackgroundColor)                      // 通过：中性背景
     }
     
     /// Close 按钮：通过=蓝，失败/需要重测=浅红
@@ -3524,16 +3533,16 @@ private struct ProductionTestResultOverlay: View {
                         ScrollView(.vertical, showsIndicators: true) {
                             VStack(alignment: .leading, spacing: 10) {
                                 ForEach(Array(criteria.enumerated()), id: \.offset) { _, item in
-                                    let color = rowColor(ok: item.ok, isWarning: item.isWarning)
+                                    let iconColor = rowIconColor(ok: item.ok, isWarning: item.isWarning)
                                     let bgColor = rowBackgroundColor(ok: item.ok, isWarning: item.isWarning)
                                     VStack(alignment: .leading, spacing: 4) {
                                         HStack(alignment: .center, spacing: 8) {
                                             Text(item.ok ? "✓" : "✗")
                                                 .font(.system(size: 13, weight: .medium))
-                                                .foregroundStyle(color)
+                                                .foregroundStyle(iconColor)
                                             Text(item.name)
                                                 .font(.subheadline)
-                                                .foregroundStyle(Color(NSColor.labelColor))
+                                                .foregroundStyle(item.ok ? Color(NSColor.labelColor) : Color(red: 0.78, green: 0.22, blue: 0.22))
                                             Spacer(minLength: 0)
                                         }
                                         if let detail = item.detail, !detail.isEmpty {

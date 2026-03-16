@@ -6,9 +6,9 @@
 
 | 维度         | 是否受影响 | 说明 |
 |--------------|------------|------|
-| 产测顺序     | **否**     | 步骤顺序仍由 `production_test_steps_order` 控制，逻辑与 key 未改。 |
-| 判定规则     | **否**     | 阈值、判定线下限、limit 基准等仍按原 key 存 bar/mbar，仅 UI 展示改为 mbar。 |
-| API 契约     | **是（向后兼容扩展）**     | 为上传当前规则快照与按规则版本统计历史记录，新增可选字段 `rules` 及查询接口 `/api/production_rules/versions`，旧客户端不受影响。 |
+| 产测顺序     | **是（实现规则 JSON 化）**     | 步骤顺序和启用状态现在统一来自 `ProductionRules`（JSON），不再依赖 `UserDefaults["production_test_steps_order"]` 作为规则来源；整体执行顺序与之前保持一致。 |
+| 判定规则     | **是（规则来源切换为 JSON）**  | 所有阈值、判定线下限、limit 基准等均由 `ProductionRules` 加载（bundle 内置 `rules/default_production_rules.json` + 应用时写出的 `current_production_rules.json`），不再从 UserDefaults 读取；具体数值含义与单位（bar/mbar）保持不变，仅规则的存储介质与加载入口变更。 |
+| API 契约     | **是（向后兼容扩展，已落地）** | 产测上传 payload 中新增可选字段 `rules`（本次产测使用的完整 `ProductionRules` JSON 快照），以及查询接口 `/api/production_rules/versions`，旧服务端与旧客户端在缺省 `rules` 字段时完全兼容。 |
 
 ---
 
@@ -16,16 +16,19 @@
 
 ### 1.1 存储与使用
 
-- **Key**：`UserDefaults["production_test_steps_order"]`，类型 `[String]`（stepId 数组）。
-- **读取**：`ProductionTestView` 与 `ProductionTestRulesView` 仍从该 key 加载顺序；未提交变更未修改该 key 及读写逻辑。
-- **写入**：规则页拖拽/上下移动后仍调用 `defaults.set(ids, forKey: "production_test_steps_order")`，未改。
+- **规则来源**：  
+  - 首次启动或尚未有用户自定义规则时，从 bundle 内置的 `rules/default_production_rules.json` 解析一份 `ProductionRules` 作为默认 SOP。  
+  - 规则页点击「Apply」后，会将当前 UI 状态转为 `ProductionRules`，经 `ProductionRulesStore` 持久化到应用支持目录下的 `BOG Tool/Rules/current_production_rules.json`，作为后续运行与下次启动时的规则来源。
+- **顺序与启用状态**：  
+  - 测试步骤顺序与启用状态均来自 `ProductionRules.steps` 中的 `order` 与 `enabled` 字段。  
+  - 规则页的拖拽排序与开关切换只会修改内存中的 `ProductionRules` 并在 Apply 时整体写回 JSON，不再通过 `UserDefaults` 分散存储。
 
 ### 1.2 执行顺序
 
-- 产测执行顺序仍由 `enabledSteps` 决定，其来源于上述 `production_test_steps_order` 与各步骤启用状态。
-- 未提交变更未改动 `TestStep` 枚举、stepId 字符串或顺序推导逻辑。
+- 产测执行顺序仍由 `enabledSteps` 决定，其来源于 `ProductionRules.steps` 中按 `order` 排序后筛选 `enabled == true` 的步骤。
+- `TestStep` 枚举与 stepId 字符串保持原有语义，执行顺序与之前逻辑对齐，仅数据来源从 UserDefaults 迁移为 JSON。
 
-**结论**：产测顺序**不受**本次未提交变更影响。
+**结论**：产测顺序的「业务语义」未变，但**规则存储与加载路径已经切换为基于 `ProductionRules` 的 JSON 配置**，从而实现规则的版本化与导入导出。
 
 ---
 
@@ -33,24 +36,24 @@
 
 ### 2.1 压力步骤（读取压力值）
 
-- **闭/开压力区间**：仍为 `pressureClosedMin/Max`、`pressureOpenMin/Max`（单位 mbar），存于 UserDefaults，key 未改。
-- **压差区间**：`pressureDiffMin/Max`（mbar），key 未改。
-- **逻辑**：仍用 `closedMbar`/`openMbar` 与上述阈值比较；仅日志与 stepResults 的**展示文案**由 bar 改为 mbar，判定公式与写入 payload 的数值未改。
+- **闭/开压力区间**：`pressureClosedMin/Max`、`pressureOpenMin/Max`（单位 mbar），现在来自 `ProductionRules` 中 `read_pressure` 步骤的 `config` 字段（对应 JSON 中的 `closed_min_mbar` 等），不再读写 UserDefaults。  
+- **压差区间**：`pressureDiffMin/Max`（mbar）同样来自 `ProductionRules` 的 JSON 配置。  
+- **逻辑**：仍用 `closedMbar`/`openMbar` 与上述阈值比较；仅界面与 stepResults 的**展示文案**使用 mbar 表述，判定公式与上传 payload 中的数值单位未改。
 
 ### 2.2 气体泄漏步骤
 
-- **Limit 基准**：仍为 `phase1_avg` / `phase3_first`，key 如 `production_test_gas_leak_closed_limit_source` 未改。
+- **Limit 基准**：仍为 `phase1_avg` / `phase3_first`，对应 `ProductionRules` 中气体泄漏步骤配置里的 `limit_source`。  
 - **判定线下限（limit floor）**：
-  - **存储**：仍为 **bar**，key 仍为 `production_test_gas_leak_open_limit_floor_bar`、`production_test_gas_leak_closed_limit_floor_bar`。
-  - **逻辑**：`effectiveLimitBar = max(computedLimitBar, config.limitFloorBar)` 等仍使用 bar；内部与 API 仍按 bar。
-  - **变更点**：仅规则页该行的 **展示与输入** 改为 mbar（Binding 的 get/set 做 mbar↔bar 换算），持久化与判定仍用 bar。
-- **压降阈值、起始压力下限**：仍为 mbar，key 与类型未改。
+  - **存储**：仍为 **bar**，现在来自 `ProductionRules` JSON 中的 `limit_floor_bar`。  
+  - **逻辑**：`effectiveLimitBar = max(computedLimitBar, config.limitFloorBar)` 等仍使用 bar；内部与 API 继续按 bar 处理。  
+  - **界面**：规则页该行的 **展示与输入** 仍以 mbar 呈现，通过 Binding 做 mbar↔bar 换算，底层持久化与判定仍使用 bar。
+- **压降阈值、起始压力下限**：为 mbar，统一存储在 `ProductionRules` 气体泄漏步骤的 `config` 中，业务含义与以前保持一致。
 
 ### 2.3 其他规则
 
-- 失败时是否跳过恢复出厂/断开、压力失败是否重试、Phase 4 开关等：仅 UI/文案/设计系统相关改动，规则 key 与默认值未改。
+- 失败时是否跳过恢复出厂/断开、压力失败是否重试、Phase 4 开关、Gas status 期望值集合等规则，现在都集中在 `ProductionRules` 结构及其 JSON 中；规则页的 UI 仅负责编辑这份结构，并在 Apply 时整体写回。  
 
-**结论**：判定规则**不受**本次未提交变更影响；仅「判定线下限」在界面上以 mbar 展示与编辑，底层仍按 bar 存储与参与计算。
+**结论**：各项判定规则的**业务逻辑与数值含义未变**，但其唯一来源已经切换为 `ProductionRules`（JSON），不再分散依赖 UserDefaults，便于版本管理与导入导出。
 
 ---
 
@@ -80,7 +83,7 @@
 - 服务端：`testDetails` 仍为 `Optional[Dict[str, Any]]`，未改 schema。
 - Dashboard：仍按 `pressureClosedMbar`（mbar）、`pressureBar`（bar）、`gasLeakClosedLimitBar`（bar）等解析与展示；客户端上传单位未变，故**无影响**。
 
-**结论**：在保持原有字段与单位不变的前提下，API 契约新增了**向后兼容的扩展字段与只读查询接口**：
+**结论**：在保持原有字段与单位不变的前提下，API 契约新增并已经实现了**向后兼容的扩展字段与只读查询接口**：
 
 - `POST /api/production-test` / `/api/production-test/batch`：新增可选字段 `rules`，用于上传当前规则快照（`ProductionRules` JSON），旧客户端不传该字段仍然兼容；
 - `GET /api/production_rules/versions`：新增只读查询接口，用于按规则版本维度查看历史使用情况。
@@ -101,5 +104,5 @@
 
 ## 5. 建议
 
-- 提交时在 commit message 中注明：**展示单位统一为 mbar，不改变 API、产测顺序与判定规则存储/逻辑**。
+- 未来若继续演进规则（例如引入多套 SOP、按产线或批次选择不同规则），应始终以 `ProductionRules` JSON 为真源，在此基础上扩展版本号与元数据，而不要再回退到 UserDefaults 零散 key。  
 - 若后续服务端或 Dashboard 需区分「stepResults 中为 bar 还是 mbar 文案」，可仅做展示层兼容，无需改客户端上报结构或单位。
