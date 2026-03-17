@@ -136,6 +136,7 @@ struct ProductionTestView: View {
     @State private var capturedGasLeakClosedThresholdMbar: Double?
     @State private var capturedGasLeakOpenLimitBar: Double?
     @State private var capturedGasLeakClosedLimitBar: Double?
+    @State private var capturedGasLeakClosedRefBar: Double?
     @State private var capturedGasLeakOpenLimitSource: String?
     @State private var capturedGasLeakClosedLimitSource: String?
     @State private var capturedGasLeakOpenPhase3FirstBar: Double?
@@ -480,6 +481,7 @@ struct ProductionTestView: View {
         capturedGasLeakClosedThresholdMbar = nil
         capturedGasLeakOpenLimitBar = nil
         capturedGasLeakClosedLimitBar = nil
+        capturedGasLeakClosedRefBar = nil
         capturedGasLeakOpenLimitSource = nil
         capturedGasLeakClosedLimitSource = nil
         capturedGasLeakOpenPhase3FirstBar = nil
@@ -494,6 +496,7 @@ struct ProductionTestView: View {
         capturedGasLeakClosedThresholdMbar = nil
         capturedGasLeakOpenLimitBar = nil
         capturedGasLeakClosedLimitBar = nil
+        capturedGasLeakClosedRefBar = nil
         capturedGasLeakOpenLimitSource = nil
         capturedGasLeakClosedLimitSource = nil
         capturedGasLeakOpenPhase3FirstBar = nil
@@ -1411,6 +1414,7 @@ struct ProductionTestView: View {
         if let v = capturedGasLeakClosedThresholdMbar { testDetails["gasLeakClosedThresholdMbar"] = roundTo3(v) }
         if let v = capturedGasLeakOpenLimitBar { testDetails["gasLeakOpenLimitBar"] = roundTo3(v) }
         if let v = capturedGasLeakClosedLimitBar { testDetails["gasLeakClosedLimitBar"] = roundTo3(v) }
+        if let v = capturedGasLeakClosedRefBar { testDetails["gasLeakClosedRefBar"] = roundTo3(v) }
         if let v = capturedGasLeakOpenLimitSource { testDetails["gasLeakOpenLimitSource"] = v }
         if let v = capturedGasLeakClosedLimitSource { testDetails["gasLeakClosedLimitSource"] = v }
         if let v = capturedGasLeakOpenPhase3FirstBar { testDetails["gasLeakOpenPhase3FirstBar"] = roundTo3(v) }
@@ -2057,6 +2061,7 @@ struct ProductionTestView: View {
             capturedGasLeakClosedLimitSource = config.limitSource
             capturedGasLeakClosedPhase3FirstBar = phase3First
             capturedGasLeakClosedUserActionSeconds = userActionDuration > 0 ? userActionDuration : nil
+            capturedGasLeakClosedRefBar = referenceBar
 
             var allSamples: [[String: Any]] = []
             for s in phase1Samples {
