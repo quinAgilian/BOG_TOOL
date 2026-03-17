@@ -25,58 +25,8 @@ struct DeviceListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            if let msg = connectionErrorMessage {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(msg)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Button(appLanguage.string("error.dismiss")) {
-                        ble.clearError()
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding(8)
-                .background(Color.orange.opacity(0.12))
-                .cornerRadius(8)
-            }
-            HStack {
-                Text(appLanguage.string("device_list.title"))
-                    .font(.headline)
-                Spacer()
-                Button(appLanguage.string("device_list.production_test_rules")) {
-                    showProductionTestRules = true
-                }
-                .buttonStyle(.bordered)
-                Button(appLanguage.string("device_list.gatt_protocol")) {
-                    showGattProtocol = true
-                }
-                .buttonStyle(.bordered)
-                if ble.isConnected {
-                    Text(ble.connectedDeviceName ?? appLanguage.string("device_list.connected"))
-                        .foregroundStyle(.green)
-                } else {
-                    Button(appLanguage.string("device_list.filter_rules")) {
-                        showFilterPopover = true
-                    }
-                    .buttonStyle(.bordered)
-                    .popover(isPresented: $showFilterPopover, arrowEdge: .bottom) {
-                        ScanFilterRuleView(ble: ble)
-                            .frame(width: 280)
-                            .padding()
-                    }
-                    if ble.isScanning {
-                        Button(appLanguage.string("device_list.stop_scan")) { ble.stopScan() }
-                            .buttonStyle(.bordered)
-                    } else {
-                        Button(appLanguage.string("device_list.scan")) { ble.startScan() }
-                            .buttonStyle(.borderedProminent)
-                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
-                    }
-                }
-            }
+            connectionErrorSection
+            headerSection
 
             if !ble.isConnected {
                 DeviceTableSection(ble: ble, selectedId: $selectedId, selectedMode: selectedMode)
@@ -85,7 +35,8 @@ struct DeviceListView: View {
         .padding(.horizontal, UIDesignSystem.Padding.lg)
         .padding(.vertical, UIDesignSystem.Padding.sm)
         .sheet(isPresented: $showProductionTestRules) {
-            ProductionTestRulesView(ble: ble, firmwareManager: firmwareManager)
+            ProductionTestRulesView(firmwareManager: firmwareManager)
+                .environmentObject(ble)
         }
         .sheet(isPresented: $showGattProtocol) {
             GattProtocolView()
@@ -104,6 +55,68 @@ struct DeviceListView: View {
             // 连接成功时，如果 UI 中未选中设备，自动选中连接的设备
             if connected, let deviceId = ble.selectedDeviceId, selectedId.isEmpty {
                 selectedId = [deviceId]
+            }
+        }
+    }
+
+    /// 顶部错误提示区域（包含在 Group 中以保持类型简单）
+    private var connectionErrorSection: some View {
+        Group {
+            if let msg = connectionErrorMessage {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button(appLanguage.string("error.dismiss")) {
+                        ble.clearError()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.12))
+                .cornerRadius(8)
+            }
+        }
+    }
+
+    /// 标题 + 过滤 / 扫描控制区域
+    private var headerSection: some View {
+        HStack {
+            Text(appLanguage.string("device_list.title"))
+                .font(.headline)
+            Spacer()
+            Button(appLanguage.string("device_list.production_test_rules")) {
+                showProductionTestRules = true
+            }
+            .buttonStyle(.bordered)
+            Button(appLanguage.string("device_list.gatt_protocol")) {
+                showGattProtocol = true
+            }
+            .buttonStyle(.bordered)
+            if ble.isConnected {
+                Text(ble.connectedDeviceName ?? appLanguage.string("device_list.connected"))
+                    .foregroundStyle(.green)
+            } else {
+                Button(appLanguage.string("device_list.filter_rules")) {
+                    showFilterPopover = true
+                }
+                .buttonStyle(.bordered)
+                .popover(isPresented: $showFilterPopover, arrowEdge: .bottom) {
+                    ScanFilterRuleView(ble: ble)
+                        .frame(width: 280)
+                        .padding()
+                }
+                if ble.isScanning {
+                    Button(appLanguage.string("device_list.stop_scan")) { ble.stopScan() }
+                        .buttonStyle(.bordered)
+                } else {
+                    Button(appLanguage.string("device_list.scan")) { ble.startScan() }
+                        .buttonStyle(.borderedProminent)
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
+                }
             }
         }
     }

@@ -565,3 +565,13 @@
 "firmware_manager.select_file" = "Select firmware file";
 "firmware_manager.debug_target" = "Target firmware (Debug OTA)";
 "firmware_manager.sop_version" = "Production test selects by SOP expected version";
+
+/* Common / shared */
+"common.apply" = "Apply";
+"common.reset_to_default" = "Reset";
+
+/* Production test rules toolbar */
+"production_test_rules.current_file_label" = "Current rules file: %@";
+"production_test_rules.current_file_dirty_suffix" = " (modified, not applied)";
+"production_test_rules.export_rules" = "Export JSON";
+"production_test_rules.import_rules" = "Import JSON";

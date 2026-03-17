@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		546474F72F67DF220015B05B /* ProductionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 546474F52F67DF220015B05B /* ProductionRules.swift */; };
+		546474F82F67DF220015B05B /* ProductionRules+Loading.swift in Sources */ = {isa = PBXBuildFile; fileRef = 546474F62F67DF220015B05B /* ProductionRules+Loading.swift */; };
+		546474FA2F685E990015B05B /* ProductionRulesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 546474F92F685E990015B05B /* ProductionRulesStore.swift */; };
 		A1000001 /* BOG_TOOLApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* BOG_TOOLApp.swift */; };
 		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* ContentView.swift */; };
 		A1000003 /* DebugModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003 /* DebugModeView.swift */; };
@@ -33,6 +36,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		546474F52F67DF220015B05B /* ProductionRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionRules.swift; sourceTree = "<group>"; };
+		546474F62F67DF220015B05B /* ProductionRules+Loading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProductionRules+Loading.swift"; sourceTree = "<group>"; };
+		546474F92F685E990015B05B /* ProductionRulesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionRulesStore.swift; sourceTree = "<group>"; };
 		A2000001 /* BOG_TOOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BOG_TOOLApp.swift; sourceTree = "<group>"; };
 		A2000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A2000003 /* DebugModeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugModeView.swift; sourceTree = "<group>"; };
@@ -84,6 +90,9 @@
 		A5000002 /* BOG_TOOL */ = {
 			isa = PBXGroup;
 			children = (
+				546474F92F685E990015B05B /* ProductionRulesStore.swift */,
+				546474F52F67DF220015B05B /* ProductionRules.swift */,
+				546474F62F67DF220015B05B /* ProductionRules+Loading.swift */,
 				A2000001 /* BOG_TOOLApp.swift */,
 				A2000017 /* AppLanguage.swift */,
 				A2000025 /* ServerSettings.swift */,
@@ -98,15 +107,6 @@
 				A2000012 /* BOG_TOOL.entitlements */,
 			);
 			path = BOG_TOOL;
-			sourceTree = "<group>";
-		};
-		A5000012 /* Networking */ = {
-			isa = PBXGroup;
-			children = (
-				A2000026 /* ServerModels.swift */,
-				A2000027 /* ServerClient.swift */,
-			);
-			path = Networking;
 			sourceTree = "<group>";
 		};
 		A5000003 /* Views */ = {
@@ -153,31 +153,16 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-/* End PBXGroup section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		A6000004 /* Version Script */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
+		A5000012 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				A2000026 /* ServerModels.swift */,
+				A2000027 /* ServerClient.swift */,
 			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${SRCROOT}/VERSION",
-				"${SRCROOT}/.git/HEAD",
-			);
-			name = "Version Script";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"${SRCROOT}/BOG_TOOL/Info.plist",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "set -e\nPLIST=\"${SRCROOT}/BOG_TOOL/Info.plist\"\nVERSION_FILE=\"${SRCROOT}/VERSION\"\nif [ -f \"$VERSION_FILE\" ]; then\n  VERSION=$(cat \"$VERSION_FILE\" | tr -d '\\n\\r ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')\n  [ -z \"$VERSION\" ] && VERSION=\"1.0.0\"\nelse\n  VERSION=\"1.0.0\"\nfi\nBUILD_NUM=$(git -C \"$SRCROOT\" rev-list --count HEAD 2>/dev/null || echo \"1\")\n/usr/libexec/PlistBuddy -c \"Set :CFBundleShortVersionString $VERSION\" \"$PLIST\"\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $BUILD_NUM\" \"$PLIST\"\necho \"BOG_TOOL: Version $VERSION (Build $BUILD_NUM)\"\n";
+			path = Networking;
+			sourceTree = "<group>";
 		};
-/* End PBXShellScriptBuildPhase section */
+/* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
 		A6000001 /* BOG_TOOL */ = {
@@ -245,6 +230,30 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		A6000004 /* Version Script */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${SRCROOT}/VERSION",
+				"${SRCROOT}/.git/HEAD",
+			);
+			name = "Version Script";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"${SRCROOT}/BOG_TOOL/Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nPLIST=\"${SRCROOT}/BOG_TOOL/Info.plist\"\nVERSION_FILE=\"${SRCROOT}/VERSION\"\nif [ -f \"$VERSION_FILE\" ]; then\n  VERSION=$(cat \"$VERSION_FILE\" | tr -d '\\n\\r ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')\n  [ -z \"$VERSION\" ] && VERSION=\"1.0.0\"\nelse\n  VERSION=\"1.0.0\"\nfi\nBUILD_NUM=$(git -C \"$SRCROOT\" rev-list --count HEAD 2>/dev/null || echo \"1\")\n/usr/libexec/PlistBuddy -c \"Set :CFBundleShortVersionString $VERSION\" \"$PLIST\"\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $BUILD_NUM\" \"$PLIST\"\necho \"BOG_TOOL: Version $VERSION (Build $BUILD_NUM)\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		A6000002 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -258,6 +267,8 @@
 				A1000019 /* OTASectionView.swift in Sources */,
 				A1000020 /* UUIDDebugView.swift in Sources */,
 				A1000005 /* ProductionTestView.swift in Sources */,
+				546474F72F67DF220015B05B /* ProductionRules.swift in Sources */,
+				546474F82F67DF220015B05B /* ProductionRules+Loading.swift in Sources */,
 				A1000021 /* ProductionTestRulesView.swift in Sources */,
 				A1000007 /* BLEManager.swift in Sources */,
 				A1000008 /* BLEDevice.swift in Sources */,
@@ -268,6 +279,7 @@
 				A1000023 /* FirmwareManager.swift in Sources */,
 				A1000024 /* FirmwareManagerView.swift in Sources */,
 				A1000025 /* ServerSettings.swift in Sources */,
+				546474FA2F685E990015B05B /* ProductionRulesStore.swift in Sources */,
 				A1000026 /* ServerModels.swift in Sources */,
 				A1000027 /* ServerClient.swift in Sources */,
 			);
@@ -423,8 +435,8 @@
 				DEVELOPMENT_TEAM = 38V6W364PW;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_RESOURCE_ACCESS_BLUETOOTH = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BOG_TOOL/Info.plist;
@@ -451,7 +463,10 @@
 		A9000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = "arm64 x86_64";
+				ARCHS = (
+					arm64,
+					x86_64,
+				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = BOG_TOOL/BOG_TOOL.entitlements;
@@ -465,8 +480,8 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_RESOURCE_ACCESS_BLUETOOTH = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BOG_TOOL/Info.plist;

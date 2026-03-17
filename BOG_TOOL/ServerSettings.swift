@@ -15,7 +15,8 @@ private enum ServerSettingsKeys {
 private enum ServerEnvironment: String, CaseIterable, Identifiable {
     case production
     case testing
-    case local
+    case local8000
+    case local8001
 
     var id: String { rawValue }
 
@@ -25,8 +26,10 @@ private enum ServerEnvironment: String, CaseIterable, Identifiable {
             return "Production (80)"
         case .testing:
             return "Testing (8081)"
-        case .local:
+        case .local8000:
             return "Local (localhost:8000)"
+        case .local8001:
+            return "Local (localhost:8001)"
         }
     }
 
@@ -36,8 +39,10 @@ private enum ServerEnvironment: String, CaseIterable, Identifiable {
             return "http://bog.generalquin.top"
         case .testing:
             return "http://bog.generalquin.top:8081"
-        case .local:
+        case .local8000:
             return "http://localhost:8000"
+        case .local8001:
+            return "http://localhost:8001"
         }
     }
 
@@ -98,7 +103,9 @@ final class ServerSettings: ObservableObject {
             } else if v.contains("8.129.99.18:8081") {
                 resolvedBaseURL = ServerEnvironment.testing.baseURL
             } else if v.contains("127.0.0.1:8000") {
-                resolvedBaseURL = ServerEnvironment.local.baseURL
+                resolvedBaseURL = ServerEnvironment.local8000.baseURL
+            } else if v.contains("127.0.0.1:8001") || v.contains("localhost:8001") {
+                resolvedBaseURL = ServerEnvironment.local8001.baseURL
             } else {
                 resolvedBaseURL = v.isEmpty ? ServerSettingsKeys.defaultBaseURL : v
             }
