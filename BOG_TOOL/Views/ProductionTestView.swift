@@ -2165,20 +2165,21 @@ struct ProductionTestView: View {
                 }
 
                 self.log("\(stepLabel)：Phase 4 开阀泄压采样完成，共 \(phase4Samples.count) 点", level: .info)
-                if !phase4DropAchieved {
-                    let failMsg = String(format: "Phase 4：在 %d s 内开阀压力未低于 %.0f mbar", dropWithin, belowMbar)
-                    self.log("\(stepLabel)：✗ \(failMsg)", level: .error)
-                    return (false, failMsg)
-                }
-                self.log("\(stepLabel)：✓ Phase 4 通过（开阀压力已在 \(dropWithin)s 内低于 \(String(format: "%.0f", belowMbar)) mbar）", level: .info)
 
-                // 将 Phase 4 采样并入上传的 raw data（Phase 1～4 一起上传）
+                // 将 Phase 4 采样并入上传的 raw data（Phase 1～4 一起上传），无论 Phase 4 判定成功与否
                 var closedSamples = capturedGasLeakClosedSamples ?? []
                 for s in phase4Samples {
                     let pressureBar = s.pressureOpen ?? s.pressureClosed ?? 0
                     closedSamples.append(sampleToDetailDict(s, phase: 4, pressureBar: pressureBar))
                 }
                 capturedGasLeakClosedSamples = closedSamples.isEmpty ? nil : closedSamples
+
+                if !phase4DropAchieved {
+                    let failMsg = String(format: "Phase 4：在 %d s 内开阀压力未低于 %.0f mbar", dropWithin, belowMbar)
+                    self.log("\(stepLabel)：✗ \(failMsg)", level: .error)
+                    return (false, failMsg)
+                }
+                self.log("\(stepLabel)：✓ Phase 4 通过（开阀压力已在 \(dropWithin)s 内低于 \(String(format: "%.0f", belowMbar)) mbar）", level: .info)
             }
         }
 
