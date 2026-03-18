@@ -10,6 +10,7 @@
 		546474F72F67DF220015B05B /* ProductionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 546474F52F67DF220015B05B /* ProductionRules.swift */; };
 		546474F82F67DF220015B05B /* ProductionRules+Loading.swift in Sources */ = {isa = PBXBuildFile; fileRef = 546474F62F67DF220015B05B /* ProductionRules+Loading.swift */; };
 		546474FA2F685E990015B05B /* ProductionRulesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 546474F92F685E990015B05B /* ProductionRulesStore.swift */; };
+		546475002F6A59710015B05B /* default_production_rules.json in Resources */ = {isa = PBXBuildFile; fileRef = 546474FF2F6A59710015B05B /* default_production_rules.json */; };
 		A1000001 /* BOG_TOOLApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* BOG_TOOLApp.swift */; };
 		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* ContentView.swift */; };
 		A1000003 /* DebugModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003 /* DebugModeView.swift */; };
@@ -39,6 +40,7 @@
 		546474F52F67DF220015B05B /* ProductionRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionRules.swift; sourceTree = "<group>"; };
 		546474F62F67DF220015B05B /* ProductionRules+Loading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProductionRules+Loading.swift"; sourceTree = "<group>"; };
 		546474F92F685E990015B05B /* ProductionRulesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionRulesStore.swift; sourceTree = "<group>"; };
+		546474FF2F6A59710015B05B /* default_production_rules.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = default_production_rules.json; sourceTree = "<group>"; };
 		A2000001 /* BOG_TOOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BOG_TOOLApp.swift; sourceTree = "<group>"; };
 		A2000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A2000003 /* DebugModeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugModeView.swift; sourceTree = "<group>"; };
@@ -90,6 +92,7 @@
 		A5000002 /* BOG_TOOL */ = {
 			isa = PBXGroup;
 			children = (
+				546474FF2F6A59710015B05B /* default_production_rules.json */,
 				546474F92F685E990015B05B /* ProductionRulesStore.swift */,
 				546474F52F67DF220015B05B /* ProductionRules.swift */,
 				546474F62F67DF220015B05B /* ProductionRules+Loading.swift */,
@@ -222,6 +225,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				546475002F6A59710015B05B /* default_production_rules.json in Resources */,
 				A1000010 /* Assets.xcassets in Resources */,
 				A1000014 /* GattServices.json in Resources */,
 				A1000015 /* Localizable.strings in Resources */,

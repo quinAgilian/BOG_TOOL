@@ -53,7 +53,7 @@ enum TestResultStatus {
 let kGasLeakLimitSourcePhase1Avg = "phase1_avg"
 let kGasLeakLimitSourcePhase3First = "phase3_first"
 
-/// 产测气体泄漏检测步骤的配置（从 UserDefaults 按 keyPrefix 加载）
+/// 产测气体泄漏检测步骤的配置（从 ProductionRules JSON 加载）
 struct ProductionGasLeakConfig {
     var preCloseDurationSeconds: Int
     var postCloseDurationSeconds: Int
@@ -66,6 +66,11 @@ struct ProductionGasLeakConfig {
     var limitSource: String
     /// 判定线不得低于该值（bar）；不论基准选哪个，有效 limit = max(计算出的 limit, limitFloorBar)，且 limitFloorBar 自身不得低于 0
     var limitFloorBar: Double
+    /// Phase 4 开关与判定参数（仅对关阀步骤生效；对开阀步骤忽略）
+    var phase4Enabled: Bool
+    var phase4MonitorDurationSeconds: Int
+    var phase4DropWithinSeconds: Int
+    var phase4PressureBelowMbar: Double
 }
 
 /// 产测模式：连接后执行 开→关→开，并在开前/开后/关后各读一次压力
@@ -1090,6 +1095,11 @@ struct ProductionTestView: View {
     private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds, stepFatalOnFailure: [String: Bool]) {
         let rules = productionRulesStore.rules
 
+        // 首次加载时在日志区打印当前规则来源与版本，便于排查默认配置是否生效
+        if testRules.enabledStepsCount == 0 {
+            ble.appendLog("[Rules] Using production rules version=\(rules.rulesVersion), steps=\(rules.steps.count) (source: bundled default_production_rules.json or last applied JSON)", level: .info)
+        }
+
         // 1. 构建步骤顺序与启用状态
         let baseSteps: [TestStep] = [
             .connectDevice,
@@ -1723,7 +1733,7 @@ struct ProductionTestView: View {
         let useClosed = (keyPrefix.contains("closed"))
         let targetId = useClosed ? TestStep.gasLeakClosed.id : TestStep.gasLeakOpen.id
         guard let cfg = rules.steps.first(where: { $0.id == targetId })?.config else {
-            // 若 JSON 中缺失，退回默认 JSON 中的典型值
+            // 若 JSON 中缺失，退回典型值（仅作为兜底，不建议依赖）
             return ProductionGasLeakConfig(
                 preCloseDurationSeconds: 10,
                 postCloseDurationSeconds: 15,
@@ -1733,7 +1743,11 @@ struct ProductionTestView: View {
                 requirePipelineReadyConfirm: true,
                 requireValveClosedConfirm: true,
                 limitSource: kGasLeakLimitSourcePhase1Avg,
-                limitFloorBar: 0
+                limitFloorBar: 0,
+                phase4Enabled: true,
+                phase4MonitorDurationSeconds: 15,
+                phase4DropWithinSeconds: 5,
+                phase4PressureBelowMbar: 100
             )
         }
         let limitSource = cfg.limitSource == kGasLeakLimitSourcePhase3First ? kGasLeakLimitSourcePhase3First : kGasLeakLimitSourcePhase1Avg
@@ -1748,7 +1762,11 @@ struct ProductionTestView: View {
             requirePipelineReadyConfirm: cfg.requirePipelineReadyConfirm ?? true,
             requireValveClosedConfirm: cfg.requireValveClosedConfirm ?? true,
             limitSource: limitSource,
-            limitFloorBar: limitFloorBar
+            limitFloorBar: limitFloorBar,
+            phase4Enabled: cfg.phase4Enabled ?? true,
+            phase4MonitorDurationSeconds: cfg.phase4MonitorDurationSeconds ?? 15,
+            phase4DropWithinSeconds: cfg.phase4DropWithinSeconds ?? 5,
+            phase4PressureBelowMbar: cfg.phase4PressureBelowMbar ?? 100
         )
     }
     
@@ -2106,14 +2124,15 @@ struct ProductionTestView: View {
 
         // 关阀压力步骤：可选 Phase 4 开阀泄压检测（Phase 3 与 Phase 4 均成功本步才成功）
         if stepId == TestStep.gasLeakClosed.id {
-            let phase4Enabled = UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_enabled") as? Bool ?? true
+            // Phase 4 相关参数统一从 ProductionRules（config）读取，不再依赖 UserDefaults
+            let phase4Enabled = config.phase4Enabled ?? true
             if !phase4Enabled {
                 self.log("\(stepLabel)：\(appLanguage.string("production_test.gas_leak_phase4_skipped"))", level: .info)
             }
             if phase4Enabled {
-                let monitorDur = max(0, UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_monitor_duration_seconds") as? Int ?? 15)
-                let dropWithin = max(0, UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_drop_within_seconds") as? Int ?? 5)
-                let belowMbar = max(0, UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_pressure_below_mbar") as? Double ?? 100)
+                let monitorDur = max(0, config.phase4MonitorDurationSeconds ?? 15)
+                let dropWithin = max(0, config.phase4DropWithinSeconds ?? 5)
+                let belowMbar = max(0, config.phase4PressureBelowMbar ?? 100)
                 self.log("\(stepLabel)：Phase 4 开阀泄压检测，监测 \(monitorDur)s，\(dropWithin)s 内开阀压力需低于 \(String(format: "%.0f", belowMbar)) mbar", level: .info)
 
                 let valveOk = await ensureValveState(open: true)
@@ -2148,7 +2167,10 @@ struct ProductionTestView: View {
                         if phase4Elapsed <= Double(dropWithin) && openMbar < belowMbar {
                             phase4DropAchieved = true
                             phase4Samples.append(point)
-                            self.log("\(stepLabel)：[Phase 4] t=\(String(format: "%.1f", phase4Elapsed))s 开阀压力 \(String(format: "%.0f", openMbar)) mbar < \(String(format: "%.0f", belowMbar)) mbar，达标，立即判定通过", level: .info)
+                            let tStr = String(format: "%.1f", phase4Elapsed)
+                            let openStrShort = String(format: "%.0f", openMbar)
+                            let belowStrShort = String(format: "%.0f", belowMbar)
+                            self.log("\(stepLabel)：[Phase 4] t=\(tStr)s 开阀压力 \(openStrShort) mbar < \(belowStrShort) mbar，达标，立即判定通过", level: .info)
                             break
                         }
                         phase4Samples.append(point)
@@ -2175,6 +2197,7 @@ struct ProductionTestView: View {
                 capturedGasLeakClosedSamples = closedSamples.isEmpty ? nil : closedSamples
 
                 if !phase4DropAchieved {
+                    // Phase 1～3 的通过结论已在前面以 info 级别日志单独记录，这里仅用 Phase 4 的失败原因作为步骤结果，方便在报表中直观区分
                     let failMsg = String(format: "Phase 4：在 %d s 内开阀压力未低于 %.0f mbar", dropWithin, belowMbar)
                     self.log("\(stepLabel)：✗ \(failMsg)", level: .error)
                     return (false, failMsg)
@@ -2183,7 +2206,7 @@ struct ProductionTestView: View {
             }
         }
 
-        let msg = stepId == TestStep.gasLeakClosed.id && (UserDefaults.standard.object(forKey: "production_test_gas_leak_closed_phase4_enabled") as? Bool ?? true)
+        let msg = stepId == TestStep.gasLeakClosed.id && (config.phase4Enabled ?? true)
             ? (msgPhase3 + appLanguage.string("production_test.gas_leak_phase4_passed"))
             : msgPhase3
         return (true, msg)

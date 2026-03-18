@@ -9,6 +9,7 @@ final class ProductionRulesStore: ObservableObject {
     init() {
         if let loaded = try? ProductionRulesLoader.loadBundledDefaultRules() {
             self.rules = loaded
+            NSLog("[Rules] Loaded bundled default_production_rules.json (version=%@, steps=%d)", loaded.rulesVersion, loaded.steps.count)
         } else {
             // 兜底：不会在正常发布中使用，只为防止文件缺失导致崩溃
             self.rules = ProductionRules(
