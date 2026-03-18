@@ -310,7 +310,7 @@
 "production_test_rules.step_disable_diag_title" = "Disable gas self-check (Disable diag)";
 "production_test_rules.step_disable_diag_desc" = "Write 12×0x00 to co2PressureLimits to disable gas self-check.";
 "production_test_rules.step_disable_diag_criteria" = "✓ Pass: 12×0x00 written, gas status = expected.";
-"production_test_rules.step_disable_diag_fail_timeout" = "Disable diag: gas status not %2$d within %1$@s";
+"production_test_rules.step_disable_diag_fail_timeout" = "Disable diag: gas status not %2$@ within %1$@";
 "production_test_rules.disable_diag_config_title" = "Disable diag (wait & poll)";
 "production_test_rules.disable_diag_wait_seconds" = "Wait after send";
 "production_test_rules.disable_diag_poll_gas_status_enabled" = "Poll gas status to expected";

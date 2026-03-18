@@ -150,6 +150,8 @@ struct ProductionTestView: View {
     @State private var capturedGasLeakClosedUserActionSeconds: Double?
     @State private var capturedGasLeakOpenSamples: [[String: Any]]?
     @State private var capturedGasLeakClosedSamples: [[String: Any]]?
+    /// 本轮产测是否真正执行过「气体泄漏检测（关阀压力）」步骤（不含被规则跳过的情况）
+    @State private var didRunGasLeakClosedStep: Bool = false
     
     /// 本次产测唯一 ID（用于本地记录文件名与跟踪）
     @State private var currentTestId: String?
@@ -173,6 +175,35 @@ struct ProductionTestView: View {
         } else {
             NSSound.beep()
         }
+    }
+
+    /// 清空所有气体泄漏相关的 captured 字段（开阀 / 关阀）
+    private func resetCapturedGasLeakValues() {
+        // Open
+        capturedGasLeakOpenDeltaMbar = nil
+        capturedGasLeakOpenDurationSeconds = nil
+        capturedGasLeakOpenPhase1AvgBar = nil
+        capturedGasLeakOpenThresholdMbar = nil
+        capturedGasLeakOpenLimitBar = nil
+        capturedGasLeakOpenLimitSource = nil
+        capturedGasLeakOpenPhase3FirstBar = nil
+        capturedGasLeakOpenUserActionSeconds = nil
+        capturedGasLeakOpenSamples = nil
+
+        // Closed
+        capturedGasLeakClosedDeltaMbar = nil
+        capturedGasLeakClosedDurationSeconds = nil
+        capturedGasLeakClosedPhase1AvgBar = nil
+        capturedGasLeakClosedThresholdMbar = nil
+        capturedGasLeakClosedLimitBar = nil
+        capturedGasLeakClosedRefBar = nil
+        capturedGasLeakClosedLimitSource = nil
+        capturedGasLeakClosedPhase3FirstBar = nil
+        capturedGasLeakClosedUserActionSeconds = nil
+        capturedGasLeakClosedSamples = nil
+
+        // 标志位
+        didRunGasLeakClosedStep = false
     }
     
     /// 按需从服务器拉取产线可见固件，并返回目标版本对应条目
@@ -476,25 +507,7 @@ struct ProductionTestView: View {
         capturedPressureOpenMbar = nil
         capturedGasSystemStatus = nil
         capturedValveState = nil
-        capturedGasLeakOpenDeltaMbar = nil
-        capturedGasLeakClosedDeltaMbar = nil
-        capturedGasLeakOpenDurationSeconds = nil
-        capturedGasLeakClosedDurationSeconds = nil
-        capturedGasLeakOpenPhase1AvgBar = nil
-        capturedGasLeakClosedPhase1AvgBar = nil
-        capturedGasLeakOpenThresholdMbar = nil
-        capturedGasLeakClosedThresholdMbar = nil
-        capturedGasLeakOpenLimitBar = nil
-        capturedGasLeakClosedLimitBar = nil
-        capturedGasLeakClosedRefBar = nil
-        capturedGasLeakOpenLimitSource = nil
-        capturedGasLeakClosedLimitSource = nil
-        capturedGasLeakOpenPhase3FirstBar = nil
-        capturedGasLeakClosedPhase3FirstBar = nil
-        capturedGasLeakOpenUserActionSeconds = nil
-        capturedGasLeakClosedUserActionSeconds = nil
-        capturedGasLeakOpenSamples = nil
-        capturedGasLeakClosedSamples = nil
+        resetCapturedGasLeakValues()
         capturedGasLeakOpenPhase1AvgBar = nil
         capturedGasLeakClosedPhase1AvgBar = nil
         capturedGasLeakOpenThresholdMbar = nil
@@ -1416,23 +1429,29 @@ struct ProductionTestView: View {
         if let v = capturedValveState { testDetails["valveState"] = v }
         if let v = capturedGasLeakOpenDeltaMbar { testDetails["gasLeakOpenDeltaMbar"] = roundTo3(v) }
         if let v = capturedGasLeakOpenDurationSeconds { testDetails["gasLeakOpenDurationSeconds"] = roundTo3(v) }
-        if let v = capturedGasLeakClosedDeltaMbar { testDetails["gasLeakClosedDeltaMbar"] = roundTo3(v) }
-        if let v = capturedGasLeakClosedDurationSeconds { testDetails["gasLeakClosedDurationSeconds"] = roundTo3(v) }
+        if didRunGasLeakClosedStep {
+            if let v = capturedGasLeakClosedDeltaMbar { testDetails["gasLeakClosedDeltaMbar"] = roundTo3(v) }
+            if let v = capturedGasLeakClosedDurationSeconds { testDetails["gasLeakClosedDurationSeconds"] = roundTo3(v) }
+        }
         if let v = capturedGasLeakOpenPhase1AvgBar { testDetails["gasLeakOpenPhase1AvgBar"] = roundTo3(v) }
-        if let v = capturedGasLeakClosedPhase1AvgBar { testDetails["gasLeakClosedPhase1AvgBar"] = roundTo3(v) }
+        if didRunGasLeakClosedStep {
+            if let v = capturedGasLeakClosedPhase1AvgBar { testDetails["gasLeakClosedPhase1AvgBar"] = roundTo3(v) }
+        }
         if let v = capturedGasLeakOpenThresholdMbar { testDetails["gasLeakOpenThresholdMbar"] = roundTo3(v) }
-        if let v = capturedGasLeakClosedThresholdMbar { testDetails["gasLeakClosedThresholdMbar"] = roundTo3(v) }
-        if let v = capturedGasLeakOpenLimitBar { testDetails["gasLeakOpenLimitBar"] = roundTo3(v) }
-        if let v = capturedGasLeakClosedLimitBar { testDetails["gasLeakClosedLimitBar"] = roundTo3(v) }
-        if let v = capturedGasLeakClosedRefBar { testDetails["gasLeakClosedRefBar"] = roundTo3(v) }
-        if let v = capturedGasLeakOpenLimitSource { testDetails["gasLeakOpenLimitSource"] = v }
-        if let v = capturedGasLeakClosedLimitSource { testDetails["gasLeakClosedLimitSource"] = v }
+        if didRunGasLeakClosedStep {
+            if let v = capturedGasLeakClosedThresholdMbar { testDetails["gasLeakClosedThresholdMbar"] = roundTo3(v) }
+            if let v = capturedGasLeakClosedLimitBar { testDetails["gasLeakClosedLimitBar"] = roundTo3(v) }
+            if let v = capturedGasLeakClosedRefBar { testDetails["gasLeakClosedRefBar"] = roundTo3(v) }
+            if let v = capturedGasLeakClosedLimitSource { testDetails["gasLeakClosedLimitSource"] = v }
+        }
         if let v = capturedGasLeakOpenPhase3FirstBar { testDetails["gasLeakOpenPhase3FirstBar"] = roundTo3(v) }
-        if let v = capturedGasLeakClosedPhase3FirstBar { testDetails["gasLeakClosedPhase3FirstBar"] = roundTo3(v) }
         if let v = capturedGasLeakOpenUserActionSeconds { testDetails["gasLeakOpenUserActionSeconds"] = roundTo3(v) }
-        if let v = capturedGasLeakClosedUserActionSeconds { testDetails["gasLeakClosedUserActionSeconds"] = roundTo3(v) }
         if let v = capturedGasLeakOpenSamples { testDetails["gasLeakOpenSamples"] = v }
-        if let v = capturedGasLeakClosedSamples { testDetails["gasLeakClosedSamples"] = v }
+        if didRunGasLeakClosedStep {
+            if let v = capturedGasLeakClosedPhase3FirstBar { testDetails["gasLeakClosedPhase3FirstBar"] = roundTo3(v) }
+            if let v = capturedGasLeakClosedUserActionSeconds { testDetails["gasLeakClosedUserActionSeconds"] = roundTo3(v) }
+            if let v = capturedGasLeakClosedSamples { testDetails["gasLeakClosedSamples"] = v }
+        }
         if !testDetails.isEmpty { body["testDetails"] = testDetails }
         return body
     }
@@ -2419,10 +2438,7 @@ struct ProductionTestView: View {
         capturedPressureOpenMbar = nil
         capturedGasSystemStatus = nil
         capturedValveState = nil
-        capturedGasLeakOpenDeltaMbar = nil
-        capturedGasLeakClosedDeltaMbar = nil
-        capturedGasLeakOpenDurationSeconds = nil
-        capturedGasLeakClosedDurationSeconds = nil
+        resetCapturedGasLeakValues()
         initializeStepStatuses()
         
         currentTestId = String(UUID().uuidString.prefix(8))
@@ -3239,6 +3255,7 @@ struct ProductionTestView: View {
                         let resultClosed = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_closed_title"), config: configClosed)
                         stepResults[step.id] = resultClosed.message
                         stepStatuses[step.id] = resultClosed.passed ? .passed : .failed
+                        didRunGasLeakClosedStep = true
                         if stepStatuses[step.id] == .failed, await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                     }
                     

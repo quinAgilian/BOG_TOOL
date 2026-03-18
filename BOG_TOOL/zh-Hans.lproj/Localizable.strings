@@ -310,7 +310,7 @@
 "production_test_rules.step_disable_diag_title" = "屏蔽系统气体自检（Disable diag）";
 "production_test_rules.step_disable_diag_desc" = "向 co2PressureLimits 写入 12 个 0x00 以屏蔽气体系统自检功能。";
 "production_test_rules.step_disable_diag_criteria" = "✓ 通过：已写入 12×0x00，Gas status 已为期望值。";
-"production_test_rules.step_disable_diag_fail_timeout" = "Disable diag: %1$@s 内 Gas status 未变为 %2$d";
+"production_test_rules.step_disable_diag_fail_timeout" = "Disable diag: %1$@ 内 Gas status 未变为 %2$@";
 "production_test_rules.disable_diag_config_title" = "Disable diag（发送后等待与轮询）";
 "production_test_rules.disable_diag_wait_seconds" = "发送后等待时间";
 "production_test_rules.disable_diag_poll_gas_status_enabled" = "轮询 Gas 状态直至期望值";
