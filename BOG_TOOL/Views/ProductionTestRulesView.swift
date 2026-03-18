@@ -101,6 +101,12 @@ struct ProductionTestRulesView: View {
     @State private var disableDiagPollTimeoutSeconds: Double = 3.0
     /// Disable diag 是否轮询 Gas status 直至期望值，默认开启
     @State private var disableDiagPollGasStatusEnabled: Bool = true
+    /// Disable diag 成功后是否执行阀门开/关检查并记录压力（仅观测）
+    @State private var disableDiagValveCheckEnabled: Bool = true
+    /// 阀门开/关命令后等待稳定的秒数（默认 0.5）
+    @State private var disableDiagValveCheckSettleSeconds: Double = 0.5
+    /// 触发读压后等待回读的秒数（默认 0.6）
+    @State private var disableDiagValveCheckPressureReadDelaySeconds: Double = 0.6
     /// 每个测试步骤之间的等待时间（SOP 定义，单位 ms）
     @State private var stepIntervalMs: Int = 100
     /// 连接设备步骤完成后、下一步前等待秒数（供用户处理系统蓝牙权限/配对弹窗，0=不等待）
@@ -179,6 +185,9 @@ struct ProductionTestRulesView: View {
         var disableDiagExpectedGasStatus: Int?
         var disableDiagPollTimeoutSeconds: Double?
         var disableDiagPollGasStatusEnabled: Bool?
+        var disableDiagValveCheckEnabled: Bool?
+        var disableDiagValveCheckSettleSeconds: Double?
+        var disableDiagValveCheckPressureReadDelaySeconds: Double?
         var stepIntervalMs: Int
         var bluetoothPermissionWaitSeconds: Double
         
@@ -544,6 +553,9 @@ struct ProductionTestRulesView: View {
                 config.expectedGasStatusValues = expectedValues.isEmpty ? [disableDiagExpectedGasStatus] : expectedValues
                 config.pollTimeoutSeconds = disableDiagPollTimeoutSeconds
                 config.pollEnabled = disableDiagPollGasStatusEnabled
+                config.valveCheckEnabled = disableDiagValveCheckEnabled
+                config.valveCheckSettleSeconds = disableDiagValveCheckSettleSeconds
+                config.valveCheckPressureReadDelaySeconds = disableDiagValveCheckPressureReadDelaySeconds
                 
             case TestStep.gasLeakClosed.id:
                 config.preCloseDurationSeconds = gasLeakClosedPreCloseDurationSeconds
@@ -732,6 +744,9 @@ struct ProductionTestRulesView: View {
                 }
                 if let v = cfg.pollTimeoutSeconds { disableDiagPollTimeoutSeconds = v }
                 if let v = cfg.pollEnabled { disableDiagPollGasStatusEnabled = v }
+                if let v = cfg.valveCheckEnabled { disableDiagValveCheckEnabled = v }
+                if let v = cfg.valveCheckSettleSeconds { disableDiagValveCheckSettleSeconds = v }
+                if let v = cfg.valveCheckPressureReadDelaySeconds { disableDiagValveCheckPressureReadDelaySeconds = v }
             case TestStep.gasLeakClosed.id:
                 if let v = cfg.preCloseDurationSeconds { gasLeakClosedPreCloseDurationSeconds = v }
                 if let v = cfg.postCloseDurationSeconds { gasLeakClosedPostCloseDurationSeconds = v }
@@ -806,6 +821,9 @@ struct ProductionTestRulesView: View {
             disableDiagExpectedGasStatus: disableDiagExpectedGasStatus,
             disableDiagPollTimeoutSeconds: disableDiagPollTimeoutSeconds,
             disableDiagPollGasStatusEnabled: disableDiagPollGasStatusEnabled,
+            disableDiagValveCheckEnabled: disableDiagValveCheckEnabled,
+            disableDiagValveCheckSettleSeconds: disableDiagValveCheckSettleSeconds,
+            disableDiagValveCheckPressureReadDelaySeconds: disableDiagValveCheckPressureReadDelaySeconds,
             stepIntervalMs: stepIntervalMs,
             bluetoothPermissionWaitSeconds: bluetoothPermissionWaitSeconds,
             pressureClosedMin: pressureClosedMin,
@@ -867,6 +885,9 @@ struct ProductionTestRulesView: View {
         disableDiagExpectedGasStatusText = String(disableDiagExpectedGasStatus)
         disableDiagPollTimeoutSeconds = snapshot.disableDiagPollTimeoutSeconds ?? 3.0
         disableDiagPollGasStatusEnabled = snapshot.disableDiagPollGasStatusEnabled ?? true
+        disableDiagValveCheckEnabled = snapshot.disableDiagValveCheckEnabled ?? true
+        disableDiagValveCheckSettleSeconds = snapshot.disableDiagValveCheckSettleSeconds ?? 0.5
+        disableDiagValveCheckPressureReadDelaySeconds = snapshot.disableDiagValveCheckPressureReadDelaySeconds ?? 0.6
         stepIntervalMs = snapshot.stepIntervalMs
         bluetoothPermissionWaitSeconds = snapshot.bluetoothPermissionWaitSeconds
 
@@ -1025,7 +1046,7 @@ struct ProductionTestRulesView: View {
         .clipShape(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.md, style: .continuous))
     }
     
-    
+    /// 通用数值阈值输入（保留 1 位小数）
     private func thresholdRow(label: String, value: Binding<Double>, unit: String, key: String) -> some View {
         HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
             Text(label)
@@ -1036,6 +1057,31 @@ struct ProductionTestRulesView: View {
                 .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
             
             TextField("", value: value, format: .number.precision(.fractionLength(1)))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
+                .onChange(of: value.wrappedValue) { _ in
+                    hasUnsavedChanges = true
+                }
+            
+            Text(unit)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            
+            Spacer()
+        }
+    }
+    
+    /// 时间/间隔类阈值输入（保留 2 位小数），当前仅用于 gas leak 的 interval_seconds
+    private func timeThresholdRow(label: String, value: Binding<Double>, unit: String, key: String) -> some View {
+        HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+            Text(label)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+            
+            TextField("", value: value, format: .number.precision(.fractionLength(2)))
                 .textFieldStyle(.roundedBorder)
                 .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
                 .onChange(of: value.wrappedValue) { _ in
@@ -1919,6 +1965,9 @@ struct ProductionTestRulesView: View {
                 unit: appLanguage.string("production_test_rules.unit_seconds"),
                 key: "production_test_disable_diag_wait_seconds"
             )
+            
+            Divider()
+                .padding(.vertical, 4)
             HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
                 Text(appLanguage.string("production_test_rules.disable_diag_expected_gas_status"))
                     .font(UIDesignSystem.Typography.body)
@@ -1951,6 +2000,40 @@ struct ProductionTestRulesView: View {
                 unit: appLanguage.string("production_test_rules.unit_seconds"),
                 key: "production_test_disable_diag_poll_timeout_seconds"
             )
+            
+            Divider()
+                .padding(.vertical, 4)
+            
+            // Disable diag 后阀门检查（可开关，时间可调）：放在 wait & poll 完成之后，符合实际执行顺序
+            HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                Text(appLanguage.string("production_test_rules.disable_diag_valve_check_enabled"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(UIDesignSystem.Foreground.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Toggle("", isOn: $disableDiagValveCheckEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .onChange(of: disableDiagValveCheckEnabled) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "production_test_disable_diag_valve_check_enabled")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+            }
+            if disableDiagValveCheckEnabled {
+                timeThresholdRow(
+                    label: appLanguage.string("production_test_rules.disable_diag_valve_check_settle_seconds"),
+                    value: $disableDiagValveCheckSettleSeconds,
+                    unit: appLanguage.string("production_test_rules.unit_seconds"),
+                    key: "production_test_disable_diag_valve_check_settle_seconds"
+                )
+                .padding(.leading, 32)
+                timeThresholdRow(
+                    label: appLanguage.string("production_test_rules.disable_diag_valve_check_pressure_read_delay_seconds"),
+                    value: $disableDiagValveCheckPressureReadDelaySeconds,
+                    unit: appLanguage.string("production_test_rules.unit_seconds"),
+                    key: "production_test_disable_diag_valve_check_pressure_read_delay_seconds"
+                )
+                .padding(.leading, 32)
+            }
         }
         .padding(UIDesignSystem.Padding.md)
     }
@@ -2098,7 +2181,8 @@ struct ProductionTestRulesView: View {
                 Divider().padding(.vertical, 4)
                 thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_pre_close_duration"), value: preCloseDuration, key: "\(keyPrefix)_pre_close_duration_seconds")
                 thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_post_close_duration"), value: postCloseDuration, key: "\(keyPrefix)_post_close_duration_seconds")
-                thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_interval"), value: intervalSeconds, unit: appLanguage.string("production_test_rules.unit_seconds"), key: "\(keyPrefix)_interval_seconds")
+                // 采样间隔允许两位小数（例如 0.75）
+                timeThresholdRow(label: appLanguage.string("production_test_rules.gas_leak_interval"), value: intervalSeconds, unit: appLanguage.string("production_test_rules.unit_seconds"), key: "\(keyPrefix)_interval_seconds")
                 thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_drop_threshold_mbar"), value: dropThresholdMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_drop_threshold_mbar")
                 thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_start_pressure_min"), value: startPressureMinMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_start_pressure_min_mbar")
                 HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {

@@ -20,7 +20,12 @@
         "step_verify_firmware"
       ],
       "overrides" : {
-
+        "step_disable_diag" : true,
+        "step_gas_leak_closed" : true,
+        "step_gas_system_status" : true,
+        "step_read_pressure" : true,
+        "step_read_rtc" : true,
+        "step_valve" : true
       }
     },
     "skip_factory_reset_and_disconnect_on_fail" : true,
@@ -70,20 +75,25 @@
         "write_retry_count" : 3
       },
       "enabled" : true,
+      "fatal_on_failure" : true,
       "id" : "step_read_rtc",
       "order" : 3
     },
     {
       "config" : {
-        "expected_gas_status_values" : [
-          1,
-          2
-        ],
         "poll_enabled" : true,
+        "wait_seconds" : 2,
+        "expected_gas_status_values" : [
+          0,
+          1
+        ],
         "poll_timeout_seconds" : 3,
-        "wait_seconds" : 2
+        "valve_check_enabled" : true,
+        "valve_check_settle_seconds" : 0.5,
+        "valve_check_pressure_read_delay_seconds" : 0.6
       },
       "enabled" : true,
+      "fatal_on_failure" : true,
       "id" : "step_disable_diag",
       "order" : 4
     },
@@ -99,6 +109,7 @@
         "open_min_mbar" : 850
       },
       "enabled" : true,
+      "fatal_on_failure" : true,
       "id" : "step_read_pressure",
       "order" : 5
     },
@@ -107,6 +118,7 @@
 
       },
       "enabled" : true,
+      "fatal_on_failure" : true,
       "id" : "step_gas_system_status",
       "order" : 6
     },
@@ -116,18 +128,19 @@
         "interval_seconds" : 0.5,
         "limit_floor_bar" : 0,
         "limit_source" : "phase1_avg",
-        "phase4_drop_within_seconds" : 5,
+        "phase4_drop_within_seconds" : 15,
         "phase4_enabled" : true,
-        "phase4_monitor_duration_seconds" : 15,
+        "phase4_monitor_duration_seconds" : 20,
         "phase4_pressure_below_mbar" : 100,
         "post_close_duration_seconds" : 15,
         "pre_close_duration_seconds" : 10,
-        "require_pipeline_ready_confirm" : true,
+        "require_pipeline_ready_confirm" : false,
         "require_valve_closed_confirm" : true,
         "skip_closed_when_open_passes" : false,
         "start_pressure_min_mbar" : 850
       },
       "enabled" : true,
+      "fatal_on_failure" : true,
       "id" : "step_gas_leak_closed",
       "order" : 7
     },
@@ -136,6 +149,7 @@
         "open_timeout_seconds" : 5
       },
       "enabled" : true,
+      "fatal_on_failure" : true,
       "id" : "step_valve",
       "order" : 8
     },

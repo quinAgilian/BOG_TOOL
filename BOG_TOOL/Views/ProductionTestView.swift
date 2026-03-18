@@ -1727,6 +1727,61 @@ struct ProductionTestView: View {
         return value
     }
     
+    /// Disable diag 步骤专用：禁用自检后执行阀门开/关检查，并各自读取压力供观察；任何一次确认失败则返回 false
+    private func runDisableDiagValveCheck(settleSeconds: Double, pressureReadDelaySeconds: Double) async -> Bool {
+        // 前置状态检查
+        guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
+            log("Disable diag: 连接或 GATT 状态异常，无法执行阀门检查", level: .error)
+            return false
+        }
+        
+        // 1. 打开阀门并确认
+        log("Disable diag: 打开阀门以检查气路...", level: .info)
+        ble.setValve(open: true)
+        try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
+        let valveStateAfterOpen = ble.lastValveStateValue
+        if valveStateAfterOpen == "open" {
+            log("Disable diag: 阀门已打开 (state=open)", level: .info)
+        } else {
+            log("Disable diag: 阀门打开后状态异常 (当前: \(valveStateAfterOpen))", level: .error)
+            return false
+        }
+        // 打开后读取一次压力（仅记录，不参与判定）
+        try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
+        ble.readPressure(silent: true)
+        ble.readPressureOpen(silent: true)
+        try? await Task.sleep(nanoseconds: UInt64(max(0, pressureReadDelaySeconds) * 1_000_000_000))
+        let openClosedBar = Self.parseBarFromPressureString(ble.lastPressureValue)
+        let openOpenBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+        let openClosedStr = openClosedBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+        let openOpenStr = openOpenBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+        log("Disable diag: 打开阀门后压力（关阀通道=\(openClosedStr)，开阀通道=\(openOpenStr)）[仅供观察，不参与判定]", level: .info)
+        
+        // 2. 关闭阀门并确认
+        log("Disable diag: 关闭阀门以检查气路...", level: .info)
+        ble.setValve(open: false)
+        try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
+        let valveStateAfterClose = ble.lastValveStateValue
+        if valveStateAfterClose == "closed" {
+            log("Disable diag: 阀门已关闭 (state=closed)", level: .info)
+        } else {
+            log("Disable diag: 阀门关闭后状态异常 (当前: \(valveStateAfterClose))", level: .error)
+            return false
+        }
+        // 关闭后再读取一次压力（同样仅记录）
+        try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
+        ble.readPressure(silent: true)
+        ble.readPressureOpen(silent: true)
+        try? await Task.sleep(nanoseconds: UInt64(max(0, pressureReadDelaySeconds) * 1_000_000_000))
+        let closeClosedBar = Self.parseBarFromPressureString(ble.lastPressureValue)
+        let closeOpenBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+        let closeClosedStr = closeClosedBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+        let closeOpenStr = closeOpenBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+        log("Disable diag: 关闭阀门后压力（关阀通道=\(closeClosedStr)，开阀通道=\(closeOpenStr)）[仅供观察，不参与判定]", level: .info)
+        
+        return true
+    }
+    
     /// 从 ProductionRules(JSON) 加载产测气体泄漏步骤配置
     private func loadProductionGasLeakConfig(keyPrefix: String) -> ProductionGasLeakConfig {
         let rules = productionRulesStore.rules
@@ -1850,8 +1905,18 @@ struct ProductionTestView: View {
             ble.readValveState()
             ble.readGasSystemStatus(silent: true)
             try? await Task.sleep(nanoseconds: afterReadWaitNs)
-            let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
-            let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+            var closeStr = ble.lastPressureValue
+            var openStr = ble.lastPressureOpenValue
+            // 遇到错误或0值时快速重读一次
+            if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
+                ble.readPressure(silent: true)
+                ble.readPressureOpen(silent: true)
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                closeStr = ble.lastPressureValue
+                openStr = ble.lastPressureOpenValue
+            }
+            let closeBar = Self.parseBarFromPressureString(closeStr)
+            let openBar = Self.parseBarFromPressureString(openStr)
             let valveStr = ble.lastValveStateValue
             let gasStr = ble.lastGasSystemStatusValue
             if closeBar != nil || openBar != nil {
@@ -1914,8 +1979,17 @@ struct ProductionTestView: View {
                 ble.readValveState()
                 ble.readGasSystemStatus(silent: true)
                 try? await Task.sleep(nanoseconds: afterReadWaitNs)
-                let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
-                let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+                var closeStr = ble.lastPressureValue
+                var openStr = ble.lastPressureOpenValue
+                if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
+                    ble.readPressure(silent: true)
+                    ble.readPressureOpen(silent: true)
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    closeStr = ble.lastPressureValue
+                    openStr = ble.lastPressureOpenValue
+                }
+                let closeBar = Self.parseBarFromPressureString(closeStr)
+                let openBar = Self.parseBarFromPressureString(openStr)
                 let valveStr = ble.lastValveStateValue
                 let gasStr = ble.lastGasSystemStatusValue
                 let t = Double(preDur) + betweenElapsed
@@ -1955,8 +2029,17 @@ struct ProductionTestView: View {
             ble.readValveState()
             ble.readGasSystemStatus(silent: true)
             try? await Task.sleep(nanoseconds: afterReadWaitNs)
-            let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
-            let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+            var closeStr = ble.lastPressureValue
+            var openStr = ble.lastPressureOpenValue
+            if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
+                ble.readPressure(silent: true)
+                ble.readPressureOpen(silent: true)
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                closeStr = ble.lastPressureValue
+                openStr = ble.lastPressureOpenValue
+            }
+            let closeBar = Self.parseBarFromPressureString(closeStr)
+            let openBar = Self.parseBarFromPressureString(openStr)
             let valveStr = ble.lastValveStateValue
             let gasStr = ble.lastGasSystemStatusValue
             let t = Double(preDur) + userActionDuration + phaseElapsed
@@ -2157,8 +2240,17 @@ struct ProductionTestView: View {
                     ble.readValveState()
                     ble.readGasSystemStatus(silent: true)
                     try? await Task.sleep(nanoseconds: afterReadWaitNs)
-                    let closeBar = Self.parseBarFromPressureString(ble.lastPressureValue)
-                    let openBar = Self.parseBarFromPressureString(ble.lastPressureOpenValue)
+                    var closeStr = ble.lastPressureValue
+                    var openStr = ble.lastPressureOpenValue
+                    if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
+                        ble.readPressure(silent: true)
+                        ble.readPressureOpen(silent: true)
+                        try? await Task.sleep(nanoseconds: 200_000_000)
+                        closeStr = ble.lastPressureValue
+                        openStr = ble.lastPressureOpenValue
+                    }
+                    let closeBar = Self.parseBarFromPressureString(closeStr)
+                    let openBar = Self.parseBarFromPressureString(openStr)
                     let valveStr = ble.lastValveStateValue
                     let gasStr = ble.lastGasSystemStatusValue
                     if openBar != nil || closeBar != nil {
@@ -2786,6 +2878,9 @@ struct ProductionTestView: View {
                         let pressureOpenMin = rules.thresholds.pressureOpenMin
                         let pressureOpenMax = rules.thresholds.pressureOpenMax
                         
+                        var openZeroTwice = false
+                        var closedZeroTwice = false
+                        
                         // 1. 打开阀门并确保打开成功
                         self.log("打开阀门...", level: .info)
                         ble.setValve(open: true)
@@ -2801,7 +2896,7 @@ struct ProductionTestView: View {
                         self.log("读取开启状态压力...", level: .info)
                         ble.clearLastPressureOpenValue()
                         ble.readPressureOpen()
-                        let openPressureStr = await waitForPressureValue(
+                        var openPressureStr = await waitForPressureValue(
                             getValue: { ble.lastPressureOpenValue },
                             timeoutSeconds: 2.5,
                             pollIntervalMs: 100,
@@ -2811,6 +2906,24 @@ struct ProductionTestView: View {
                             self.log(appLanguage.string("production_test.pressure_read_timeout_open"), level: .warning)
                         } else {
                             self.log("开启压力: \(openPressureStr)", level: .info)
+                        }
+                        // 若为错误或0值，快速重读一次；若两次均为 0，则记录标记
+                        let firstOpenIsZero = (openPressureStr == "0 mbar")
+                        if openPressureStr.hasPrefix("Error") || firstOpenIsZero {
+                            self.log("检测到开阀压力异常(\(openPressureStr))，快速重读一次", level: .warning)
+                            ble.clearLastPressureOpenValue()
+                            ble.readPressureOpen()
+                            openPressureStr = await waitForPressureValue(
+                                getValue: { ble.lastPressureOpenValue },
+                                timeoutSeconds: 0.3,
+                                pollIntervalMs: 50,
+                                label: "开阀压力[重读]"
+                            )
+                            self.log("开阀压力[重读]结果: \(openPressureStr)", level: .info)
+                            if firstOpenIsZero && openPressureStr == "0 mbar" {
+                                openZeroTwice = true
+                                self.log("开阀压力连续两次读取为 0 mbar", level: .error)
+                            }
                         }
                         openPressureValue = Self.parseBarFromPressureString(openPressureStr)
                         
@@ -2828,7 +2941,7 @@ struct ProductionTestView: View {
                         self.log("读取关闭状态压力...", level: .info)
                         ble.clearLastPressureValue()
                         ble.readPressure()
-                        let closedPressureStr = await waitForPressureValue(
+                        var closedPressureStr = await waitForPressureValue(
                             getValue: { ble.lastPressureValue },
                             timeoutSeconds: 2.5,
                             pollIntervalMs: 100,
@@ -2838,6 +2951,24 @@ struct ProductionTestView: View {
                             self.log(appLanguage.string("production_test.pressure_read_timeout_closed"), level: .warning)
                         } else {
                             self.log("关闭压力: \(closedPressureStr)", level: .info)
+                        }
+                        // 若为错误或0值，快速重读一次；若两次均为 0，则记录标记
+                        let firstClosedIsZero = (closedPressureStr == "0 mbar")
+                        if closedPressureStr.hasPrefix("Error") || firstClosedIsZero {
+                            self.log("检测到关阀压力异常(\(closedPressureStr))，快速重读一次", level: .warning)
+                            ble.clearLastPressureValue()
+                            ble.readPressure()
+                            closedPressureStr = await waitForPressureValue(
+                                getValue: { ble.lastPressureValue },
+                                timeoutSeconds: 0.3,
+                                pollIntervalMs: 50,
+                                label: "关阀压力[重读]"
+                            )
+                            self.log("关阀压力[重读]结果: \(closedPressureStr)", level: .info)
+                            if firstClosedIsZero && closedPressureStr == "0 mbar" {
+                                closedZeroTwice = true
+                                self.log("关阀压力连续两次读取为 0 mbar", level: .error)
+                            }
                         }
                         closedPressureValue = Self.parseBarFromPressureString(closedPressureStr)
                         
@@ -2904,7 +3035,16 @@ struct ProductionTestView: View {
                             }
                         }
                         
-                        stepResults[step.id] = pressureMessages.joined(separator: " ") + " " + appLanguage.string("production_test.pressure_criteria_hint")
+                        // 若出现连续两次 0 mbar 的情况，强制视为失败并在结果中追加说明，后续弹窗由通用重测逻辑处理
+                        if openZeroTwice || closedZeroTwice {
+                            pressurePassed = false
+                            let zeroTwiceMsg = appLanguage.string("production_test.pressure_zero_twice_hint")
+                            pressureMessages.append(zeroTwiceMsg)
+                        }
+                        
+                        // 将各条压力结论用换行拼接，提升报表可读性
+                        let pressureSummary = pressureMessages.joined(separator: "\n")
+                        stepResults[step.id] = pressureSummary + "\n" + appLanguage.string("production_test.pressure_criteria_hint")
                         stepStatuses[step.id] = pressurePassed ? .passed : .failed
                         if pressurePassed {
                             recordStepOutcome(stepId: step.id, outcome: "passed")
@@ -2936,6 +3076,10 @@ struct ProductionTestView: View {
                     
                 case "step_disable_diag": // 屏蔽系统气体自检：写入 12×0x00 后等待可配置秒数，再轮询 Gas status 直至等于 SOP 配置的期望值或超时
                     self.log("步骤: 屏蔽气体自检（Disable diag）", level: .info)
+                    let disableDiagCfg = productionRulesStore.rules.steps.first(where: { $0.id == TestStep.disableDiag.id })?.config
+                    let valveCheckEnabled = disableDiagCfg?.valveCheckEnabled ?? true
+                    let valveCheckSettleSeconds = max(0, disableDiagCfg?.valveCheckSettleSeconds ?? 0.5)
+                    let valveCheckPressureReadDelaySeconds = max(0, disableDiagCfg?.valveCheckPressureReadDelaySeconds ?? 0.6)
                     // 从 UserDefaults 读取期望的 Gas status 集合（支持单值或多值，如 "0,1"）
                     let expectedStatusesRaw = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status")
                     let expectedStatuses: [Int]
@@ -2978,22 +3122,56 @@ struct ProductionTestView: View {
                             }
                         }
                         if gasReached {
-                            stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
-                            stepStatuses[step.id] = .passed
-                    recordStepOutcome(stepId: step.id, outcome: "passed")
+                            // 自检成功禁用后，再执行一次阀门开/关检查与压力读取（仅记录）
+                            if valveCheckEnabled {
+                                let valveOkForDisableDiag = await runDisableDiagValveCheck(settleSeconds: valveCheckSettleSeconds, pressureReadDelaySeconds: valveCheckPressureReadDelaySeconds)
+                                if valveOkForDisableDiag {
+                                    stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                                    stepStatuses[step.id] = .passed
+                                    recordStepOutcome(stepId: step.id, outcome: "passed")
+                                } else {
+                                    let msg = "Disable diag: Gas system status 已达预期，但阀门开/关检查未通过，请检查气路与电磁阀状态。"
+                                    self.log(msg, level: .error)
+                                    stepResults[step.id] = msg
+                                    stepStatuses[step.id] = .failed
+                                    recordStepOutcome(stepId: step.id, outcome: "failed")
+                                    if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                                }
+                            } else {
+                                stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                                stepStatuses[step.id] = .passed
+                                recordStepOutcome(stepId: step.id, outcome: "passed")
+                            }
                         } else {
                             let elapsed = String(format: "%.1f", Date().timeIntervalSince(pollStart))
                             let pollTimeoutStr = String(format: "%.1f", pollTimeout)
                             self.log("错误：\(pollTimeoutStr)s 内 Gas system status 未进入期望集合 [\(expectedDescription)]（当前: \(ble.lastGasSystemStatusValue)）", level: .error)
                             stepResults[step.id] = String(format: appLanguage.string("production_test_rules.step_disable_diag_fail_timeout"), elapsed, expectedDescription)
                             stepStatuses[step.id] = .failed
-                    recordStepOutcome(stepId: step.id, outcome: "failed")
+                            recordStepOutcome(stepId: step.id, outcome: "failed")
                             if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         }
                     } else {
-                        stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
-                        stepStatuses[step.id] = .passed
-                    recordStepOutcome(stepId: step.id, outcome: "passed")
+                        // 不轮询 Gas status 的场景：写入 12×0x00 后，同样在禁用自检后执行阀门检查
+                        if valveCheckEnabled {
+                            let valveOkForDisableDiag = await runDisableDiagValveCheck(settleSeconds: valveCheckSettleSeconds, pressureReadDelaySeconds: valveCheckPressureReadDelaySeconds)
+                            if valveOkForDisableDiag {
+                                stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                                stepStatuses[step.id] = .passed
+                                recordStepOutcome(stepId: step.id, outcome: "passed")
+                            } else {
+                                let msg = "Disable diag: 已写入 12×0x00，但阀门开/关检查未通过，请检查气路与电磁阀状态。"
+                                self.log(msg, level: .error)
+                                stepResults[step.id] = msg
+                                stepStatuses[step.id] = .failed
+                                recordStepOutcome(stepId: step.id, outcome: "failed")
+                                if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                            }
+                        } else {
+                            stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                            stepStatuses[step.id] = .passed
+                            recordStepOutcome(stepId: step.id, outcome: "passed")
+                        }
                     }
                     
                 case "step_gas_system_status": // 读取 Gas system status，解码后须为 1 (ok)

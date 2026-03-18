@@ -316,6 +316,9 @@
 "production_test_rules.disable_diag_poll_gas_status_enabled" = "Poll gas status to expected";
 "production_test_rules.disable_diag_expected_gas_status" = "Expected gas status (0-9, 1=ok)";
 "production_test_rules.disable_diag_poll_timeout_seconds" = "Poll timeout (s)";
+"production_test_rules.disable_diag_valve_check_enabled" = "Valve check after disable";
+"production_test_rules.disable_diag_valve_check_settle_seconds" = "Valve settle (s)";
+"production_test_rules.disable_diag_valve_check_pressure_read_delay_seconds" = "Pressure read delay (s)";
 "production_test_rules.step_gas_system_status_title" = "Read gas status";
 "production_test_rules.step_gas_system_status_desc" = "Read gas status; must be 1 (ok) to pass.";
 "production_test_rules.step_gas_system_status_criteria" = "✓ Pass: gas status = 1 (ok). ✗ Fail: not 1.";

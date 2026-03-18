@@ -2255,17 +2255,15 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
     
-    /// 解码压力：设备上报为 mbar（2 字节有符号或 4 字节无符号），展示统一为 mbar
+    /// 解码压力：当前固件实际使用 2 字节 Int16（mbar, little-endian）
+    /// 约定：<0 视为错误码，不作为物理压力参与判定，直接返回 Error 字符串。
     @MainActor private func formatPressureData(_ data: Data) -> String {
-        if data.count >= 2 {
-            let mbar = Double(data.withUnsafeBytes { $0.load(as: Int16.self) })
-            return String(format: "%.0f mbar", mbar)
-        }
-        if data.count >= 4 {
-            let mbar = Double(data.withUnsafeBytes { $0.load(as: UInt32.self) })
-            return String(format: "%.0f mbar", mbar)
-        }
-        return "Error: expected 2 or 4 bytes, got \(data.count)"
+        guard data.count == 2 else { return "Error: expected 2 bytes, got \(data.count)" }
+        let raw = data.withUnsafeBytes { $0.load(as: Int16.self) }
+        let mbar = Int16(littleEndian: raw)
+        // 负值视为错误/异常码，而非真实压力
+        guard mbar >= 0 else { return "Error: negative pressure code \(mbar)" }
+        return String(format: "%.0f mbar", Double(mbar))
     }
     
     /// RTC 读取成功时更新「读取时刻系统时间」与「时间差」

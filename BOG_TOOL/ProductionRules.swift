@@ -97,6 +97,12 @@ struct ProductionRules: Codable, Equatable {
             var expectedGasStatusValues: [Int]?
             var pollTimeoutSeconds: Double?
             var pollEnabled: Bool?
+            /// Disable diag 后是否执行阀门开/关检查并记录压力（仅观测，不参与阀值判定）
+            var valveCheckEnabled: Bool?
+            /// 阀门开/关命令后等待稳定的秒数（默认 0.5）
+            var valveCheckSettleSeconds: Double?
+            /// 触发读压后等待回读的秒数（默认 0.6）
+            var valveCheckPressureReadDelaySeconds: Double?
 
             // step_gas_leak_closed
             var preCloseDurationSeconds: Int?
@@ -144,6 +150,9 @@ struct ProductionRules: Codable, Equatable {
                 case expectedGasStatusValues = "expected_gas_status_values"
                 case pollTimeoutSeconds = "poll_timeout_seconds"
                 case pollEnabled = "poll_enabled"
+                case valveCheckEnabled = "valve_check_enabled"
+                case valveCheckSettleSeconds = "valve_check_settle_seconds"
+                case valveCheckPressureReadDelaySeconds = "valve_check_pressure_read_delay_seconds"
 
                 case preCloseDurationSeconds = "pre_close_duration_seconds"
                 case postCloseDurationSeconds = "post_close_duration_seconds"

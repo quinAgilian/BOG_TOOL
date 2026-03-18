@@ -316,6 +316,9 @@
 "production_test_rules.disable_diag_poll_gas_status_enabled" = "轮询 Gas 状态直至期望值";
 "production_test_rules.disable_diag_expected_gas_status" = "期望 Gas 状态值（0–9，1=ok）";
 "production_test_rules.disable_diag_poll_timeout_seconds" = "轮询 Gas 状态超时（秒）";
+"production_test_rules.disable_diag_valve_check_enabled" = "禁用自检后阀门检查";
+"production_test_rules.disable_diag_valve_check_settle_seconds" = "阀门稳定等待（秒）";
+"production_test_rules.disable_diag_valve_check_pressure_read_delay_seconds" = "读压回读等待（秒）";
 "production_test_rules.step_gas_system_status_title" = "读取 Gas system status";
 "production_test_rules.gas_status_read_timeout" = "Gas system status: 读取超时或无效";
 "production_test_rules.gas_status_pass" = "Gas system status: %@ ✓";
