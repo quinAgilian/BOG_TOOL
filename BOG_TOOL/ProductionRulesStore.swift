@@ -5,33 +5,14 @@ import Combine
 final class ProductionRulesStore: ObservableObject {
     @Published private(set) var rules: ProductionRules
 
-    /// 简单的内存初始化：优先使用 bundle 默认规则；若失败则使用一个最小兜底配置
+    /// 严格 JSON：必须成功加载 bundle 默认规则，否则直接失败，避免静默 fallback。
     init() {
-        if let loaded = try? ProductionRulesLoader.loadBundledDefaultRules() {
+        do {
+            let loaded = try ProductionRulesLoader.loadBundledDefaultRules()
             self.rules = loaded
             NSLog("[Rules] Loaded bundled default_production_rules.json (version=%@, steps=%d)", loaded.rulesVersion, loaded.steps.count)
-        } else {
-            // 兜底：不会在正常发布中使用，只为防止文件缺失导致崩溃
-            self.rules = ProductionRules(
-                schemaVersion: 1,
-                rulesVersion: "FALLBACK",
-                meta: .init(projectName: "UNKNOWN", author: "", createdAt: "", updatedAt: "", notes: ""),
-                global: .init(
-                    stepIntervalMs: 100,
-                    skipFactoryResetAndDisconnectOnFail: false,
-                    failurePolicy: .init(fatalDefault: Array(TestStep.stepIdsFatalOnFailure), overrides: [:])
-                ),
-                environment: .init(
-                    bleScan: .init(
-                        rssiFilterEnabled: false,
-                        minRssiDbm: -100,
-                        nameWhitelistEnabled: false,
-                        nameWhitelistKeywords: [],
-                        nameBlacklistKeywords: []
-                    )
-                ),
-                steps: []
-            )
+        } catch {
+            preconditionFailure("[Rules] Failed to load bundled default_production_rules.json: \(error.localizedDescription)")
         }
     }
 

@@ -91,18 +91,32 @@ struct ProductionRules: Codable, Equatable {
             var diffMinMbar: Double?
             var diffMaxMbar: Double?
             var failRetryConfirmEnabled: Bool?
+            var pressureReadTimeoutSeconds: Double?
+            var pressureReadPollIntervalMs: Int?
+            var pressureRetryReadTimeoutSeconds: Double?
+            var pressureRetryReadPollIntervalMs: Int?
 
-            // step_disable_diag
+            // step_disable_diag、step_gas_system_status 均可用 expected_gas_status_values（后者未配置时产测默认仅允许 1）
             var waitSeconds: Double?
             var expectedGasStatusValues: [Int]?
             var pollTimeoutSeconds: Double?
             var pollEnabled: Bool?
+            var pollIntervalMs: Int?
             /// Disable diag 后是否执行阀门开/关检查并记录压力（仅观测，不参与阀值判定）
             var valveCheckEnabled: Bool?
             /// 阀门开/关命令后等待稳定的秒数（默认 0.5）
             var valveCheckSettleSeconds: Double?
             /// 触发读压后等待回读的秒数（默认 0.6）
             var valveCheckPressureReadDelaySeconds: Double?
+
+            // step_verify_firmware / step_gas_system_status
+            var deviceInfoReadTimeoutSeconds: Double?
+
+            // step_ota
+            var otaStartWaitTimeoutSeconds: Double?
+
+            // step_connect
+            var deviceReconnectTimeoutSeconds: Double?
 
             // step_gas_leak_closed
             var preCloseDurationSeconds: Int?
@@ -145,14 +159,23 @@ struct ProductionRules: Codable, Equatable {
                 case diffMinMbar = "diff_min_mbar"
                 case diffMaxMbar = "diff_max_mbar"
                 case failRetryConfirmEnabled = "fail_retry_confirm_enabled"
+                case pressureReadTimeoutSeconds = "pressure_read_timeout_seconds"
+                case pressureReadPollIntervalMs = "pressure_read_poll_interval_ms"
+                case pressureRetryReadTimeoutSeconds = "pressure_retry_read_timeout_seconds"
+                case pressureRetryReadPollIntervalMs = "pressure_retry_read_poll_interval_ms"
 
                 case waitSeconds = "wait_seconds"
                 case expectedGasStatusValues = "expected_gas_status_values"
                 case pollTimeoutSeconds = "poll_timeout_seconds"
                 case pollEnabled = "poll_enabled"
+                case pollIntervalMs = "poll_interval_ms"
                 case valveCheckEnabled = "valve_check_enabled"
                 case valveCheckSettleSeconds = "valve_check_settle_seconds"
                 case valveCheckPressureReadDelaySeconds = "valve_check_pressure_read_delay_seconds"
+
+                case deviceInfoReadTimeoutSeconds = "device_info_read_timeout_seconds"
+                case otaStartWaitTimeoutSeconds = "ota_start_wait_timeout_seconds"
+                case deviceReconnectTimeoutSeconds = "device_reconnect_timeout_seconds"
 
                 case preCloseDurationSeconds = "pre_close_duration_seconds"
                 case postCloseDurationSeconds = "post_close_duration_seconds"

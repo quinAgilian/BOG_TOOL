@@ -538,9 +538,9 @@ struct ProductionTestView: View {
         }
     }
     
-    /// 更新测试步骤列表（从UserDefaults加载）
+    /// 更新测试步骤列表（严格从 JSON 读取）
     private func updateTestSteps() {
-        let rules = loadTestRules()
+        guard let rules = try? loadTestRules() else { return }
         currentTestSteps = rules.steps
     }
     
@@ -750,7 +750,7 @@ struct ProductionTestView: View {
     
     /// 更新测试规则
     private func updateTestRules() {
-        let rules = loadTestRules()
+        guard let rules = try? loadTestRules() else { return }
         testRules = TestRules(
             enabledStepsCount: rules.steps.filter { $0.enabled }.count,
             firmwareVersion: rules.firmwareVersion,
@@ -758,16 +758,14 @@ struct ProductionTestView: View {
         )
     }
 
-    /// 启动前规则校验：FW/HW 必须在产测规则中明确填写，不能为空
+    /// 启动前规则校验：严格 JSON，缺 step/缺 key 即禁止开始
     private func validateRequiredRulesBeforeStart() -> String? {
-        let rules = loadTestRules()
-        let missing: [String] = [
-            rules.firmwareVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "FW" : nil,
-            rules.hardwareVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "HW" : nil,
-        ]
-        .compactMap { $0 }
-        guard !missing.isEmpty else { return nil }
-        return String(format: appLanguage.string("production_test.required_rules_missing"), missing.joined(separator: "/"))
+        do {
+            _ = try loadTestRules()
+            return nil
+        } catch {
+            return "SOP JSON 规则不完整：\(error.localizedDescription)"
+        }
     }
     
     // MARK: - 整体通过判定（连接、RTC、固件、压力、屏蔽自检、Gas 状态、气体泄漏、待定、电磁阀、恢复出厂、重启、断开）
@@ -1104,9 +1102,28 @@ struct ProductionTestView: View {
         return appLanguage.string("ota.ready")
     }
 
-    /// 加载测试规则配置：**仅从 ProductionRules(JSON) 获取，不再依赖 UserDefaults**
-    private func loadTestRules() -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds, stepFatalOnFailure: [String: Bool]) {
+    private enum StrictRulesError: LocalizedError {
+        case missingItems([String])
+        var errorDescription: String? {
+            switch self {
+            case .missingItems(let items):
+                return items.joined(separator: "；")
+            }
+        }
+    }
+
+    private func requireStepConfig(_ stepMap: [String: ProductionRules.Step], _ stepId: String, _ issues: inout [String]) -> ProductionRules.Step.Config? {
+        guard let cfg = stepMap[stepId]?.config else {
+            issues.append("[JSON缺失] step=\(stepId) 不存在或无 config")
+            return nil
+        }
+        return cfg
+    }
+
+    /// 加载测试规则配置：严格 JSON，不允许代码默认值。
+    private func loadTestRules() throws -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds, stepFatalOnFailure: [String: Bool]) {
         let rules = productionRulesStore.rules
+        var issues: [String] = []
 
         // 首次加载时在日志区打印当前规则来源与版本，便于排查默认配置是否生效
         if testRules.enabledStepsCount == 0 {
@@ -1130,78 +1147,104 @@ struct ProductionTestView: View {
             .otaBeforeDisconnect,
             .disconnectDevice
         ]
-        let stepMap = baseSteps.reduce(into: [String: TestStep]()) { $0[$1.id] = $1 }
-
-        var steps: [TestStep] = []
-        for stepRule in rules.steps.sorted(by: { $0.order < $1.order }) {
-            guard var base = stepMap[stepRule.id] else { continue }
-            base = TestStep(id: base.id, key: base.key, isLocked: base.isLocked, enabled: stepRule.enabled)
-            steps.append(base)
+        let knownStepMap = baseSteps.reduce(into: [String: TestStep]()) { $0[$1.id] = $1 }
+        let declaredStepIds = Set(rules.steps.map(\.id))
+        let requiredStepIds = Set(baseSteps.map(\.id))
+        let missingSteps = requiredStepIds.subtracting(declaredStepIds).sorted()
+        let unknownSteps = declaredStepIds.subtracting(requiredStepIds).sorted()
+        if !missingSteps.isEmpty {
+            issues.append("[JSON缺失] steps 缺少: \(missingSteps.joined(separator: ", "))")
         }
-        // 若 JSON 中缺少某些步骤，则按默认顺序追加（保持兼容）
-        for base in baseSteps where !steps.contains(where: { $0.id == base.id }) {
-            steps.append(base)
+        if !unknownSteps.isEmpty {
+            issues.append("[JSON非法] steps 包含未知 id: \(unknownSteps.joined(separator: ", "))")
         }
-        // 确保第一步和最后一步在正确位置
-        if !steps.isEmpty && steps[0].id != TestStep.connectDevice.id {
-            steps.removeAll { $0.id == TestStep.connectDevice.id }
-            steps.insert(TestStep.connectDevice, at: 0)
+        if !issues.isEmpty {
+            throw StrictRulesError.missingItems(issues)
         }
-        if steps.last?.id != TestStep.disconnectDevice.id {
-            steps.removeAll { $0.id == TestStep.disconnectDevice.id }
-            steps.append(TestStep.disconnectDevice)
+        let rulesById = Dictionary(uniqueKeysWithValues: rules.steps.map { ($0.id, $0) })
+        let steps: [TestStep] = rules.steps.sorted(by: { $0.order < $1.order }).compactMap { stepRule in
+            guard let base = knownStepMap[stepRule.id] else { return nil }
+            return TestStep(id: base.id, key: base.key, isLocked: base.isLocked, enabled: stepRule.enabled)
         }
-        // 重启、恢复出厂只允许在倒数第三步或倒数第二步（与规则页一致）
-        ProductionTestRulesView.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &steps)
+        // 严格模式下仍保持首尾固定要求
+        guard steps.first?.id == TestStep.connectDevice.id else {
+            issues.append("[JSON非法] 第一步必须是 \(TestStep.connectDevice.id)")
+            throw StrictRulesError.missingItems(issues)
+        }
+        guard steps.last?.id == TestStep.disconnectDevice.id else {
+            issues.append("[JSON非法] 最后一步必须是 \(TestStep.disconnectDevice.id)")
+            throw StrictRulesError.missingItems(issues)
+        }
 
         // 2. 从 step_verify_firmware 配置解析版本限制
-        let verifyCfg = rules.steps.first(where: { $0.id == TestStep.verifyFirmware.id })?.config
-        let bootloaderVersion = (verifyCfg?.allowedBootloaderVersions?.first).flatMap { $0.isEmpty ? nil : $0 } ?? "2"
-        let firmwareVersion = verifyCfg?.allowedFirmwareVersions?.first ?? ""
-        let hardwareVersion = verifyCfg?.allowedHardwareVersions?.first ?? ""
+        guard let verifyCfg = requireStepConfig(rulesById, TestStep.verifyFirmware.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let bootloaderVersion = verifyCfg.allowedBootloaderVersions?.first, !bootloaderVersion.isEmpty else {
+            issues.append("[JSON缺失] step_verify_firmware.allowed_bootloader_versions[0]")
+            throw StrictRulesError.missingItems(issues)
+        }
+        guard let firmwareVersion = verifyCfg.allowedFirmwareVersions?.first, !firmwareVersion.isEmpty else {
+            issues.append("[JSON缺失] step_verify_firmware.allowed_firmware_versions[0]")
+            throw StrictRulesError.missingItems(issues)
+        }
+        guard let hardwareVersion = verifyCfg.allowedHardwareVersions?.first, !hardwareVersion.isEmpty else {
+            issues.append("[JSON缺失] step_verify_firmware.allowed_hardware_versions[0]")
+            throw StrictRulesError.missingItems(issues)
+        }
 
         // 3. 全局阈值配置（部分来自 global，部分来自各步骤 config）
         // step_connect
-        let connectCfg = rules.steps.first(where: { $0.id == TestStep.connectDevice.id })?.config
-        let bluetoothPermissionWaitSeconds = connectCfg?.bluetoothPermissionWaitSeconds ?? 0
+        guard let connectCfg = requireStepConfig(rulesById, TestStep.connectDevice.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let bluetoothPermissionWaitSeconds = connectCfg.bluetoothPermissionWaitSeconds else { issues.append("[JSON缺失] step_connect.bluetooth_permission_wait_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let deviceReconnectTimeout = connectCfg.deviceReconnectTimeoutSeconds else { issues.append("[JSON缺失] step_connect.device_reconnect_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
 
         // step_read_rtc
-        let rtcCfg = rules.steps.first(where: { $0.id == TestStep.readRTC.id })?.config
-        let rtcPassThreshold = rtcCfg?.passThresholdSeconds ?? 2.0
-        let rtcFailThreshold = rtcCfg?.failThresholdSeconds ?? 5.0
-        let rtcWriteEnabled = rtcCfg?.writeEnabled ?? true
-        let rtcWriteRetryCount = rtcCfg?.writeRetryCount ?? 3
-        let rtcReadTimeout = rtcCfg?.readTimeoutSeconds ?? 2.0
-
-        // 设备信息/OTA/重连超时：目前规则 JSON 未显式拆出，先沿用旧默认值；如后续需要可扩展 schema
-        let deviceInfoReadTimeout = 3.0
-        let otaStartWaitTimeout = 5.0
-        let deviceReconnectTimeout = 5.0
+        guard let rtcCfg = requireStepConfig(rulesById, TestStep.readRTC.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let rtcPassThreshold = rtcCfg.passThresholdSeconds else { issues.append("[JSON缺失] step_read_rtc.pass_threshold_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let rtcFailThreshold = rtcCfg.failThresholdSeconds else { issues.append("[JSON缺失] step_read_rtc.fail_threshold_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let rtcWriteEnabled = rtcCfg.writeEnabled else { issues.append("[JSON缺失] step_read_rtc.write_enabled"); throw StrictRulesError.missingItems(issues) }
+        guard let rtcWriteRetryCount = rtcCfg.writeRetryCount else { issues.append("[JSON缺失] step_read_rtc.write_retry_count"); throw StrictRulesError.missingItems(issues) }
+        guard let rtcReadTimeout = rtcCfg.readTimeoutSeconds else { issues.append("[JSON缺失] step_read_rtc.read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let deviceInfoReadTimeout = verifyCfg.deviceInfoReadTimeoutSeconds else { issues.append("[JSON缺失] step_verify_firmware.device_info_read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
 
         // step_valve
-        let valveCfg = rules.steps.first(where: { $0.id == TestStep.ensureValveOpen.id })?.config
-        let valveOpenTimeout = valveCfg?.openTimeoutSeconds ?? 5.0
+        guard let valveCfg = requireStepConfig(rulesById, TestStep.ensureValveOpen.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let valveOpenTimeout = valveCfg.openTimeoutSeconds else { issues.append("[JSON缺失] step_valve.open_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
 
         // step_disable_diag
-        let disableCfg = rules.steps.first(where: { $0.id == TestStep.disableDiag.id })?.config
-        let disableDiagWaitSeconds = disableCfg?.waitSeconds ?? 2.0
-        let disableDiagExpectedGasStatus = (disableCfg?.expectedGasStatusValues?.first).map { max(0, min(9, $0)) } ?? 1
-        let disableDiagPollTimeoutSeconds = disableCfg?.pollTimeoutSeconds ?? 3.0
-        let disableDiagPollGasStatusEnabled = disableCfg?.pollEnabled ?? true
+        guard let disableCfg = requireStepConfig(rulesById, TestStep.disableDiag.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let disableDiagWaitSeconds = disableCfg.waitSeconds else { issues.append("[JSON缺失] step_disable_diag.wait_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let disableDiagExpectedGasStatuses = disableCfg.expectedGasStatusValues, !disableDiagExpectedGasStatuses.isEmpty else { issues.append("[JSON缺失] step_disable_diag.expected_gas_status_values"); throw StrictRulesError.missingItems(issues) }
+        let disableDiagExpectedGasStatus = disableDiagExpectedGasStatuses[0]
+        guard let disableDiagPollTimeoutSeconds = disableCfg.pollTimeoutSeconds else { issues.append("[JSON缺失] step_disable_diag.poll_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let disableDiagPollGasStatusEnabled = disableCfg.pollEnabled else { issues.append("[JSON缺失] step_disable_diag.poll_enabled"); throw StrictRulesError.missingItems(issues) }
+        guard let disableDiagPollIntervalMs = disableCfg.pollIntervalMs else { issues.append("[JSON缺失] step_disable_diag.poll_interval_ms"); throw StrictRulesError.missingItems(issues) }
+        guard let disableDiagValveCheckEnabled = disableCfg.valveCheckEnabled else { issues.append("[JSON缺失] step_disable_diag.valve_check_enabled"); throw StrictRulesError.missingItems(issues) }
+        guard let disableDiagValveCheckSettleSeconds = disableCfg.valveCheckSettleSeconds else { issues.append("[JSON缺失] step_disable_diag.valve_check_settle_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let disableDiagValveCheckPressureReadDelaySeconds = disableCfg.valveCheckPressureReadDelaySeconds else { issues.append("[JSON缺失] step_disable_diag.valve_check_pressure_read_delay_seconds"); throw StrictRulesError.missingItems(issues) }
 
         // step_read_pressure
-        let pressureCfg = rules.steps.first(where: { $0.id == TestStep.readPressure.id })?.config
-        let pressureClosedMin = pressureCfg?.closedMinMbar ?? 1000
-        let pressureClosedMax = pressureCfg?.closedMaxMbar ?? 1350
-        let pressureOpenMin = pressureCfg?.openMinMbar ?? 1000
-        let pressureOpenMax = pressureCfg?.openMaxMbar ?? 1500
-        let pressureDiffCheckEnabled = pressureCfg?.diffCheckEnabled ?? true
-        let pressureDiffMin = pressureCfg?.diffMinMbar ?? 0
-        let pressureDiffMax = pressureCfg?.diffMaxMbar ?? 400
-        let pressureFailRetryConfirmEnabled = pressureCfg?.failRetryConfirmEnabled ?? true
+        guard let pressureCfg = requireStepConfig(rulesById, TestStep.readPressure.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let pressureClosedMin = pressureCfg.closedMinMbar else { issues.append("[JSON缺失] step_read_pressure.closed_min_mbar"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureClosedMax = pressureCfg.closedMaxMbar else { issues.append("[JSON缺失] step_read_pressure.closed_max_mbar"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureOpenMin = pressureCfg.openMinMbar else { issues.append("[JSON缺失] step_read_pressure.open_min_mbar"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureOpenMax = pressureCfg.openMaxMbar else { issues.append("[JSON缺失] step_read_pressure.open_max_mbar"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureDiffCheckEnabled = pressureCfg.diffCheckEnabled else { issues.append("[JSON缺失] step_read_pressure.diff_check_enabled"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureDiffMin = pressureCfg.diffMinMbar else { issues.append("[JSON缺失] step_read_pressure.diff_min_mbar"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureDiffMax = pressureCfg.diffMaxMbar else { issues.append("[JSON缺失] step_read_pressure.diff_max_mbar"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureFailRetryConfirmEnabled = pressureCfg.failRetryConfirmEnabled else { issues.append("[JSON缺失] step_read_pressure.fail_retry_confirm_enabled"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureReadTimeoutSeconds = pressureCfg.pressureReadTimeoutSeconds else { issues.append("[JSON缺失] step_read_pressure.pressure_read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureReadPollIntervalMs = pressureCfg.pressureReadPollIntervalMs else { issues.append("[JSON缺失] step_read_pressure.pressure_read_poll_interval_ms"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureRetryReadTimeoutSeconds = pressureCfg.pressureRetryReadTimeoutSeconds else { issues.append("[JSON缺失] step_read_pressure.pressure_retry_read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let pressureRetryReadPollIntervalMs = pressureCfg.pressureRetryReadPollIntervalMs else { issues.append("[JSON缺失] step_read_pressure.pressure_retry_read_poll_interval_ms"); throw StrictRulesError.missingItems(issues) }
 
         // firmware upgrade / fail 时跳过恢复出厂和断开
-        let firmwareUpgradeEnabled = verifyCfg?.firmwareUpgradeEnabled ?? true
+        guard let firmwareUpgradeEnabled = verifyCfg.firmwareUpgradeEnabled else { issues.append("[JSON缺失] step_verify_firmware.firmware_upgrade_enabled"); throw StrictRulesError.missingItems(issues) }
+        guard let otaCfg = requireStepConfig(rulesById, TestStep.otaBeforeDisconnect.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let otaStartWaitTimeout = otaCfg.otaStartWaitTimeoutSeconds else { issues.append("[JSON缺失] step_ota.ota_start_wait_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let gasStatusCfg = requireStepConfig(rulesById, TestStep.readGasSystemStatus.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let gasStatusExpectedValues = gasStatusCfg.expectedGasStatusValues, !gasStatusExpectedValues.isEmpty else { issues.append("[JSON缺失] step_gas_system_status.expected_gas_status_values"); throw StrictRulesError.missingItems(issues) }
+        guard let gasLeakClosedCfg = requireStepConfig(rulesById, TestStep.gasLeakClosed.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let skipClosedWhenOpenPasses = gasLeakClosedCfg.skipClosedWhenOpenPasses else { issues.append("[JSON缺失] step_gas_leak_closed.skip_closed_when_open_passes"); throw StrictRulesError.missingItems(issues) }
         let skipFactoryResetAndDisconnectOnFail = rules.global.skipFactoryResetAndDisconnectOnFail
 
         let thresholds = TestThresholds(
@@ -1229,7 +1272,18 @@ struct ProductionTestView: View {
             pressureDiffMax: pressureDiffMax,
             firmwareUpgradeEnabled: firmwareUpgradeEnabled,
             skipFactoryResetAndDisconnectOnFail: skipFactoryResetAndDisconnectOnFail,
-            pressureFailRetryConfirmEnabled: pressureFailRetryConfirmEnabled
+            pressureFailRetryConfirmEnabled: pressureFailRetryConfirmEnabled,
+            disableDiagPollIntervalMs: disableDiagPollIntervalMs,
+            disableDiagValveCheckEnabled: disableDiagValveCheckEnabled,
+            disableDiagValveCheckSettleSeconds: disableDiagValveCheckSettleSeconds,
+            disableDiagValveCheckPressureReadDelaySeconds: disableDiagValveCheckPressureReadDelaySeconds,
+            disableDiagExpectedGasStatuses: disableDiagExpectedGasStatuses.map { max(0, min(9, $0)) },
+            pressureReadTimeoutSeconds: pressureReadTimeoutSeconds,
+            pressureReadPollIntervalMs: pressureReadPollIntervalMs,
+            pressureRetryReadTimeoutSeconds: pressureRetryReadTimeoutSeconds,
+            pressureRetryReadPollIntervalMs: pressureRetryReadPollIntervalMs,
+            gasSystemStatusExpectedValues: gasStatusExpectedValues.map { max(0, min(9, $0)) },
+            skipClosedWhenOpenPasses: skipClosedWhenOpenPasses
         )
 
         // 4. 每步「失败时是否终止产测」：优先 step.fatalOnFailure，否则沿用 global.failurePolicy
@@ -1277,6 +1331,17 @@ struct ProductionTestView: View {
         let firmwareUpgradeEnabled: Bool     // 是否启用固件版本升级
         let skipFactoryResetAndDisconnectOnFail: Bool  // 测试失败时是否跳过恢复出厂与安全断开（默认 false）
         let pressureFailRetryConfirmEnabled: Bool    // 压力读取失败时是否弹窗确认重测（默认 true）
+        let disableDiagPollIntervalMs: Int
+        let disableDiagValveCheckEnabled: Bool
+        let disableDiagValveCheckSettleSeconds: Double
+        let disableDiagValveCheckPressureReadDelaySeconds: Double
+        let disableDiagExpectedGasStatuses: [Int]
+        let pressureReadTimeoutSeconds: Double
+        let pressureReadPollIntervalMs: Int
+        let pressureRetryReadTimeoutSeconds: Double
+        let pressureRetryReadPollIntervalMs: Int
+        let gasSystemStatusExpectedValues: [Int]
+        let skipClosedWhenOpenPasses: Bool
     }
     
     /// 日志函数（类级别，供所有方法使用）：写入产测日志区，并同步到主日志区（格式 [FQC] 或 [FQC][OTA]:，遵循日志等级配置）
@@ -1623,7 +1688,7 @@ struct ProductionTestView: View {
     /// 调用方应先设置 `stepStatuses[step.id] = .failed` 和 `stepResults[step.id]`，再调用本方法。
     /// - Returns: true 表示调用方应 return 终止产测，false 表示调用方应 break 继续下一步。
     private func handleStepFailureShouldExit(step: TestStep, enabledSteps: [TestStep], thresholds: TestThresholds, stepFatalOnFailure: [String: Bool]) async -> Bool {
-        let isFatal = stepFatalOnFailure[step.id] ?? TestStep.stepIdsFatalOnFailure.contains(step.id)
+        let isFatal = stepFatalOnFailure[step.id] ?? false
         guard isFatal else { return false }
         isRunningFactoryResetBeforeExit = true
         defer { isRunningFactoryResetBeforeExit = false }
@@ -1646,7 +1711,7 @@ struct ProductionTestView: View {
     }
 
     private func ensureValveOpen() async -> Bool {
-        let rules = loadTestRules()
+        guard let rules = try? loadTestRules() else { return false }
         let valveTimeout = rules.thresholds.valveOpenTimeout
         
         // 先读取当前阀门状态
@@ -1691,7 +1756,7 @@ struct ProductionTestView: View {
     
     /// 将电磁阀设为指定状态并等待回读确认（用于气体泄漏检测的判定压力对应状态）
     private func ensureValveState(open targetOpen: Bool) async -> Bool {
-        let rules = loadTestRules()
+        guard let rules = try? loadTestRules() else { return false }
         let valveTimeout = rules.thresholds.valveOpenTimeout
         let targetState = targetOpen ? "open" : "closed"
         
@@ -1703,11 +1768,9 @@ struct ProductionTestView: View {
         }
         self.log("将电磁阀切换为\(targetState)...", level: .info)
         ble.setValve(open: targetOpen)
-        var checkCount = 0
-        let maxChecks = Int(valveTimeout * 10)
-        while checkCount < maxChecks {
+        let deadline = Date().addingTimeInterval(max(0.1, valveTimeout))
+        while Date() < deadline {
             try? await Task.sleep(nanoseconds: 100_000_000)
-            checkCount += 1
             ble.readValveState()
             try? await Task.sleep(nanoseconds: 50_000_000)
             if ble.lastValveStateValue == targetState {
@@ -1715,7 +1778,7 @@ struct ProductionTestView: View {
                 return true
             }
         }
-        self.log("错误：电磁阀未能切换为\(targetState)（超时）", level: .error)
+        self.log("错误：电磁阀未能切换为\(targetState)（超时 \(String(format: "%.1f", valveTimeout))s）", level: .error)
         return false
     }
     
@@ -1746,7 +1809,8 @@ struct ProductionTestView: View {
         return value
     }
     
-    /// Disable diag 步骤专用：禁用自检后执行阀门开/关检查，并各自读取压力供观察；任何一次确认失败则返回 false
+    /// Disable diag 步骤专用：禁用自检后执行阀门开/关检查，并各自读取压力供观察；任何一次确认失败则返回 false。
+    /// 阀门状态：发令后按 SOP `valve_open_timeout` 轮询读 valveState，直到 open/closed 或超时（同 `ensureValveState`）。
     private func runDisableDiagValveCheck(settleSeconds: Double, pressureReadDelaySeconds: Double) async -> Bool {
         // 前置状态检查
         guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
@@ -1754,18 +1818,14 @@ struct ProductionTestView: View {
             return false
         }
         
-        // 1. 打开阀门并确认
+        // 1. 打开阀门并轮询确认（最多 valve_open_timeout 秒）
         log("Disable diag: 打开阀门以检查气路...", level: .info)
-        ble.setValve(open: true)
-        try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
-        let valveStateAfterOpen = ble.lastValveStateValue
-        if valveStateAfterOpen == "open" {
-            log("Disable diag: 阀门已打开 (state=open)", level: .info)
-        } else {
-            log("Disable diag: 阀门打开后状态异常 (当前: \(valveStateAfterOpen))", level: .error)
+        guard await ensureValveState(open: true) else {
+            log("Disable diag: 阀门打开后状态异常 (当前: \(ble.lastValveStateValue))", level: .error)
             return false
         }
-        // 打开后读取一次压力（仅记录，不参与判定）
+        log("Disable diag: 阀门已打开 (state=open)", level: .info)
+        // 开阀稳定后再读压（仅记录，不参与判定）
         try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
         ble.readPressure(silent: true)
         ble.readPressureOpen(silent: true)
@@ -1776,18 +1836,13 @@ struct ProductionTestView: View {
         let openOpenStr = openOpenBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
         log("Disable diag: 打开阀门后压力（关阀通道=\(openClosedStr)，开阀通道=\(openOpenStr)）[仅供观察，不参与判定]", level: .info)
         
-        // 2. 关闭阀门并确认
+        // 2. 关闭阀门并轮询确认
         log("Disable diag: 关闭阀门以检查气路...", level: .info)
-        ble.setValve(open: false)
-        try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
-        let valveStateAfterClose = ble.lastValveStateValue
-        if valveStateAfterClose == "closed" {
-            log("Disable diag: 阀门已关闭 (state=closed)", level: .info)
-        } else {
-            log("Disable diag: 阀门关闭后状态异常 (当前: \(valveStateAfterClose))", level: .error)
+        guard await ensureValveState(open: false) else {
+            log("Disable diag: 阀门关闭后状态异常 (当前: \(ble.lastValveStateValue))", level: .error)
             return false
         }
-        // 关闭后再读取一次压力（同样仅记录）
+        log("Disable diag: 阀门已关闭 (state=closed)", level: .info)
         try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
         ble.readPressure(silent: true)
         ble.readPressureOpen(silent: true)
@@ -1801,46 +1856,43 @@ struct ProductionTestView: View {
         return true
     }
     
-    /// 从 ProductionRules(JSON) 加载产测气体泄漏步骤配置
-    private func loadProductionGasLeakConfig(keyPrefix: String) -> ProductionGasLeakConfig {
+    /// 从 ProductionRules(JSON) 加载产测气体泄漏步骤配置（严格模式：缺键即抛错）
+    private func loadProductionGasLeakConfig(keyPrefix: String) throws -> ProductionGasLeakConfig {
         let rules = productionRulesStore.rules
         let useClosed = (keyPrefix.contains("closed"))
         let targetId = useClosed ? TestStep.gasLeakClosed.id : TestStep.gasLeakOpen.id
         guard let cfg = rules.steps.first(where: { $0.id == targetId })?.config else {
-            // 若 JSON 中缺失，退回典型值（仅作为兜底，不建议依赖）
-            return ProductionGasLeakConfig(
-                preCloseDurationSeconds: 10,
-                postCloseDurationSeconds: 15,
-                intervalSeconds: 0.5,
-                dropThresholdMbar: 15,
-                startPressureMinMbar: 1300,
-                requirePipelineReadyConfirm: true,
-                requireValveClosedConfirm: true,
-                limitSource: kGasLeakLimitSourcePhase1Avg,
-                limitFloorBar: 0,
-                phase4Enabled: true,
-                phase4MonitorDurationSeconds: 15,
-                phase4DropWithinSeconds: 5,
-                phase4PressureBelowMbar: 100
-            )
+            throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).config"])
         }
-        let limitSource = cfg.limitSource == kGasLeakLimitSourcePhase3First ? kGasLeakLimitSourcePhase3First : kGasLeakLimitSourcePhase1Avg
-        let rawFloor = cfg.limitFloorBar ?? 0
+        guard let limitSourceRaw = cfg.limitSource else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).limit_source"]) }
+        let limitSource = limitSourceRaw == kGasLeakLimitSourcePhase3First ? kGasLeakLimitSourcePhase3First : kGasLeakLimitSourcePhase1Avg
+        guard let rawFloor = cfg.limitFloorBar else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).limit_floor_bar"]) }
         let limitFloorBar = max(0, rawFloor)
+        guard let preCloseDurationSeconds = cfg.preCloseDurationSeconds else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).pre_close_duration_seconds"]) }
+        guard let postCloseDurationSeconds = cfg.postCloseDurationSeconds else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).post_close_duration_seconds"]) }
+        guard let intervalSeconds = cfg.intervalSeconds else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).interval_seconds"]) }
+        guard let dropThresholdMbar = cfg.dropThresholdMbar else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).drop_threshold_mbar"]) }
+        guard let startPressureMinMbar = cfg.startPressureMinMbar else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).start_pressure_min_mbar"]) }
+        guard let requirePipelineReadyConfirm = cfg.requirePipelineReadyConfirm else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).require_pipeline_ready_confirm"]) }
+        guard let requireValveClosedConfirm = cfg.requireValveClosedConfirm else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).require_valve_closed_confirm"]) }
+        guard let phase4Enabled = cfg.phase4Enabled else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).phase4_enabled"]) }
+        guard let phase4MonitorDurationSeconds = cfg.phase4MonitorDurationSeconds else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).phase4_monitor_duration_seconds"]) }
+        guard let phase4DropWithinSeconds = cfg.phase4DropWithinSeconds else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).phase4_drop_within_seconds"]) }
+        guard let phase4PressureBelowMbar = cfg.phase4PressureBelowMbar else { throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).phase4_pressure_below_mbar"]) }
         return ProductionGasLeakConfig(
-            preCloseDurationSeconds: cfg.preCloseDurationSeconds ?? 10,
-            postCloseDurationSeconds: cfg.postCloseDurationSeconds ?? 15,
-            intervalSeconds: cfg.intervalSeconds ?? 0.5,
-            dropThresholdMbar: cfg.dropThresholdMbar ?? 15,
-            startPressureMinMbar: cfg.startPressureMinMbar ?? 1300,
-            requirePipelineReadyConfirm: cfg.requirePipelineReadyConfirm ?? true,
-            requireValveClosedConfirm: cfg.requireValveClosedConfirm ?? true,
+            preCloseDurationSeconds: preCloseDurationSeconds,
+            postCloseDurationSeconds: postCloseDurationSeconds,
+            intervalSeconds: intervalSeconds,
+            dropThresholdMbar: dropThresholdMbar,
+            startPressureMinMbar: startPressureMinMbar,
+            requirePipelineReadyConfirm: requirePipelineReadyConfirm,
+            requireValveClosedConfirm: requireValveClosedConfirm,
             limitSource: limitSource,
             limitFloorBar: limitFloorBar,
-            phase4Enabled: cfg.phase4Enabled ?? true,
-            phase4MonitorDurationSeconds: cfg.phase4MonitorDurationSeconds ?? 15,
-            phase4DropWithinSeconds: cfg.phase4DropWithinSeconds ?? 5,
-            phase4PressureBelowMbar: cfg.phase4PressureBelowMbar ?? 100
+            phase4Enabled: phase4Enabled,
+            phase4MonitorDurationSeconds: phase4MonitorDurationSeconds,
+            phase4DropWithinSeconds: phase4DropWithinSeconds,
+            phase4PressureBelowMbar: phase4PressureBelowMbar
         )
     }
     
@@ -1914,6 +1966,28 @@ struct ProductionTestView: View {
         var cachedPhase1Avg: Double?
         // 统一根据当前步骤使用的压力通道（开阀/关阀）提取用于判定的压力值
         func value(for p: SamplePoint) -> Double? { useOpenPressure ? p.pressureOpen : p.pressureClosed }
+        // Gas leak 连续采样中若连续两次读到 0，仅告警，不直接判失败
+        var consecutiveZeroCount = 0
+        var lastZeroWarnAt: String?
+        func trackConsecutiveZero(_ decisionBar: Double?, phaseLabel: String, t: Double) {
+            guard let bar = decisionBar else {
+                consecutiveZeroCount = 0
+                return
+            }
+            if bar == 0 {
+                consecutiveZeroCount += 1
+                if consecutiveZeroCount >= 2 {
+                    let stamp = "\(phaseLabel)-\(String(format: "%.1f", t))"
+                    if lastZeroWarnAt != stamp {
+                        let channel = useOpenPressure ? "开阀" : "关阀"
+                        self.log("\(stepLabel)：[\(phaseLabel)] 连续采样检测到\(channel)压力为 0 mbar（仅告警，不直接判失败）", level: .warning)
+                        lastZeroWarnAt = stamp
+                    }
+                }
+            } else {
+                consecutiveZeroCount = 0
+            }
+        }
         
         while phaseElapsed <= Double(preDur) {
             guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
@@ -1939,7 +2013,9 @@ struct ProductionTestView: View {
             let valveStr = ble.lastValveStateValue
             let gasStr = ble.lastGasSystemStatusValue
             if closeBar != nil || openBar != nil {
-                phase1Samples.append(SamplePoint(t: phaseElapsed, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
+                let point = SamplePoint(t: phaseElapsed, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
+                phase1Samples.append(point)
+                trackConsecutiveZero(value(for: point), phaseLabel: "Phase 1", t: phaseElapsed)
                 let tStr = String(format: "%.1f", phaseElapsed)
                 let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
                 let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
@@ -2013,7 +2089,9 @@ struct ProductionTestView: View {
                 let gasStr = ble.lastGasSystemStatusValue
                 let t = Double(preDur) + betweenElapsed
                 if closeBar != nil || openBar != nil {
-                    betweenSamples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
+                    let point = SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
+                    betweenSamples.append(point)
+                    trackConsecutiveZero(value(for: point), phaseLabel: "Phase 2", t: t)
                     let tStr = String(format: "%.1f", t)
                     let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
                     let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
@@ -2063,7 +2141,9 @@ struct ProductionTestView: View {
             let gasStr = ble.lastGasSystemStatusValue
             let t = Double(preDur) + userActionDuration + phaseElapsed
             if closeBar != nil || openBar != nil {
-                phase2Samples.append(SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr))
+                let point = SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
+                phase2Samples.append(point)
+                trackConsecutiveZero(value(for: point), phaseLabel: "Phase 3", t: t)
                 // 若规则选择 Phase 3 首采样值作为 reference，则在首个有效采样点出现时立即记录 reference 决策
                 if config.limitSource == kGasLeakLimitSourcePhase3First,
                    !hasLoggedPhase3FirstRef,
@@ -2226,15 +2306,15 @@ struct ProductionTestView: View {
 
         // 关阀压力步骤：可选 Phase 4 开阀泄压检测（Phase 3 与 Phase 4 均成功本步才成功）
         if stepId == TestStep.gasLeakClosed.id {
-            // Phase 4 相关参数统一从 ProductionRules（config）读取，不再依赖 UserDefaults
-            let phase4Enabled = config.phase4Enabled ?? true
+            // Phase 4 参数由 SOP JSON 提供，loadProductionGasLeakConfig 已做缺键拦截
+            let phase4Enabled = config.phase4Enabled
             if !phase4Enabled {
                 self.log("\(stepLabel)：\(appLanguage.string("production_test.gas_leak_phase4_skipped"))", level: .info)
             }
             if phase4Enabled {
-                let monitorDur = max(0, config.phase4MonitorDurationSeconds ?? 15)
-                let dropWithin = max(0, config.phase4DropWithinSeconds ?? 5)
-                let belowMbar = max(0, config.phase4PressureBelowMbar ?? 100)
+                let monitorDur = max(0, config.phase4MonitorDurationSeconds)
+                let dropWithin = max(0, config.phase4DropWithinSeconds)
+                let belowMbar = max(0, config.phase4PressureBelowMbar)
                 self.log("\(stepLabel)：Phase 4 开阀泄压检测，监测 \(monitorDur)s，\(dropWithin)s 内开阀压力需低于 \(String(format: "%.0f", belowMbar)) mbar", level: .info)
 
                 let valveOk = await ensureValveState(open: true)
@@ -2247,6 +2327,7 @@ struct ProductionTestView: View {
                 var phase4Samples: [SamplePoint] = []
                 var phase4Elapsed: Double = 0
                 var phase4DropAchieved = false
+                var phase4ConsecutiveOpenZeroCount = 0
                 let phase4Interval = max(0.1, min(3.0, interval))
                 let afterReadWaitNs: UInt64 = 600_000_000
 
@@ -2284,6 +2365,14 @@ struct ProductionTestView: View {
                             self.log("\(stepLabel)：[Phase 4] t=\(tStr)s 开阀压力 \(openStrShort) mbar < \(belowStrShort) mbar，达标，立即判定通过", level: .info)
                             break
                         }
+                        if openMbar == 0 {
+                            phase4ConsecutiveOpenZeroCount += 1
+                            if phase4ConsecutiveOpenZeroCount >= 2 {
+                                self.log("\(stepLabel)：[Phase 4] 连续采样出现开阀压力 0 mbar（仅告警，不直接判失败）", level: .warning)
+                            }
+                        } else {
+                            phase4ConsecutiveOpenZeroCount = 0
+                        }
                         phase4Samples.append(point)
                         let tStr = String(format: "%.1f", phase4Elapsed)
                         let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
@@ -2317,7 +2406,7 @@ struct ProductionTestView: View {
             }
         }
 
-        let msg = stepId == TestStep.gasLeakClosed.id && (config.phase4Enabled ?? true)
+        let msg = stepId == TestStep.gasLeakClosed.id && config.phase4Enabled
             ? (msgPhase3 + appLanguage.string("production_test.gas_leak_phase4_passed"))
             : msgPhase3
         return (true, msg)
@@ -2450,7 +2539,15 @@ struct ProductionTestView: View {
         didFinishThisRun = false
         
         // 加载版本配置（用于步骤验证）
-        let rules = loadTestRules()
+        let rules: (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds, stepFatalOnFailure: [String: Bool])
+        do {
+            rules = try loadTestRules()
+        } catch {
+            self.log("错误：\(error.localizedDescription)", level: .error)
+            isRunning = false
+            updateTestResultStatus()
+            return
+        }
         
         self.log("开始产测流程（共 \(enabledSteps.count) 个步骤）", level: .info)
         self.log("——— 产测参数 ———", level: .info)
@@ -2466,12 +2563,12 @@ struct ProductionTestView: View {
         self.log("压力: 关阀 \(t.pressureClosedMin)~\(t.pressureClosedMax) mbar, 开阀 \(t.pressureOpenMin)~\(t.pressureOpenMax) mbar, 差值检查=\(t.pressureDiffCheckEnabled), 差值 \(t.pressureDiffMin)~\(t.pressureDiffMax) mbar", level: .info)
         self.log("OTA: 若 FW 不匹配则触发 \(t.firmwareUpgradeEnabled ? "是" : "否")", level: .info)
         self.log("———————————————", level: .info)
-        
+
         /// 由 step_verify_firmware（确认固件版本）设置：FW 不匹配且「若 FW 不匹配则触发 OTA」开启时为 true；step_ota 据此决定是否执行 OTA
         var fwMismatchRequiresOTA = false
         
         // 规则：若配置为“开阀压力通过则跳过关阀压力步骤”，且开阀步骤启用并通过，则在执行关阀步骤前跳过
-        let skipClosedWhenOpenPasses = UserDefaults.standard.object(forKey: "production_test_gas_leak_skip_closed_when_open_passes") as? Bool ?? false
+        let skipClosedWhenOpenPasses = rules.thresholds.skipClosedWhenOpenPasses
         
         for step in enabledSteps {
                 guard isRunning else {
@@ -2894,14 +2991,9 @@ struct ProductionTestView: View {
                         let pressureOpenMin = rules.thresholds.pressureOpenMin
                         let pressureOpenMax = rules.thresholds.pressureOpenMax
                         
-                        var openZeroTwice = false
-                        var closedZeroTwice = false
-                        
-                        // 1. 打开阀门并确保打开成功
+                        // 1. 打开阀门：发令后最多 valve_open_timeout 秒内轮询 valveState 直至 open（同 ensureValveState）
                         self.log("打开阀门...", level: .info)
-                        ble.setValve(open: true)
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        if ble.lastValveStateValue == "open" {
+                        if await ensureValveState(open: true) {
                             self.log("阀门已打开", level: .info)
                         } else {
                             self.log("警告：阀门状态异常（当前: \(ble.lastValveStateValue)）", level: .warning)
@@ -2914,8 +3006,8 @@ struct ProductionTestView: View {
                         ble.readPressureOpen()
                         var openPressureStr = await waitForPressureValue(
                             getValue: { ble.lastPressureOpenValue },
-                            timeoutSeconds: 2.5,
-                            pollIntervalMs: 100,
+                            timeoutSeconds: rules.thresholds.pressureReadTimeoutSeconds,
+                            pollIntervalMs: rules.thresholds.pressureReadPollIntervalMs,
                             label: "开阀压力"
                         )
                         if openPressureStr.isEmpty || openPressureStr == "--" {
@@ -2924,30 +3016,23 @@ struct ProductionTestView: View {
                             self.log("开启压力: \(openPressureStr)", level: .info)
                         }
                         // 若为错误或0值，快速重读一次；若两次均为 0，则记录标记
-                        let firstOpenIsZero = (openPressureStr == "0 mbar")
-                        if openPressureStr.hasPrefix("Error") || firstOpenIsZero {
+                        if openPressureStr.hasPrefix("Error") || openPressureStr == "0 mbar" {
                             self.log("检测到开阀压力异常(\(openPressureStr))，快速重读一次", level: .warning)
                             ble.clearLastPressureOpenValue()
                             ble.readPressureOpen()
                             openPressureStr = await waitForPressureValue(
                                 getValue: { ble.lastPressureOpenValue },
-                                timeoutSeconds: 0.3,
-                                pollIntervalMs: 50,
+                                timeoutSeconds: rules.thresholds.pressureRetryReadTimeoutSeconds,
+                                pollIntervalMs: rules.thresholds.pressureRetryReadPollIntervalMs,
                                 label: "开阀压力[重读]"
                             )
                             self.log("开阀压力[重读]结果: \(openPressureStr)", level: .info)
-                            if firstOpenIsZero && openPressureStr == "0 mbar" {
-                                openZeroTwice = true
-                                self.log("开阀压力连续两次读取为 0 mbar", level: .error)
-                            }
                         }
                         openPressureValue = Self.parseBarFromPressureString(openPressureStr)
                         
-                        // 3. 关闭阀门并确保关闭成功
+                        // 3. 关闭阀门：发令后最多 valve_open_timeout 秒内轮询直至 closed
                         self.log("关闭阀门...", level: .info)
-                        ble.setValve(open: false)
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        if ble.lastValveStateValue == "closed" {
+                        if await ensureValveState(open: false) {
                             self.log("阀门已关闭", level: .info)
                         } else {
                             self.log("警告：阀门状态异常（当前: \(ble.lastValveStateValue)）", level: .warning)
@@ -2959,8 +3044,8 @@ struct ProductionTestView: View {
                         ble.readPressure()
                         var closedPressureStr = await waitForPressureValue(
                             getValue: { ble.lastPressureValue },
-                            timeoutSeconds: 2.5,
-                            pollIntervalMs: 100,
+                            timeoutSeconds: rules.thresholds.pressureReadTimeoutSeconds,
+                            pollIntervalMs: rules.thresholds.pressureReadPollIntervalMs,
                             label: "关阀压力"
                         )
                         if closedPressureStr.isEmpty || closedPressureStr == "--" {
@@ -2969,22 +3054,17 @@ struct ProductionTestView: View {
                             self.log("关闭压力: \(closedPressureStr)", level: .info)
                         }
                         // 若为错误或0值，快速重读一次；若两次均为 0，则记录标记
-                        let firstClosedIsZero = (closedPressureStr == "0 mbar")
-                        if closedPressureStr.hasPrefix("Error") || firstClosedIsZero {
+                        if closedPressureStr.hasPrefix("Error") || closedPressureStr == "0 mbar" {
                             self.log("检测到关阀压力异常(\(closedPressureStr))，快速重读一次", level: .warning)
                             ble.clearLastPressureValue()
                             ble.readPressure()
                             closedPressureStr = await waitForPressureValue(
                                 getValue: { ble.lastPressureValue },
-                                timeoutSeconds: 0.3,
-                                pollIntervalMs: 50,
+                                timeoutSeconds: rules.thresholds.pressureRetryReadTimeoutSeconds,
+                                pollIntervalMs: rules.thresholds.pressureRetryReadPollIntervalMs,
                                 label: "关阀压力[重读]"
                             )
                             self.log("关阀压力[重读]结果: \(closedPressureStr)", level: .info)
-                            if firstClosedIsZero && closedPressureStr == "0 mbar" {
-                                closedZeroTwice = true
-                                self.log("关阀压力连续两次读取为 0 mbar", level: .error)
-                            }
                         }
                         closedPressureValue = Self.parseBarFromPressureString(closedPressureStr)
                         
@@ -3051,13 +3131,6 @@ struct ProductionTestView: View {
                             }
                         }
                         
-                        // 若出现连续两次 0 mbar 的情况，强制视为失败并在结果中追加说明，后续弹窗由通用重测逻辑处理
-                        if openZeroTwice || closedZeroTwice {
-                            pressurePassed = false
-                            let zeroTwiceMsg = appLanguage.string("production_test.pressure_zero_twice_hint")
-                            pressureMessages.append(zeroTwiceMsg)
-                        }
-                        
                         // 将各条压力结论用换行拼接，提升报表可读性
                         let pressureSummary = pressureMessages.joined(separator: "\n")
                         stepResults[step.id] = pressureSummary + "\n" + appLanguage.string("production_test.pressure_criteria_hint")
@@ -3092,23 +3165,10 @@ struct ProductionTestView: View {
                     
                 case "step_disable_diag": // 屏蔽系统气体自检：写入 12×0x00 后等待可配置秒数，再轮询 Gas status 直至等于 SOP 配置的期望值或超时
                     self.log("步骤: 屏蔽气体自检（Disable diag）", level: .info)
-                    let disableDiagCfg = productionRulesStore.rules.steps.first(where: { $0.id == TestStep.disableDiag.id })?.config
-                    let valveCheckEnabled = disableDiagCfg?.valveCheckEnabled ?? true
-                    let valveCheckSettleSeconds = max(0, disableDiagCfg?.valveCheckSettleSeconds ?? 0.5)
-                    let valveCheckPressureReadDelaySeconds = max(0, disableDiagCfg?.valveCheckPressureReadDelaySeconds ?? 0.6)
-                    // 从 UserDefaults 读取期望的 Gas status 集合（支持单值或多值，如 "0,1"）
-                    let expectedStatusesRaw = UserDefaults.standard.object(forKey: "production_test_disable_diag_expected_gas_status")
-                    let expectedStatuses: [Int]
-                    if let s = expectedStatusesRaw as? String {
-                        let parsed = s.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " }).compactMap { Int($0) }.map { max(0, min(9, $0)) }
-                        expectedStatuses = parsed.isEmpty ? [1] : parsed
-                    } else if let i = expectedStatusesRaw as? Int {
-                        expectedStatuses = [max(0, min(9, i))]
-                    } else if let d = expectedStatusesRaw as? Double {
-                        expectedStatuses = [max(0, min(9, Int(d)))]
-                    } else {
-                        expectedStatuses = [1]
-                    }
+                    let valveCheckEnabled = rules.thresholds.disableDiagValveCheckEnabled
+                    let valveCheckSettleSeconds = max(0, rules.thresholds.disableDiagValveCheckSettleSeconds)
+                    let valveCheckPressureReadDelaySeconds = max(0, rules.thresholds.disableDiagValveCheckPressureReadDelaySeconds)
+                    let expectedStatuses: [Int] = rules.thresholds.disableDiagExpectedGasStatuses
                     let expectedDescription = expectedStatuses.map(String.init).joined(separator: ",")
                     let waitSecondsStr = String(format: "%.1f", rules.thresholds.disableDiagWaitSeconds)
                     let pollTimeoutStr = String(format: "%.1f", rules.thresholds.disableDiagPollTimeoutSeconds)
@@ -3128,7 +3188,7 @@ struct ProductionTestView: View {
                         var gasReached = false
                         while isRunning, ble.isConnected, ble.areCharacteristicsReady, Date().timeIntervalSince(pollStart) < pollTimeout {
                             ble.readGasSystemStatus(silent: true)
-                            try? await Task.sleep(nanoseconds: 150_000_000)
+                            try? await Task.sleep(nanoseconds: UInt64(max(1, rules.thresholds.disableDiagPollIntervalMs)) * 1_000_000)
                             let raw = ble.lastGasSystemStatusValue
                             let parsed: Int? = raw.split(separator: " ").first.flatMap { Int(String($0)) }
                             if let v = parsed, expectedStatuses.contains(v) {
@@ -3190,8 +3250,11 @@ struct ProductionTestView: View {
                         }
                     }
                     
-                case "step_gas_system_status": // 读取 Gas system status，解码后须为 1 (ok)
+                case "step_gas_system_status":
                     self.log("步骤: 读取 Gas system status", level: .info)
+                    let allowedGasStatuses: [Int] = rules.thresholds.gasSystemStatusExpectedValues
+                    let allowedGasDesc = allowedGasStatuses.map(String.init).joined(separator: ",")
+                    self.log("Gas system status 允许值集合: [\(allowedGasDesc)]", level: .info)
                     ble.readGasSystemStatus()
                     let gasStatusTimeoutSeconds = rules.thresholds.deviceInfoReadTimeout
                     let maxGasStatusWaitCount = Int(gasStatusTimeoutSeconds * 10)
@@ -3214,16 +3277,16 @@ struct ProductionTestView: View {
                         break
                     } else {
                         self.log("Gas system status 读取值: \(gasStatusStr)", level: .info)
-                        // 解码：1 = ok 为通过，其余均为失败
-                        let isOk = gasStatusStr.hasPrefix("1 (ok)")
-                        if isOk {
-                            self.log("✓ Gas system status 验证通过: \(gasStatusStr)", level: .info)
+                        let parsedCode: Int? = gasStatusStr.split(separator: " ").first.flatMap { Int(String($0)) }
+                        let inAllowed = parsedCode.map { allowedGasStatuses.contains($0) } ?? false
+                        if inAllowed {
+                            self.log("✓ Gas system status 验证通过: \(gasStatusStr)（在允许集合 [\(allowedGasDesc)] 内）", level: .info)
                             stepResults[step.id] = String(format: appLanguage.string("production_test_rules.gas_status_pass"), gasStatusStr)
                             stepStatuses[step.id] = .passed
                     recordStepOutcome(stepId: step.id, outcome: "passed")
                         } else {
-                            self.log("Gas system status 检查失败: \(gasStatusStr)，期望 1 (ok)", level: .error)
-                            stepResults[step.id] = String(format: appLanguage.string("production_test_rules.gas_status_fail_expected"), gasStatusStr)
+                            self.log("Gas system status 检查失败: \(gasStatusStr)，允许集合 [\(allowedGasDesc)]", level: .error)
+                            stepResults[step.id] = "\(String(format: appLanguage.string("production_test_rules.gas_status_fail_expected"), gasStatusStr))（SOP 允许: \(allowedGasDesc)）"
                             stepStatuses[step.id] = .failed
                     recordStepOutcome(stepId: step.id, outcome: "failed")
                             if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
@@ -3233,7 +3296,18 @@ struct ProductionTestView: View {
                     
                 case "step_gas_leak_open": // 气体泄漏检测（开阀压力）
                     self.log("步骤: 气体泄漏检测（开阀压力）", level: .info)
-                    let configOpen = loadProductionGasLeakConfig(keyPrefix: "production_test_gas_leak_open")
+                    let configOpen: ProductionGasLeakConfig
+                    do {
+                        configOpen = try loadProductionGasLeakConfig(keyPrefix: "production_test_gas_leak_open")
+                    } catch {
+                        let msg = "规则错误：\(error.localizedDescription)"
+                        self.log(msg, level: .error)
+                        stepResults[step.id] = msg
+                        stepStatuses[step.id] = .failed
+                        recordStepOutcome(stepId: step.id, outcome: "failed")
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                        break
+                    }
                     let resultOpen = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_open_title"), config: configOpen)
                     stepResults[step.id] = resultOpen.message
                     stepStatuses[step.id] = resultOpen.passed ? .passed : .failed
@@ -3251,7 +3325,18 @@ struct ProductionTestView: View {
                     recordStepOutcome(stepId: step.id, outcome: "skipped")
                     } else {
                         self.log("步骤: 气体泄漏检测（关阀压力）", level: .info)
-                        let configClosed = loadProductionGasLeakConfig(keyPrefix: "production_test_gas_leak_closed")
+                        let configClosed: ProductionGasLeakConfig
+                        do {
+                            configClosed = try loadProductionGasLeakConfig(keyPrefix: "production_test_gas_leak_closed")
+                        } catch {
+                            let msg = "规则错误：\(error.localizedDescription)"
+                            self.log(msg, level: .error)
+                            stepResults[step.id] = msg
+                            stepStatuses[step.id] = .failed
+                            recordStepOutcome(stepId: step.id, outcome: "failed")
+                            if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                            break
+                        }
                         let resultClosed = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_closed_title"), config: configClosed)
                         stepResults[step.id] = resultClosed.message
                         stepStatuses[step.id] = resultClosed.passed ? .passed : .failed

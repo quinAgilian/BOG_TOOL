@@ -521,12 +521,14 @@ struct ProductionTestRulesView: View {
             switch step.id {
             case TestStep.connectDevice.id:
                 config.bluetoothPermissionWaitSeconds = bluetoothPermissionWaitSeconds
+                config.deviceReconnectTimeoutSeconds = deviceReconnectTimeout
                 
             case TestStep.verifyFirmware.id:
                 config.allowedBootloaderVersions = [bootloaderVersion]
                 config.allowedFirmwareVersions = firmwareVersion.isEmpty ? [] : [firmwareVersion]
                 config.allowedHardwareVersions = [hardwareVersion]
                 config.firmwareUpgradeEnabled = firmwareUpgradeEnabled
+                config.deviceInfoReadTimeoutSeconds = deviceInfoReadTimeout
                 
             case TestStep.readRTC.id:
                 config.passThresholdSeconds = rtcTimeDiffPassThreshold
@@ -544,6 +546,10 @@ struct ProductionTestRulesView: View {
                 config.diffMinMbar = pressureDiffMin
                 config.diffMaxMbar = pressureDiffMax
                 config.failRetryConfirmEnabled = pressureFailRetryConfirmEnabled
+                config.pressureReadTimeoutSeconds = 2.5
+                config.pressureReadPollIntervalMs = 100
+                config.pressureRetryReadTimeoutSeconds = 0.3
+                config.pressureRetryReadPollIntervalMs = 50
                 
             case TestStep.disableDiag.id:
                 config.waitSeconds = disableDiagWaitSeconds
@@ -553,9 +559,25 @@ struct ProductionTestRulesView: View {
                 config.expectedGasStatusValues = expectedValues.isEmpty ? [disableDiagExpectedGasStatus] : expectedValues
                 config.pollTimeoutSeconds = disableDiagPollTimeoutSeconds
                 config.pollEnabled = disableDiagPollGasStatusEnabled
+                config.pollIntervalMs = 150
                 config.valveCheckEnabled = disableDiagValveCheckEnabled
                 config.valveCheckSettleSeconds = disableDiagValveCheckSettleSeconds
                 config.valveCheckPressureReadDelaySeconds = disableDiagValveCheckPressureReadDelaySeconds
+
+            case TestStep.gasLeakOpen.id:
+                config.preCloseDurationSeconds = gasLeakOpenPreCloseDurationSeconds
+                config.postCloseDurationSeconds = gasLeakOpenPostCloseDurationSeconds
+                config.intervalSeconds = gasLeakOpenIntervalSeconds
+                config.dropThresholdMbar = gasLeakOpenDropThresholdMbar
+                config.startPressureMinMbar = gasLeakOpenStartPressureMinMbar
+                config.requirePipelineReadyConfirm = gasLeakOpenRequirePipelineReadyConfirm
+                config.requireValveClosedConfirm = gasLeakOpenRequireValveClosedConfirm
+                config.limitSource = gasLeakOpenLimitSource
+                config.limitFloorBar = gasLeakOpenLimitFloorBar
+                config.phase4Enabled = true
+                config.phase4MonitorDurationSeconds = 20
+                config.phase4DropWithinSeconds = 15
+                config.phase4PressureBelowMbar = 100
                 
             case TestStep.gasLeakClosed.id:
                 config.preCloseDurationSeconds = gasLeakClosedPreCloseDurationSeconds
@@ -575,7 +597,17 @@ struct ProductionTestRulesView: View {
                 
             case TestStep.ensureValveOpen.id:
                 config.openTimeoutSeconds = valveOpenTimeout
-                
+
+            case TestStep.readGasSystemStatus.id:
+                if let arr = productionRulesStore.rules.steps.first(where: { $0.id == TestStep.readGasSystemStatus.id })?.config.expectedGasStatusValues, !arr.isEmpty {
+                    config.expectedGasStatusValues = arr
+                } else {
+                    config.expectedGasStatusValues = [disableDiagExpectedGasStatus]
+                }
+
+            case TestStep.otaBeforeDisconnect.id:
+                config.otaStartWaitTimeoutSeconds = otaStartWaitTimeout
+
             default:
                 break
             }
@@ -641,7 +673,8 @@ struct ProductionTestRulesView: View {
                 let decoder = JSONDecoder()
                 let rules = try decoder.decode(ProductionRules.self, from: data)
                 applyProductionRules(rules)
-                hasUnsavedChanges = true
+                productionRulesStore.apply(rules)
+                hasUnsavedChanges = false
                 ble.appendLog("[Rules] Imported rules JSON from: \(url.lastPathComponent)", level: .info)
             } catch {
                 ble.appendLog("[Rules] Failed to import rules JSON: \(error.localizedDescription)", level: .error)
@@ -654,7 +687,8 @@ struct ProductionTestRulesView: View {
         guard !isReadOnly else { return }
         if let rules = try? ProductionRulesLoader.loadBundledDefaultRules() {
             applyProductionRules(rules)
-            hasUnsavedChanges = true
+            productionRulesStore.apply(rules)
+            hasUnsavedChanges = false
             ble.appendLog("[Rules] Reset rules from bundled default_production_rules.json", level: .info)
         } else {
             ble.appendLog("[Rules] Failed to load bundled default_production_rules.json", level: .error)
@@ -685,6 +719,7 @@ struct ProductionTestRulesView: View {
             .readPressure,
             .disableDiag,
             .readGasSystemStatus,
+            .gasLeakOpen,
             .gasLeakClosed,
             .ensureValveOpen,
             .reset,
@@ -721,6 +756,9 @@ struct ProductionTestRulesView: View {
                 if let v = cfg.firmwareUpgradeEnabled {
                     firmwareUpgradeEnabled = v
                 }
+                if let v = cfg.deviceInfoReadTimeoutSeconds { deviceInfoReadTimeout = v }
+            case TestStep.connectDevice.id:
+                if let v = cfg.deviceReconnectTimeoutSeconds { deviceReconnectTimeout = v }
             case TestStep.readRTC.id:
                 if let v = cfg.passThresholdSeconds { rtcTimeDiffPassThreshold = v }
                 if let v = cfg.failThresholdSeconds { rtcTimeDiffFailThreshold = v }
@@ -736,6 +774,8 @@ struct ProductionTestRulesView: View {
                 if let v = cfg.diffMinMbar { pressureDiffMin = v }
                 if let v = cfg.diffMaxMbar { pressureDiffMax = v }
                 if let v = cfg.failRetryConfirmEnabled { pressureFailRetryConfirmEnabled = v }
+            case TestStep.otaBeforeDisconnect.id:
+                if let v = cfg.otaStartWaitTimeoutSeconds { otaStartWaitTimeout = v }
             case TestStep.disableDiag.id:
                 if let v = cfg.waitSeconds { disableDiagWaitSeconds = v }
                 if let arr = cfg.expectedGasStatusValues, !arr.isEmpty {
@@ -762,6 +802,16 @@ struct ProductionTestRulesView: View {
                 if let v = cfg.phase4DropWithinSeconds { gasLeakClosedPhase4DropWithinSeconds = v }
                 if let v = cfg.phase4PressureBelowMbar { gasLeakClosedPhase4PressureBelowMbar = v }
                 if let v = cfg.skipClosedWhenOpenPasses { gasLeakSkipClosedWhenOpenPasses = v }
+            case TestStep.gasLeakOpen.id:
+                if let v = cfg.preCloseDurationSeconds { gasLeakOpenPreCloseDurationSeconds = v }
+                if let v = cfg.postCloseDurationSeconds { gasLeakOpenPostCloseDurationSeconds = v }
+                if let v = cfg.intervalSeconds { gasLeakOpenIntervalSeconds = v }
+                if let v = cfg.dropThresholdMbar { gasLeakOpenDropThresholdMbar = v }
+                if let v = cfg.startPressureMinMbar { gasLeakOpenStartPressureMinMbar = v }
+                if let v = cfg.requirePipelineReadyConfirm { gasLeakOpenRequirePipelineReadyConfirm = v }
+                if let v = cfg.requireValveClosedConfirm { gasLeakOpenRequireValveClosedConfirm = v }
+                if let v = cfg.limitSource { gasLeakOpenLimitSource = v }
+                if let v = cfg.limitFloorBar { gasLeakOpenLimitFloorBar = v }
             case TestStep.ensureValveOpen.id:
                 if let v = cfg.openTimeoutSeconds { valveOpenTimeout = v }
             default:
@@ -1980,9 +2030,7 @@ struct ProductionTestRulesView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
                     .onChange(of: disableDiagExpectedGasStatusText) { newValue in
-                        // 保存原始文本（允许 "0,1" 等多值）
-                        UserDefaults.standard.set(newValue, forKey: "production_test_disable_diag_expected_gas_status")
-                        // 同步首个数字到整型状态，便于导入/导出和向后兼容
+                        // 产测期望集合以 Apply 后的 ProductionRules 为准；此处仅同步首个数字供本地状态/导出
                         if let first = newValue.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " }).first,
                            let intVal = Int(first) {
                             disableDiagExpectedGasStatus = max(0, min(9, intVal))
@@ -2075,7 +2123,6 @@ struct ProductionTestRulesView: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .onChange(of: gasLeakSkipClosedWhenOpenPasses) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "production_test_gas_leak_skip_closed_when_open_passes")
                         NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                     }
             }
