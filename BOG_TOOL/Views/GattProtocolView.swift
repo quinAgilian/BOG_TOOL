@@ -36,7 +36,7 @@ struct GattProtocolView: View {
                 }
             }
         }
-        .frame(minWidth: 520, minHeight: 420)
+        .frame(minWidth: 920, idealWidth: 980, minHeight: 560, idealHeight: 640)
     }
 
     private var header: some View {
@@ -279,5 +279,5 @@ private struct PropertiesBadges: View {
 #Preview {
     GattProtocolView()
         .environmentObject(AppLanguage())
-        .frame(width: 560, height: 500)
+        .frame(width: 980, height: 640)
 }

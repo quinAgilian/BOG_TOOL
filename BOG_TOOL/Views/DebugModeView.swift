@@ -169,6 +169,9 @@ struct DebugModeView: View {
     /// 图表 hover 高亮的样本点与位置（用于鼠标悬停时显示时间、压力与状态）
     @State private var leakTestHoverSample: LeakTestSample?
     @State private var leakTestHoverPosition: CGPoint?
+    /// Debug：修改硬件版本（Dev Access 0x03 + UTF-8）输入草稿
+    @State private var hardwareRevisionDraft: String = ""
+    @State private var isApplyingHardwareRevision: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
@@ -180,6 +183,8 @@ struct DebugModeView: View {
 
             // 设备操作：恢复出厂（擦除 NVM）、重启（仅 UI，逻辑后续实现）
             deviceActionsSection
+
+            deviceIdentitySection
 
             rtcSection
             valveSection
@@ -308,6 +313,110 @@ struct DebugModeView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
+            }
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+
+    // MARK: - 设备标识（SN / HW_REV，Dev Access 写 HW）
+
+    /// 手动输入的硬件版本：合法时为大写 `P##V##R##`，否则 nil（空输入亦为 nil）
+    private var normalizedHardwareRevisionDraft: String? {
+        BLEManager.normalizedProductHardwareRevision(hardwareRevisionDraft)
+    }
+
+    private var hardwareRevisionDraftHasNonWhitespace: Bool {
+        !hardwareRevisionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var deviceIdentitySection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            Text(appLanguage.string("debug.device_identity"))
+                .font(UIDesignSystem.Typography.subsectionTitle)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Text(appLanguage.string("debug.serial_number_label"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Text(ble.deviceSerialNumber ?? "--")
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .textSelection(.enabled)
+                Spacer()
+            }
+            .padding(.horizontal, UIDesignSystem.Padding.md)
+            .padding(.vertical, UIDesignSystem.Padding.xs)
+            .background(Color.secondary.opacity(0.12))
+            .cornerRadius(UIDesignSystem.CornerRadius.sm)
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Text(appLanguage.string("debug.hardware_revision_label"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                Text(ble.deviceHardwareRevision ?? "--")
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .textSelection(.enabled)
+                Spacer()
+            }
+            .padding(.horizontal, UIDesignSystem.Padding.md)
+            .padding(.vertical, UIDesignSystem.Padding.xs)
+            .background(Color.secondary.opacity(0.12))
+            .cornerRadius(UIDesignSystem.CornerRadius.sm)
+
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Text(appLanguage.string("debug.device_identity_hint"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                Button {
+                    hardwareRevisionDraft = ble.deviceHardwareRevision ?? ""
+                } label: {
+                    Text(appLanguage.string("debug.hardware_revision_fill_from_device"))
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
+                Button {
+                    ble.refreshDeviceInformationSerialAndHardware()
+                } label: {
+                    Text(appLanguage.string("debug.refresh_device_info"))
+                        .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress)
+            }
+
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                    TextField(appLanguage.string("debug.hardware_revision_placeholder"), text: $hardwareRevisionDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress || isApplyingHardwareRevision)
+                    Button {
+                        guard let toApply = normalizedHardwareRevisionDraft else { return }
+                        isApplyingHardwareRevision = true
+                        Task {
+                            _ = await ble.sendDevAccessChangeHardwareRevision(to: toApply)
+                            await MainActor.run { isApplyingHardwareRevision = false }
+                        }
+                    } label: {
+                        Text(appLanguage.string("debug.apply_hardware_revision"))
+                            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth, maxWidth: UIDesignSystem.Component.actionButtonWidth)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress || isApplyingHardwareRevision || normalizedHardwareRevisionDraft == nil)
+                }
+                Text(appLanguage.string("debug.hardware_revision_format_hint"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                if hardwareRevisionDraftHasNonWhitespace, normalizedHardwareRevisionDraft == nil {
+                    Text(appLanguage.string("debug.hardware_revision_format_invalid"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(.red)
+                }
             }
         }
         .padding(UIDesignSystem.Padding.sm)

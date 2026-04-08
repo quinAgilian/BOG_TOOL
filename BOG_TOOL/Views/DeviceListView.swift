@@ -40,6 +40,7 @@ struct DeviceListView: View {
         }
         .sheet(isPresented: $showGattProtocol) {
             GattProtocolView()
+                .frame(minWidth: 920, minHeight: 560)
         }
         .onChange(of: selectedId) { newValue in
             // 更新 BLEManager 中的选中设备ID

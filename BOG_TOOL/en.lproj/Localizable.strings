@@ -138,6 +138,16 @@
 "debug.reboot" = "Reboot";
 "debug.reboot_hint" = "Reboot device (unlock then write 0x00000001; requires firmware 1.1.2+)";
 "debug.device_actions" = "Device";
+"debug.device_identity" = "Device identity";
+"debug.serial_number_label" = "SN (2A25)";
+"debug.hardware_revision_label" = "HW_REV (2A27)";
+"debug.device_identity_hint" = "Values come from Device Information. Use Dev Access (unlock + 0x03 + UTF-8) to change HW revision; requires firmware 1.1.2+ (or 0.x > 0.4.1).";
+"debug.refresh_device_info" = "Refresh SN/HW";
+"debug.hardware_revision_placeholder" = "e.g. P02V02R06";
+"debug.hardware_revision_format_hint" = "Format PXXVXXRXX: X must be a decimal digit (exactly 9 characters: P, 2 digits, V, 2 digits, R, 2 digits). P/V/R are case-insensitive.";
+"debug.hardware_revision_format_invalid" = "Invalid format. Must be exactly PXXVXXRXX (six digits total). Example: P02V02R06.";
+"debug.hardware_revision_fill_from_device" = "Fill from device";
+"debug.apply_hardware_revision" = "Apply HW revision";
 
 /* Gas leak detection */
 "debug.gas_leak_detection" = "Gas leak detection";

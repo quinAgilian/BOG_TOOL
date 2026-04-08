@@ -69,6 +69,19 @@ final class BLEManager: NSObject, ObservableObject {
         return fw.isEmpty ? nil : fw
     }
     
+    /// 产品硬件版本：`P` + 两位十进制数字 + `V` + 两位 + `R` + 两位（即 `PXXVXXRXX`，共 9 个字符，例 P02V02R06）。
+    /// trim 后转大写；必须整串匹配（避免 `range(of:.regularExpression)` 在个别环境下只匹配到更长串的前缀）。
+    nonisolated static func normalizedProductHardwareRevision(_ raw: String) -> String? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !s.isEmpty else { return nil }
+        // P + XX + V + XX + R + XX → 固定长度 9（ASCII）
+        guard s.count == 9 else { return nil }
+        let pattern = "^P[0-9]{2}V[0-9]{2}R[0-9]{2}$"
+        guard let r = s.range(of: pattern, options: .regularExpression),
+              r.lowerBound == s.startIndex, r.upperBound == s.endIndex else { return nil }
+        return s
+    }
+    
     /// 静态版本：从版本字符串提取固件号（供 parseFirmwareVersion 等复用）；nonisolated 供 parseFirmwareVersion 调用
     private nonisolated static func extractFirmwareVersionsStatic(from versionString: String) -> (bootloader: String, firmware: String) {
         let nsString = versionString as NSString
@@ -335,6 +348,8 @@ final class BLEManager: NSObject, ObservableObject {
     private var valveStateAuthErrorLogged = false
     /// 先读再设：读完后若已是目标状态则仅警告，否则写入。nil = 无待处理
     private var pendingValveSetOpen: Bool?
+    /// Dev Access 写入 HW 后，待下一次 2A27 读回时与期望值比对；nil = 无待确认
+    private var pendingHardwareRevisionVerifyExpected: String?
     /// OTA 数据包确认（读到 image valid）后是否自动发送 reboot 命令；由 UI 复选框控制
     @Published var autoSendRebootAfterOTA: Bool = true
     
@@ -736,6 +751,89 @@ final class BLEManager: NSObject, ObservableObject {
     /// - Returns: .sent 已发送且已确认设备断开；.timeout 已发送但未在约定时间内确认；.rejectedByVersion / .notReady 未发送
     func sendTestingFactoryResetCommand() async -> TestingCommandResult {
         await sendTestingCommand(0x0000_0002, label: "nvs erase")
+    }
+
+    /// Dev Access（00000003-D1D0-…）元数据写入结果：不期待设备立即断开（与 reboot / NVS 擦除不同）
+    enum DevAccessMetadataResult: Sendable {
+        case completed
+        case notReady
+        case rejectedByVersion
+        case emptyValue
+        case invalidFormat
+    }
+
+    /// Dev Access：修改硬件版本 opcode 0x00000003（4 字节小端），下一包为 UTF-8 目标字符串（与标准 2A27 字符串编码一致）。
+    /// 先写解锁 Magic，与 reboot / factory reset 相同版本门槛（>= 1.1.2 或 0.x > 0.4.1）。
+    func sendDevAccessChangeHardwareRevision(to newRevision: String) async -> DevAccessMetadataResult {
+        let trimmed = newRevision.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            appendLog("[Dev Access] 硬件版本字符串为空", level: .error)
+            return .emptyValue
+        }
+        guard let normalized = Self.normalizedProductHardwareRevision(newRevision) else {
+            appendLog("[Dev Access] 硬件版本格式无效，须为 PXXVXXRXX（X 为十进制数字，共 9 字符；例 P02V02R06）", level: .error)
+            return .invalidFormat
+        }
+        guard let payload = normalized.data(using: .utf8), !payload.isEmpty else {
+            appendLog("[Dev Access] 无法将硬件版本编码为 UTF-8", level: .error)
+            return .notReady
+        }
+        if payload.count > 64 {
+            appendLog("[Dev Access] 警告：UTF-8 长度 \(payload.count) 字节，超过 64 可能导致设备拒收", level: .warning)
+        }
+        guard isConnected, let char = testingCharacteristic else {
+            appendLog("[Dev Access] 未连接或 Dev Access 特征未就绪", level: .error)
+            return .notReady
+        }
+        let (allowed, errorMsg) = isTestingRebootCommandAllowed()
+        if !allowed, let msg = errorMsg {
+            appendLog("[Dev Access] 命令被拒绝 — \(msg)", level: .error)
+            return .rejectedByVersion
+        }
+        writeTestingUnlock()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        let opcode: UInt32 = 0x0000_0003
+        let opcodeData = withUnsafeBytes(of: opcode.littleEndian) { Data($0) }
+        writeToCharacteristic(char, data: opcodeData)
+        appendLog("[Dev Access] 已发送 change hw rev (0x00000003 LE)", level: .info)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        writeToCharacteristic(char, data: payload)
+        appendLog("[Dev Access] 已写入硬件版本 UTF-8（\(payload.count) 字节）", level: .info)
+        let expectedSnapshot = normalized
+        pendingHardwareRevisionVerifyExpected = expectedSnapshot
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        refreshDeviceInformationSerialAndHardware()
+        appendLog("[Dev Access] 已请求回读 SN/HW（2A25/2A27），用于确认硬件版本是否生效", level: .info)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard pendingHardwareRevisionVerifyExpected == expectedSnapshot else { return }
+            pendingHardwareRevisionVerifyExpected = nil
+            appendLog("[Dev Access] 约 4s 内未收到 2A27 回读，请手动点「刷新 SN/HW」或检查连接", level: .warning)
+        }
+        return .completed
+    }
+
+    /// 重新读取 Device Information 中的序列号（2A25）与硬件版本（2A27），用于 Debug 展示。
+    func refreshDeviceInformationSerialAndHardware() {
+        guard let p = connectedPeripheral else {
+            appendLog("[Device Info] 未连接，无法读取 SN / HW", level: .warning)
+            return
+        }
+        guard let svc = p.services?.first(where: { $0.uuid == BLEManagerConstants.deviceInfoServiceCBUUID }) else {
+            appendLog("[Device Info] 未发现 180A 服务，请等待连接完成", level: .warning)
+            return
+        }
+        let chars = svc.characteristics ?? []
+        var any = false
+        for c in chars where c.uuid == Self.charSerialUUID || c.uuid == Self.charHardwareUUID || Self.isHardwareRevisionCharacteristic(c.uuid) {
+            p.readValue(for: c)
+            any = true
+        }
+        if any {
+            appendLog("[Device Info] 已请求读取 SN(2A25) / HW(2A27)", level: .info)
+        } else {
+            appendLog("[Device Info] 180A 下暂无 2A25/2A27 特征", level: .warning)
+        }
     }
     
     /// 清除 RTC 读取状态（产测/调试在发起新一次读取前调用，避免误用旧值或误判超时）
@@ -1901,6 +1999,7 @@ extension BLEManager: CBCentralManagerDelegate {
             lastValveModeValue = "--"
             valveOperationWarning = nil
             pendingValveSetOpen = nil
+            pendingHardwareRevisionVerifyExpected = nil
             valveStateAuthErrorLogged = false
             currentFirmwareVersion = nil
             bootloaderVersion = nil
@@ -2210,6 +2309,14 @@ extension BLEManager: CBPeripheralDelegate {
                         currentFirmwareVersion = versions.firmware
                     } else if characteristic.uuid == BLEManager.charHardwareUUID || BLEManager.isHardwareRevisionCharacteristic(characteristic.uuid) {
                         deviceHardwareRevision = str
+                        if let expected = pendingHardwareRevisionVerifyExpected {
+                            pendingHardwareRevisionVerifyExpected = nil
+                            if str == expected {
+                                appendLog("[Dev Access] 回读 2A27 与写入一致: \(str)", level: .info)
+                            } else {
+                                appendLog("[Dev Access] 回读 2A27 与写入不一致 — 期望: \(expected)，实际: \(str)", level: .warning)
+                            }
+                        }
                     }
                 }
             } else {

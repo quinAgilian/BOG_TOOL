@@ -138,6 +138,16 @@
 "debug.reboot" = "重启设备";
 "debug.reboot_hint" = "重启设备（先解锁再写 0x00000001；需固件 1.1.2+）";
 "debug.device_actions" = "设备";
+"debug.device_identity" = "设备标识";
+"debug.serial_number_label" = "序列号 SN (2A25)";
+"debug.hardware_revision_label" = "硬件版本 HW_REV (2A27)";
+"debug.device_identity_hint" = "数值来自 Device Information 服务。修改硬件版本：Dev Access 先解锁，再写 0x00000003（4 字节小端），下一包为 UTF-8 字符串；需固件 1.1.2+（或 0.x > 0.4.1）。";
+"debug.refresh_device_info" = "刷新 SN/HW";
+"debug.hardware_revision_placeholder" = "例如 P02V02R06";
+"debug.hardware_revision_format_hint" = "格式 PXXVXXRXX：X 须为十进制数字，整串固定 9 个字符（P、两位数字、V、两位数字、R、两位数字）。P/V/R 大小写不敏感，写入时转为大写。";
+"debug.hardware_revision_format_invalid" = "格式不正确：须严格为 PXXVXXRXX（共 6 个数字位）。示例：P02V02R06。";
+"debug.hardware_revision_fill_from_device" = "填入当前设备值";
+"debug.apply_hardware_revision" = "写入硬件版本";
 
 /* 气体泄漏检测 */
 "debug.gas_leak_detection" = "气体泄漏检测";
