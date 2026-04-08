@@ -75,6 +75,12 @@ struct ProductionRules: Codable, Equatable {
             var allowedHardwareVersions: [String]?
             var firmwareUpgradeEnabled: Bool?
 
+            // step_verify_hw_rev
+            var targetHardwareVersion: String?
+            var autoWriteWhenMismatch: Bool?
+            var writeVerifyTimeoutSeconds: Double?
+            var writeVerifyPollIntervalMs: Int?
+
             // step_read_rtc
             var passThresholdSeconds: Double?
             var failThresholdSeconds: Double?
@@ -144,6 +150,11 @@ struct ProductionRules: Codable, Equatable {
                 case allowedFirmwareVersions = "allowed_firmware_versions"
                 case allowedHardwareVersions = "allowed_hardware_versions"
                 case firmwareUpgradeEnabled = "firmware_upgrade_enabled"
+
+                case targetHardwareVersion = "target_hardware_version"
+                case autoWriteWhenMismatch = "auto_write_when_mismatch"
+                case writeVerifyTimeoutSeconds = "write_verify_timeout_seconds"
+                case writeVerifyPollIntervalMs = "write_verify_poll_interval_ms"
 
                 case passThresholdSeconds = "pass_threshold_seconds"
                 case failThresholdSeconds = "fail_threshold_seconds"

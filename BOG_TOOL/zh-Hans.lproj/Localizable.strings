@@ -600,3 +600,15 @@
 "firmware_manager.select_file" = "选择固件文件";
 "firmware_manager.debug_target" = "目标固件（Debug OTA）";
 "firmware_manager.sop_version" = "产测按 SOP 期望版本自动选择";
+
+"production_test_rules.step_verify_hw_rev_title" = "确认 HW_REV";
+"production_test_rules.step_verify_hw_rev_desc" = "读取 HW_REV 并与目标值比较；不一致时可按配置自动改写并回读确认。";
+"production_test_rules.verify_hw_rev_title" = "HW_REV 校验";
+"production_test_rules.hw_rev_auto_write_when_mismatch" = "不一致时自动改写";
+"production_test_rules.hw_rev_read_timeout" = "HW_REV 读取超时";
+"production_test_rules.hw_rev_verify_timeout" = "改写后回读确认超时";
+"production_test_rules.hw_rev_verify_poll_interval" = "回读轮询间隔";
+"production_test.hardware_version_unreadable" = "无法读取 HW 版本";
+"production_test.hardware_version_invalid_format" = "目标 HW 版本格式不合法（需 PXXVXXRXX）";
+"production_test.hardware_version_write_failed" = "HW 版本写入命令失败";
+"production_test.hardware_version_verify_failed" = "HW 版本回读确认失败";

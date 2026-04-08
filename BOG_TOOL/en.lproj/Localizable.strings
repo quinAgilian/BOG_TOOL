@@ -600,3 +600,15 @@
 "production_test_rules.current_file_dirty_suffix" = " (modified, not applied)";
 "production_test_rules.export_rules" = "Export JSON";
 "production_test_rules.import_rules" = "Import JSON";
+
+"production_test_rules.step_verify_hw_rev_title" = "Verify HW_REV";
+"production_test_rules.step_verify_hw_rev_desc" = "Read HW_REV and compare with target; optionally auto-write then verify by read-back.";
+"production_test_rules.verify_hw_rev_title" = "HW_REV Verification";
+"production_test_rules.hw_rev_auto_write_when_mismatch" = "Auto write when mismatch";
+"production_test_rules.hw_rev_read_timeout" = "HW_REV read timeout";
+"production_test_rules.hw_rev_verify_timeout" = "Write verify timeout";
+"production_test_rules.hw_rev_verify_poll_interval" = "Verify poll interval";
+"production_test.hardware_version_unreadable" = "HW version unreadable";
+"production_test.hardware_version_invalid_format" = "Target HW version format invalid (expected PXXVXXRXX)";
+"production_test.hardware_version_write_failed" = "HW version write command failed";
+"production_test.hardware_version_verify_failed" = "HW version read-back verify failed";

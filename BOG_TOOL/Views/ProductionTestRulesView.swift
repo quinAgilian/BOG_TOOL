@@ -15,6 +15,7 @@ struct TestStep: Identifiable, Equatable {
     
     static let connectDevice = TestStep(id: "step_connect", key: "step1", isLocked: true, enabled: true)
     static let verifyFirmware = TestStep(id: "step_verify_firmware", key: "step2", isLocked: false, enabled: true)
+    static let verifyHardwareRevision = TestStep(id: "step_verify_hw_rev", key: "step_verify_hw_rev", isLocked: false, enabled: true)
     static let readRTC = TestStep(id: "step_read_rtc", key: "step3", isLocked: false, enabled: true)
     static let readPressure = TestStep(id: "step_read_pressure", key: "step4", isLocked: false, enabled: true)
     /// 屏蔽系统气体自检：向 co2PressureLimits 写入 12 个 0x00（与 Debug 区「Disable diag」共用 BLEManager.writeCo2PressureLimitsZeros）
@@ -70,6 +71,10 @@ struct ProductionTestRulesView: View {
     @State private var bootloaderVersion: String = ""
     @State private var firmwareVersion: String = ""
     @State private var hardwareVersion: String = ""
+    @State private var hwRevAutoWriteWhenMismatch: Bool = true
+    @State private var hwRevReadTimeoutSeconds: Double = 3.0
+    @State private var hwRevWriteVerifyTimeoutSeconds: Double = 5.0
+    @State private var hwRevWriteVerifyPollIntervalMs: Int = 150
     // 固件版本升级开关（默认关闭，仅在用户显式开启时触发 OTA）
     @State private var firmwareUpgradeEnabled: Bool = false
     @State private var isEditingOrder: Bool = false
@@ -232,6 +237,7 @@ struct ProductionTestRulesView: View {
     private static let defaultSteps: [TestStep] = [
         .connectDevice,
         .verifyFirmware,
+        .verifyHardwareRevision,
         .readRTC,
         .readPressure,
         .disableDiag,
@@ -248,7 +254,7 @@ struct ProductionTestRulesView: View {
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .verifyHardwareRevision, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         // 加载步骤顺序（旧版 step1～step4 迁移为语义化 id）
@@ -529,6 +535,13 @@ struct ProductionTestRulesView: View {
                 config.allowedHardwareVersions = [hardwareVersion]
                 config.firmwareUpgradeEnabled = firmwareUpgradeEnabled
                 config.deviceInfoReadTimeoutSeconds = deviceInfoReadTimeout
+
+            case TestStep.verifyHardwareRevision.id:
+                config.targetHardwareVersion = hardwareVersion
+                config.autoWriteWhenMismatch = hwRevAutoWriteWhenMismatch
+                config.readTimeoutSeconds = hwRevReadTimeoutSeconds
+                config.writeVerifyTimeoutSeconds = hwRevWriteVerifyTimeoutSeconds
+                config.writeVerifyPollIntervalMs = hwRevWriteVerifyPollIntervalMs
                 
             case TestStep.readRTC.id:
                 config.passThresholdSeconds = rtcTimeDiffPassThreshold
@@ -715,6 +728,7 @@ struct ProductionTestRulesView: View {
         let stepMap = [
             TestStep.connectDevice,
             .verifyFirmware,
+            .verifyHardwareRevision,
             .readRTC,
             .readPressure,
             .disableDiag,
@@ -757,6 +771,12 @@ struct ProductionTestRulesView: View {
                     firmwareUpgradeEnabled = v
                 }
                 if let v = cfg.deviceInfoReadTimeoutSeconds { deviceInfoReadTimeout = v }
+            case TestStep.verifyHardwareRevision.id:
+                if let v = cfg.targetHardwareVersion, !v.isEmpty { hardwareVersion = v }
+                if let v = cfg.autoWriteWhenMismatch { hwRevAutoWriteWhenMismatch = v }
+                if let v = cfg.readTimeoutSeconds { hwRevReadTimeoutSeconds = v }
+                if let v = cfg.writeVerifyTimeoutSeconds { hwRevWriteVerifyTimeoutSeconds = v }
+                if let v = cfg.writeVerifyPollIntervalMs { hwRevWriteVerifyPollIntervalMs = v }
             case TestStep.connectDevice.id:
                 if let v = cfg.deviceReconnectTimeoutSeconds { deviceReconnectTimeout = v }
             case TestStep.readRTC.id:
@@ -976,7 +996,7 @@ struct ProductionTestRulesView: View {
 
         // 更新本地状态数组
         var newSteps: [TestStep] = []
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .verifyFirmware, .verifyHardwareRevision, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         for s in snapshot.steps {
             if var base = stepMap[s.id] {
@@ -1575,6 +1595,8 @@ struct ProductionTestRulesView: View {
             switch step.id {
             case "step_verify_firmware": // 确认固件版本
                 versionConfigurationView
+            case "step_verify_hw_rev": // 校验/可选改写 HW_REV
+                verifyHwRevConfigurationView
             case "step_read_rtc": // 检查RTC
                 rtcConfigurationView
             case "step_read_pressure": // 读取压力值
@@ -1832,6 +1854,58 @@ struct ProductionTestRulesView: View {
         .padding(UIDesignSystem.Padding.md)
     }
     
+
+    /// HW_REV 步骤配置（独立步骤：读取→比对→可选改写→回读确认）
+    private var verifyHwRevConfigurationView: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test_rules.verify_hw_rev_title"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.hardware_version_label"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
+
+                TextField(appLanguage.string("production_test_rules.hardware_version_placeholder"), text: $hardwareVersion)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                    .onChange(of: hardwareVersion) { _ in hasUnsavedChanges = true }
+            }
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.hw_rev_auto_write_when_mismatch"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Toggle("", isOn: $hwRevAutoWriteWhenMismatch)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .onChange(of: hwRevAutoWriteWhenMismatch) { _ in hasUnsavedChanges = true }
+            }
+
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.hw_rev_read_timeout"),
+                value: $hwRevReadTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_hw_rev_read_timeout"
+            )
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.hw_rev_verify_timeout"),
+                value: $hwRevWriteVerifyTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_hw_rev_verify_timeout"
+            )
+            thresholdIntRow(
+                label: appLanguage.string("production_test_rules.hw_rev_verify_poll_interval"),
+                value: $hwRevWriteVerifyPollIntervalMs,
+                key: "production_test_hw_rev_verify_poll_interval"
+            )
+        }
+        .padding(UIDesignSystem.Padding.md)
+    }
+
     /// RTC配置视图（步骤3）
     private var rtcConfigurationView: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
