@@ -148,6 +148,18 @@
 "debug.hardware_revision_format_invalid" = "Invalid format. Must be exactly PXXVXXRXX (six digits total). Example: P02V02R06.";
 "debug.hardware_revision_fill_from_device" = "Fill from device";
 "debug.apply_hardware_revision" = "Apply HW revision";
+"debug.section.device" = "Device & identity";
+"debug.section.dev_access" = "Dev Access";
+"debug.section.rtc" = "RTC";
+"debug.section.valve" = "Valve";
+"debug.section.pressure" = "Pressure";
+"debug.section.continuous_pressure" = "Continuous pressure read";
+"debug.section.guided_leak" = "Rule-based leak test";
+"debug.section.gas_system" = "Gas system status";
+"debug.section.co2_self_check" = "CO2 limits & self-test bypass";
+"debug.section.ota" = "OTA";
+"debug.section.uuid_debug" = "UUID read/write";
+"debug.hint.more_info_a11y" = "More information";
 
 /* Gas leak detection */
 "debug.gas_leak_detection" = "Gas leak detection";

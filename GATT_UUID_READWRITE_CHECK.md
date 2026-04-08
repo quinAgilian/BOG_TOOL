@@ -1,6 +1,6 @@
 # UUID 读写区域 · 服务/特征对照检查
 
-基于 **GattServices 2026-01-09_044517.xlsx**（Overview 表）与 **BOG_TOOL/Config/GattServices.json** 对照。
+基于 **GattServices 2026-03-26_111538.xlsx**（Overview 表）与 **BOG_TOOL/Config/GattServices.json** 对照。
 
 ---
 
@@ -76,4 +76,4 @@ Excel Overview 中定义的 **自定义/业务特征**（排除标准 1800/1801/
 | valveInterval | 00000003-B018-FCAD-2244-C82E6B682734 |
 | co2Bottle | 00000005-AEF1-CA85-FB4D-3AAFEB7A605A |
 
-**修改后结论**：UUID 读写区域（读/写下拉）现已包含 Excel（GattServices 2026-01-09）定义的全部业务特征；标准服务 1800/1801/180A 的特征未加入 `appCharacteristicKeys`（Device Information 由 App 另行发现与读取）。
+**修改后结论**：UUID 读写区域（读/写下拉）现已包含 Excel（GattServices 2026-03-26）定义的全部业务特征；标准服务 1800/1801/180A 的特征未加入 `appCharacteristicKeys`（Device Information 由 App 另行发现与读取）。

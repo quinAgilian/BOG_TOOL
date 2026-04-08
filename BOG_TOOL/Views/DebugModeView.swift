@@ -50,6 +50,20 @@ private enum LeakTestKeys {
     static let requireValveClosedConfirm = "debug_gas_leak_require_valve_closed_confirm"
 }
 
+/// `AppStorage` keys for Debug tab disclosure expanded state (suffix avoids clashing with old defaults).
+private enum DebugDisclosureStorageKey {
+    static let devAccess = "debug_ui_disclosure_dev_access_v1"
+    static let rtc = "debug_ui_disclosure_rtc_v1"
+    static let valve = "debug_ui_disclosure_valve_v1"
+    static let pressure = "debug_ui_disclosure_pressure_v1"
+    static let continuous = "debug_ui_disclosure_continuous_v1"
+    static let guided = "debug_ui_disclosure_guided_v1"
+    static let gas = "debug_ui_disclosure_gas_v1"
+    static let co2SelfCheck = "debug_ui_disclosure_co2_self_v1"
+    static let ota = "debug_ui_disclosure_ota_v1"
+    static let uuid = "debug_ui_disclosure_uuid_v1"
+}
+
 /// 气体泄漏检测单次采样点（时间秒，关阀/开阀压力 bar，阀门状态与 gas status 用于图中标定）
 private struct LeakTestSample: Identifiable {
     let id = UUID()
@@ -177,35 +191,59 @@ struct DebugModeView: View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
             Text(appLanguage.string("debug.title"))
                 .font(UIDesignSystem.Typography.sectionTitle)
-            
-            // 连接/断开按钮区域
+
             connectionSection
 
-            // 设备操作：恢复出厂（擦除 NVM）、重启（仅 UI，逻辑后续实现）
-            deviceActionsSection
-
-            deviceIdentitySection
-
-            rtcSection
-            valveSection
-            pressureSection
-            continuousPressureReadSection
-            guidedLeakTestSection
-            gasSystemStatusSection
-            co2PressureLimitsSection
-            disableGasSelfCheckSection
-            // 谁调用的 OTA 谁管理：产测 OTA 进行中时 Debug 区不随动，仅提示切回产测
-            if ble.isOTAInProgress && ble.otaInitiatedByProductionTest {
-                productionTestOTAInProgressHint
-            } else {
-                OTASectionView(ble: ble, firmwareManager: firmwareManager)
+            DebugDisclosureSection(title: appLanguage.string("debug.section.dev_access"), storageKey: DebugDisclosureStorageKey.devAccess, defaultExpanded: false) {
+                deviceActionsSection
+                deviceIdentitySection
             }
-            UUIDDebugView(ble: ble)
+            DebugDisclosureSection(title: appLanguage.string("debug.section.rtc"), storageKey: DebugDisclosureStorageKey.rtc, defaultExpanded: false) {
+                rtcSection
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.valve"), storageKey: DebugDisclosureStorageKey.valve, defaultExpanded: false) {
+                valveSection
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.pressure"), storageKey: DebugDisclosureStorageKey.pressure, defaultExpanded: false) {
+                pressureSection
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.continuous_pressure"), storageKey: DebugDisclosureStorageKey.continuous, defaultExpanded: false) {
+                continuousPressureReadSection
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.guided_leak"), storageKey: DebugDisclosureStorageKey.guided, defaultExpanded: false) {
+                guidedLeakTestSection
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.gas_system"), storageKey: DebugDisclosureStorageKey.gas, defaultExpanded: false) {
+                gasSystemStatusSection
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.co2_self_check"), storageKey: DebugDisclosureStorageKey.co2SelfCheck, defaultExpanded: false) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+                    co2PressureLimitsSection
+                    disableGasSelfCheckSection
+                }
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.ota"), storageKey: DebugDisclosureStorageKey.ota, defaultExpanded: false) {
+                if ble.isOTAInProgress && ble.otaInitiatedByProductionTest {
+                    productionTestOTAInProgressHint
+                } else {
+                    OTASectionView(ble: ble, firmwareManager: firmwareManager)
+                }
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.uuid_debug"), storageKey: DebugDisclosureStorageKey.uuid, defaultExpanded: false) {
+                UUIDDebugView(ble: ble, showsOuterTitle: false)
+            }
         }
         .padding(UIDesignSystem.Padding.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(UIDesignSystem.Background.subtle)
         .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+
+    private func debugInfoHint(forLocalizationKey key: String) -> DebugInfoHint {
+        DebugInfoHint(
+            hint: appLanguage.string(key),
+            accessibilityLabel: appLanguage.string("debug.hint.more_info_a11y")
+        )
     }
     
     /// 产测 OTA 进行中时在 Debug 区仅显示提示，不随动、不管理（谁调用谁管理）
@@ -289,7 +327,9 @@ struct DebugModeView: View {
                 Text(appLanguage.string("debug.factory_reset_hint"))
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: UIDesignSystem.Spacing.sm)
                 Button {
                     Task { _ = await ble.sendTestingFactoryResetCommand() }
                 } label: {
@@ -304,7 +344,9 @@ struct DebugModeView: View {
                 Text(appLanguage.string("debug.reboot_hint"))
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                Spacer(minLength: UIDesignSystem.Spacing.lg)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: UIDesignSystem.Spacing.sm)
                 Button {
                     Task { _ = await ble.sendTestingRebootCommand() }
                 } label: {
@@ -366,10 +408,7 @@ struct DebugModeView: View {
             .cornerRadius(UIDesignSystem.CornerRadius.sm)
 
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
-                Text(appLanguage.string("debug.device_identity_hint"))
-                    .font(UIDesignSystem.Typography.caption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                debugInfoHint(forLocalizationKey: "debug.device_identity_hint")
                 Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
                     hardwareRevisionDraft = ble.deviceHardwareRevision ?? ""
@@ -394,7 +433,10 @@ struct DebugModeView: View {
                     TextField(appLanguage.string("debug.hardware_revision_placeholder"), text: $hardwareRevisionDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(UIDesignSystem.Typography.monospacedCaption)
+                        .frame(maxWidth: 140, alignment: .leading)
                         .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress || isApplyingHardwareRevision)
+                    debugInfoHint(forLocalizationKey: "debug.hardware_revision_format_hint")
+                    Spacer(minLength: 0)
                     Button {
                         guard let toApply = normalizedHardwareRevisionDraft else { return }
                         isApplyingHardwareRevision = true
@@ -409,9 +451,6 @@ struct DebugModeView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!ble.isConnected || !ble.areCharacteristicsReady || ble.isOTAInProgress || isApplyingHardwareRevision || normalizedHardwareRevisionDraft == nil)
                 }
-                Text(appLanguage.string("debug.hardware_revision_format_hint"))
-                    .font(UIDesignSystem.Typography.caption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 if hardwareRevisionDraftHasNonWhitespace, normalizedHardwareRevisionDraft == nil {
                     Text(appLanguage.string("debug.hardware_revision_format_invalid"))
                         .font(UIDesignSystem.Typography.caption)
@@ -428,10 +467,6 @@ struct DebugModeView: View {
     
     private var rtcSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            Text(appLanguage.string("debug.rtc"))
-                .font(UIDesignSystem.Typography.subsectionTitle)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Text(appLanguage.string("debug.system_time"))
@@ -591,10 +626,6 @@ struct DebugModeView: View {
     
     private var valveSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            Text(appLanguage.string("debug.valve"))
-                .font(UIDesignSystem.Typography.subsectionTitle)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 HStack(spacing: UIDesignSystem.Spacing.md) {
                     HStack(spacing: UIDesignSystem.Spacing.sm) {
@@ -705,10 +736,6 @@ struct DebugModeView: View {
     
     private var pressureSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            Text(appLanguage.string("debug.pressure"))
-                .font(UIDesignSystem.Typography.subsectionTitle)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 HStack(spacing: UIDesignSystem.Spacing.md) {
                     HStack(spacing: UIDesignSystem.Spacing.sm) {
@@ -1773,9 +1800,6 @@ struct DebugModeView: View {
     private var continuousPressureReadSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
-                Text(appLanguage.string("debug.continuous_pressure_read"))
-                    .font(UIDesignSystem.Typography.subsectionTitle)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 Spacer(minLength: UIDesignSystem.Spacing.sm)
                 Group {
                     if isContinuousPressureReadActive {
@@ -1872,11 +1896,7 @@ struct DebugModeView: View {
 
     private var guidedLeakTestSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
-            // 标题 + 开始/停止 同一行
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
-                Text(appLanguage.string("debug.gas_leak_rule_test"))
-                    .font(UIDesignSystem.Typography.subsectionTitle)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
                 Spacer(minLength: UIDesignSystem.Spacing.sm)
                 Group {
                     if isLeakTestWorkflowActive {
@@ -2332,9 +2352,9 @@ struct DebugModeView: View {
             }
 
             if showPhase, (leakTestAverageLineBar != nil || leakTestFailureLineBar != nil) {
-                Text(appLanguage.string("debug.gas_leak_fail_line_formula"))
-                    .font(UIDesignSystem.Typography.caption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                HStack(alignment: .top, spacing: UIDesignSystem.Spacing.xs) {
+                    debugInfoHint(forLocalizationKey: "debug.gas_leak_fail_line_formula")
+                }
             }
         }
     }
@@ -2343,10 +2363,6 @@ struct DebugModeView: View {
     
     private var gasSystemStatusSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            Text(appLanguage.string("debug.gas_system_status"))
-                .font(UIDesignSystem.Typography.subsectionTitle)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Text(ble.lastGasSystemStatusValue)
@@ -2375,10 +2391,6 @@ struct DebugModeView: View {
     /// CO2 Pressure Limits：6 个 mbar 值，2×3 网格 + 读取按钮
     private var co2PressureLimitsSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            Text(appLanguage.string("debug.co2_pressure_limits"))
-                .font(UIDesignSystem.Typography.subsectionTitle)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-
             let lines = ble.lastPressureLimitsValue.isEmpty || ble.lastPressureLimitsValue == "--"
                 ? [String]()
                 : ble.lastPressureLimitsValue.components(separatedBy: "\n").filter { !$0.isEmpty }
@@ -2436,13 +2448,11 @@ struct DebugModeView: View {
     /// 屏蔽系统气体自检：向 co2PressureLimits 写入 12 个 0x00
     private var disableGasSelfCheckSection: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            Text(appLanguage.string("debug.disable_gas_self_check"))
-                .font(UIDesignSystem.Typography.subsectionTitle)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-            Text(appLanguage.string("debug.disable_gas_self_check_hint"))
-                .font(UIDesignSystem.Typography.caption)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-            HStack {
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
+                Text(appLanguage.string("debug.disable_gas_self_check"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                debugInfoHint(forLocalizationKey: "debug.disable_gas_self_check_hint")
                 Spacer(minLength: UIDesignSystem.Spacing.lg)
                 Button {
                     ble.writeCo2PressureLimitsZeros()
@@ -2457,5 +2467,79 @@ struct DebugModeView: View {
         .padding(UIDesignSystem.Padding.sm)
         .background(UIDesignSystem.Background.light)
         .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+}
+
+// MARK: - Debug UI chrome (collapsible sections + info hints)
+
+private struct DebugInfoHint: View {
+    let hint: String
+    let accessibilityLabel: String
+    @State private var showPopover = false
+
+    var body: some View {
+        Button {
+            showPopover = true
+        } label: {
+            Image(systemName: "info.circle")
+                .font(.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(hint)
+        .popover(isPresented: $showPopover, arrowEdge: .bottom) {
+            ScrollView {
+                Text(hint)
+                    .font(UIDesignSystem.Typography.caption)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: 360, alignment: .leading)
+                    .padding(UIDesignSystem.Padding.md)
+            }
+            .frame(maxHeight: 420)
+        }
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(hint)
+    }
+}
+
+private struct DebugDisclosureSection<Content: View>: View {
+    let title: String
+    @AppStorage var isExpanded: Bool
+    private let content: () -> Content
+
+    init(title: String, storageKey: String, defaultExpanded: Bool, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.content = content
+        _isExpanded = AppStorage(wrappedValue: defaultExpanded, storageKey)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(alignment: .center, spacing: UIDesignSystem.Spacing.sm) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text(title)
+                        .font(UIDesignSystem.Typography.subsectionTitle)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content()
+            }
+        }
     }
 }

@@ -181,7 +181,8 @@ struct ContentView: View {
                             }
                         }
                         .padding(UIDesignSystem.Padding.sm)
-                        .frame(minWidth: 320, minHeight: max(500, geo.size.height))
+                        // 与 ScrollView 可视区同高时，默认 frame 会垂直居中子视图，产测/Debug 内容会悬在中间、上方大块留白
+                        .frame(minWidth: 320, minHeight: max(500, geo.size.height), alignment: .topLeading)
                     }
                     .frame(minWidth: 320, maxHeight: .infinity)
                 }

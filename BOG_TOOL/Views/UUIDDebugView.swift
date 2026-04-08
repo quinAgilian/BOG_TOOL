@@ -19,6 +19,8 @@ private func rtcHexFromDate(_ date: Date) -> String {
 struct UUIDDebugView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
+    /// When embedded in a parent `DisclosureGroup`, hide the duplicate top title.
+    var showsOuterTitle: Bool = true
     
     /// 下拉选项：uuid 为完整 UUID，displayName 为「描述 (前缀…后缀)」避免仅后缀重复
     private struct CharacteristicOption: Identifiable {
@@ -104,10 +106,12 @@ struct UUIDDebugView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
-            Text(appLanguage.string("debug.uuid_title"))
-                .font(UIDesignSystem.Typography.subsectionTitle)
-                .foregroundStyle(UIDesignSystem.Foreground.secondary)
-            
+            if showsOuterTitle {
+                Text(appLanguage.string("debug.uuid_title"))
+                    .font(UIDesignSystem.Typography.subsectionTitle)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            }
+
             // MARK: - Write
             VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
                 Text(appLanguage.string("debug.uuid_write"))

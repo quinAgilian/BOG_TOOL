@@ -2446,7 +2446,7 @@ extension BLEManager: CBPeripheralDelegate {
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
-    /// CO2 Pressure Limits: 6 × UInt16 (mbar)，顺序 gas_empty_low, gas_empty_high, leak, press_change, press_rise, lglo_leak
+    /// CO2 Pressure Limits: 6 × int16_t (mbar, little-endian)，顺序 gas_empty_low, gas_empty_high, leak, press_change, press_rise, lglo_leak
     @MainActor private func formatPressureLimitsData(_ data: Data) -> String {
         let labels = ["gas_empty_low", "gas_empty_high", "leak", "press_change", "press_rise", "lglo_leak"]
         guard data.count >= 12 else {
@@ -2455,9 +2455,10 @@ extension BLEManager: CBPeripheralDelegate {
         var lines: [String] = []
         for i in 0..<6 {
             let offset = i * 2
-            let mbar = data.withUnsafeBytes { (p: UnsafeRawBufferPointer) -> UInt16 in
-                p.load(fromByteOffset: offset, as: UInt16.self)
+            let raw = data.withUnsafeBytes { (p: UnsafeRawBufferPointer) -> Int16 in
+                p.load(fromByteOffset: offset, as: Int16.self)
             }
+            let mbar = Int16(littleEndian: raw)
             lines.append("\(labels[i]): \(mbar) mbar")
         }
         return lines.joined(separator: "\n")

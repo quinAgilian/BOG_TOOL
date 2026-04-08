@@ -148,6 +148,18 @@
 "debug.hardware_revision_format_invalid" = "格式不正确：须严格为 PXXVXXRXX（共 6 个数字位）。示例：P02V02R06。";
 "debug.hardware_revision_fill_from_device" = "填入当前设备值";
 "debug.apply_hardware_revision" = "写入硬件版本";
+"debug.section.device" = "设备与标识";
+"debug.section.dev_access" = "开发访问";
+"debug.section.rtc" = "RTC 时间";
+"debug.section.valve" = "电磁阀";
+"debug.section.pressure" = "压力";
+"debug.section.continuous_pressure" = "连续读取压力";
+"debug.section.guided_leak" = "规则化泄漏测试";
+"debug.section.gas_system" = "气体系统状态";
+"debug.section.co2_self_check" = "CO2 限值与自检屏蔽";
+"debug.section.ota" = "OTA 升级";
+"debug.section.uuid_debug" = "UUID 读/写";
+"debug.hint.more_info_a11y" = "更多信息";
 
 /* 气体泄漏检测 */
 "debug.gas_leak_detection" = "气体泄漏检测";
