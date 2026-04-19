@@ -115,7 +115,7 @@ struct ProductionTestView: View {
     @State private var didFinishThisRun = false
     /// 是否正在「步骤失败提前终止」路径中执行恢复出厂（runFactoryResetIfEnabledBeforeExit）。为 true 时 lastConnectFailureWasPairingRemoved 来自我们自己的 reset，onChange 不应把当前步骤原因改写为「对方删除配对」
     @State private var isRunningFactoryResetBeforeExit = false
-    /// 本次产测开始时间（用于上传 durationSeconds）
+    /// 用户点击「开始产测」的时刻（用于上传 durationSeconds，含连接/GATT 等待）
     @State private var lastTestStartTime: Date?
     /// 本次产测过程中缓存的设备信息（步骤 2 通过时写入），用于结束后上传，与是否仍连接无关
     @State private var capturedDeviceSN: String?
@@ -2489,7 +2489,10 @@ struct ProductionTestView: View {
             log("错误：请先选中设备", level: .error)
             return
         }
-        
+
+        lastTestStartTime = Date()
+        lastTestEndTime = nil
+
         // 如果未连接，先连接设备
         if !ble.isConnected {
             showResultOverlay = false
@@ -2583,7 +2586,6 @@ struct ProductionTestView: View {
         
         // 使用当前的测试步骤列表（已从UserDefaults加载）
         let enabledSteps = currentTestSteps.filter { $0.enabled }
-        lastTestStartTime = Date()
         didFinishThisRun = false
         
         // 加载版本配置（用于步骤验证）

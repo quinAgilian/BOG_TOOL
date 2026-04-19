@@ -612,6 +612,8 @@
 "production_test_rules.current_file_dirty_suffix" = " (modified, not applied)";
 "production_test_rules.export_rules" = "Export JSON";
 "production_test_rules.import_rules" = "Import JSON";
+"production_test_rules.restore_latest_import_backup" = "Restore latest backup";
+"production_test_rules.restore_latest_import_backup_help" = "Load the most recently saved snapshot from Import backups (same as automatic recovery when the current rules file is missing).";
 
 "production_test_rules.step_verify_hw_rev_title" = "Read HW_REV";
 "production_test_rules.step_verify_hw_rev_desc" = "Read HW_REV from Device Information (2A27). Pass when a non-empty value is received within the timeout.";

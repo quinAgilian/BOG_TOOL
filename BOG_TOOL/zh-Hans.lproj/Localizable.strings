@@ -560,6 +560,8 @@
 "production_test_rules.current_file_dirty_suffix" = "（已修改，未应用）";
 "production_test_rules.export_rules" = "导出 JSON";
 "production_test_rules.import_rules" = "导入 JSON";
+"production_test_rules.restore_latest_import_backup" = "恢复最近备份";
+"production_test_rules.restore_latest_import_backup_help" = "从本机「导入备份」目录加载最近一份快照（若当前规则文件缺失，启动时也会自动用该备份恢复）。";
 "ota.title_reboot_disconnected" = "OTA (设备已重启)";
 "ota.target_from_production_rules" = "目标固件由产测规则指定：%@";
 "ota.packet_size" = "数据包大小";

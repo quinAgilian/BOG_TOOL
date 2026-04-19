@@ -467,6 +467,16 @@ struct ProductionTestRulesView: View {
                     .disabled(isReadOnly)
                     
                     Button {
+                        restoreFromLatestImportBackupFile()
+                    } label: {
+                        Text(appLanguage.string("production_test_rules.restore_latest_import_backup"))
+                            .font(UIDesignSystem.Typography.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReadOnly || !productionRulesStore.hasImportBackupAvailable())
+                    .help(appLanguage.string("production_test_rules.restore_latest_import_backup_help"))
+                    
+                    Button {
                         resetFromBundledDefaultRules()
                     } label: {
                         Text(appLanguage.string("common.reset_to_default"))
@@ -703,12 +713,33 @@ struct ProductionTestRulesView: View {
                 let rules = try decoder.decode(ProductionRules.self, from: data)
                 applyProductionRules(rules)
                 productionRulesStore.apply(rules)
+                if let backupURL = productionRulesStore.saveImportBackupCopy(of: rules, importedFromFileName: url.lastPathComponent) {
+                    ble.appendLog("[Rules] Import backup: \(backupURL.lastPathComponent)", level: .info)
+                }
                 lastExternalRulesImportFileName = url.lastPathComponent
                 hasUnsavedChanges = false
                 ble.appendLog("[Rules] Imported rules JSON from: \(url.lastPathComponent)", level: .info)
             } catch {
                 ble.appendLog("[Rules] Failed to import rules JSON: \(error.localizedDescription)", level: .error)
             }
+        }
+    }
+    
+    /// 从 Application Support `import_backups` 中最近一份快照恢复（与启动时若无 current 文件的回退策略一致）。
+    private func restoreFromLatestImportBackupFile() {
+        guard !isReadOnly else { return }
+        guard productionRulesStore.restoreFromLatestImportBackup() else {
+            ble.appendLog("[Rules] Restore from latest import backup failed (no file or invalid JSON).", level: .warning)
+            return
+        }
+        applyProductionRules(productionRulesStore.rules)
+        lastExternalRulesImportFileName = nil
+        hasUnsavedChanges = false
+        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+        if let name = ProductionRulesStore.newestImportBackupURL()?.lastPathComponent {
+            ble.appendLog("[Rules] Restored production rules from latest import backup (\(name)).", level: .info)
+        } else {
+            ble.appendLog("[Rules] Restored production rules from latest import backup.", level: .info)
         }
     }
     

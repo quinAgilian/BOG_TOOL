@@ -82,6 +82,22 @@ final class BLEManager: NSObject, ObservableObject {
         return s
     }
     
+    /// 界面展示：将 `P02V02R00` 显示为 `2.2.0`；不符合固定格式则原样返回。
+    nonisolated static func displayHardwareRevision(_ raw: String?) -> String {
+        guard let raw = raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "--" }
+        guard let normalized = normalizedProductHardwareRevision(raw) else { return raw }
+        let i1 = normalized.index(normalized.startIndex, offsetBy: 1)
+        let i2 = normalized.index(normalized.startIndex, offsetBy: 3)
+        let i3 = normalized.index(normalized.startIndex, offsetBy: 4)
+        let i4 = normalized.index(normalized.startIndex, offsetBy: 6)
+        let i5 = normalized.index(normalized.startIndex, offsetBy: 7)
+        let i6 = normalized.index(normalized.startIndex, offsetBy: 9)
+        let p = Int(normalized[i1..<i2]) ?? 0
+        let v = Int(normalized[i3..<i4]) ?? 0
+        let r = Int(normalized[i5..<i6]) ?? 0
+        return "\(p).\(v).\(r)"
+    }
+    
     /// 静态版本：从版本字符串提取固件号（供 parseFirmwareVersion 等复用）；nonisolated 供 parseFirmwareVersion 调用
     private nonisolated static func extractFirmwareVersionsStatic(from versionString: String) -> (bootloader: String, firmware: String) {
         let nsString = versionString as NSString
