@@ -784,6 +784,7 @@ struct ProductionTestView: View {
         // 需要重测 = 本次未执行恢复出厂/重启（如因旧固件不支持），视为产测未通过
         if needRetestAfterOtaReboot { return false }
         let connectOk = !enabled.contains(where: { $0.id == TestStep.connectDevice.id }) || stepStatuses[TestStep.connectDevice.id] == .passed
+        let serialOk = !enabled.contains(where: { $0.id == TestStep.readSerialNumber.id }) || stepStatuses[TestStep.readSerialNumber.id] == .passed
         let rtcOk = !enabled.contains(where: { $0.id == TestStep.readRTC.id }) || stepStatuses[TestStep.readRTC.id] == .passed
         let fwStepEnabled = enabled.contains(where: { $0.id == TestStep.verifyFirmware.id })
         let otaStepEnabled = enabled.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id })
@@ -799,6 +800,7 @@ struct ProductionTestView: View {
             fwOk = true
         }
         let hwRevOk = !enabled.contains(where: { $0.id == TestStep.verifyHardwareRevision.id }) || stepStatuses[TestStep.verifyHardwareRevision.id] == .passed
+        let hwRevShipOk = !enabled.contains(where: { $0.id == TestStep.hwRevShippingRegion.id }) || stepStatuses[TestStep.hwRevShippingRegion.id] == .passed
         let pressureOk = !enabled.contains(where: { $0.id == TestStep.readPressure.id }) || stepStatuses[TestStep.readPressure.id] == .passed
         let disableDiagOk = stepOkForOverall(stepId: TestStep.disableDiag.id, enabled: enabled)
         let gasSystemStatusOk = !enabled.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) || stepStatuses[TestStep.readGasSystemStatus.id] == .passed
@@ -810,7 +812,7 @@ struct ProductionTestView: View {
         let factoryResetOk = !enabled.contains(where: { $0.id == TestStep.factoryReset.id }) || stepStatuses[TestStep.factoryReset.id] == .passed
         let resetOk = !enabled.contains(where: { $0.id == TestStep.reset.id }) || stepStatuses[TestStep.reset.id] == .passed
         let disconnectOk = stepOkForOverall(stepId: TestStep.disconnectDevice.id, enabled: enabled)
-        return connectOk && rtcOk && fwOk && hwRevOk && pressureOk && disableDiagOk && gasSystemStatusOk && gasLeakOpenOk && gasLeakClosedOk && tbdOk && valveOk && factoryResetOk && resetOk && disconnectOk
+        return connectOk && serialOk && rtcOk && fwOk && hwRevOk && hwRevShipOk && pressureOk && disableDiagOk && gasSystemStatusOk && gasLeakOpenOk && gasLeakClosedOk && tbdOk && valveOk && factoryResetOk && resetOk && disconnectOk
     }
     
     /// 用于 overlay 报表的判定项列表：(名称, 是否通过, 是否仅警告通过, 测试数据备注)。禁用的步骤也保留，标记为警告并注明「测试跳过」。
@@ -828,6 +830,11 @@ struct ProductionTestView: View {
             list.append((appLanguage.string("production_test_rules.step1_title"), stepStatuses[TestStep.connectDevice.id] == .passed, false, detail(for: TestStep.connectDevice.id)))
         } else if currentTestSteps.contains(where: { $0.id == TestStep.connectDevice.id }) {
             list.append((appLanguage.string("production_test_rules.step1_title"), true, true, skippedDetail))
+        }
+        if enabled.contains(where: { $0.id == TestStep.readSerialNumber.id }) {
+            list.append((appLanguage.string("production_test_rules.step_read_serial_number_title"), stepStatuses[TestStep.readSerialNumber.id] == .passed, false, detail(for: TestStep.readSerialNumber.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.readSerialNumber.id }) {
+            list.append((appLanguage.string("production_test_rules.step_read_serial_number_title"), true, true, skippedDetail))
         }
         // RTC
         if enabled.contains(where: { $0.id == TestStep.readRTC.id }) {
@@ -850,6 +857,11 @@ struct ProductionTestView: View {
             list.append((appLanguage.string("production_test_rules.step_verify_hw_rev_title"), stepStatuses[TestStep.verifyHardwareRevision.id] == .passed, false, detail(for: TestStep.verifyHardwareRevision.id)))
         } else if currentTestSteps.contains(where: { $0.id == TestStep.verifyHardwareRevision.id }) {
             list.append((appLanguage.string("production_test_rules.step_verify_hw_rev_title"), true, true, skippedDetail))
+        }
+        if enabled.contains(where: { $0.id == TestStep.hwRevShippingRegion.id }) {
+            list.append((appLanguage.string("production_test_rules.step_hw_rev_shipping_region_title"), stepStatuses[TestStep.hwRevShippingRegion.id] == .passed, false, detail(for: TestStep.hwRevShippingRegion.id)))
+        } else if currentTestSteps.contains(where: { $0.id == TestStep.hwRevShippingRegion.id }) {
+            list.append((appLanguage.string("production_test_rules.step_hw_rev_shipping_region_title"), true, true, skippedDetail))
         }
         // 断开前 OTA（单独一行，便于看到 OTA 成功/失败/取消的结论）
         if enabled.contains(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
@@ -1129,7 +1141,16 @@ struct ProductionTestView: View {
 
     /// 加载测试规则配置：严格 JSON，不允许代码默认值。
     private func loadTestRules() throws -> (steps: [TestStep], bootloaderVersion: String, firmwareVersion: String, hardwareVersion: String, thresholds: TestThresholds, stepFatalOnFailure: [String: Bool]) {
-        let rules = productionRulesStore.rules
+        var rules = productionRulesStore.rules
+        // App 升级后内置模板可能新增步骤 id；旧版持久化/导入的 JSON 缺步时，按 bundle 默认补齐并写回 store，避免产测无法启动
+        let template = try ProductionRulesLoader.loadBundledDefaultRules()
+        let requiredFromBundle = Set(template.steps.map(\.id))
+        let declared = Set(rules.steps.map(\.id))
+        if !requiredFromBundle.subtracting(declared).isEmpty {
+            rules = rules.mergedWithTemplate(template)
+            productionRulesStore.apply(rules)
+            ble.appendLog("[Rules] 已从内置默认补齐缺失的步骤定义并保存（例如新增 step_read_serial_number），当前 steps=\(rules.steps.count)", level: .info)
+        }
         var issues: [String] = []
 
         // 首次加载时在日志区打印当前规则来源与版本，便于排查默认配置是否生效
@@ -1140,8 +1161,10 @@ struct ProductionTestView: View {
         // 1. 构建步骤顺序与启用状态
         let baseSteps: [TestStep] = [
             .connectDevice,
+            .readSerialNumber,
             .verifyFirmware,
             .verifyHardwareRevision,
+            .hwRevShippingRegion,
             .readRTC,
             .readPressure,
             .disableDiag,
@@ -1199,11 +1222,30 @@ struct ProductionTestView: View {
             throw StrictRulesError.missingItems(issues)
         }
         guard let verifyHwCfg = requireStepConfig(rulesById, TestStep.verifyHardwareRevision.id, &issues) else { throw StrictRulesError.missingItems(issues) }
-        guard let targetHardwareVersion = verifyHwCfg.targetHardwareVersion?.trimmingCharacters(in: .whitespacesAndNewlines), !targetHardwareVersion.isEmpty else { issues.append("[JSON缺失] step_verify_hw_rev.target_hardware_version"); throw StrictRulesError.missingItems(issues) }
-        guard let hwRevAutoWriteWhenMismatch = verifyHwCfg.autoWriteWhenMismatch else { issues.append("[JSON缺失] step_verify_hw_rev.auto_write_when_mismatch"); throw StrictRulesError.missingItems(issues) }
+        // step_verify_hw_rev：仅读取 2A27；JSON 键 write_verify_poll_interval_ms 语义为读轮询间隔（兼容旧键名）
         guard let hwRevReadTimeoutSeconds = verifyHwCfg.readTimeoutSeconds else { issues.append("[JSON缺失] step_verify_hw_rev.read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
-        guard let hwRevWriteVerifyTimeoutSeconds = verifyHwCfg.writeVerifyTimeoutSeconds else { issues.append("[JSON缺失] step_verify_hw_rev.write_verify_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
-        guard let hwRevWriteVerifyPollIntervalMs = verifyHwCfg.writeVerifyPollIntervalMs else { issues.append("[JSON缺失] step_verify_hw_rev.write_verify_poll_interval_ms"); throw StrictRulesError.missingItems(issues) }
+        guard let hwRevReadPollIntervalMs = verifyHwCfg.writeVerifyPollIntervalMs else { issues.append("[JSON缺失] step_verify_hw_rev.write_verify_poll_interval_ms"); throw StrictRulesError.missingItems(issues) }
+
+        guard let shipCfg = requireStepConfig(rulesById, TestStep.hwRevShippingRegion.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        let shipDestRaw = shipCfg.shippingDestination?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard shipDestRaw == "us" || shipDestRaw == "eu" else {
+            issues.append("[JSON缺失或非法] step_hw_rev_shipping_region.shipping_destination（须为 us 或 eu）")
+            throw StrictRulesError.missingItems(issues)
+        }
+        guard let shipUsRaw = shipCfg.shippingHwRevUs?.trimmingCharacters(in: .whitespacesAndNewlines), !shipUsRaw.isEmpty,
+              BLEManager.normalizedProductHardwareRevision(shipUsRaw) != nil else {
+            issues.append("[JSON缺失或非法] step_hw_rev_shipping_region.shipping_hw_rev_us（须为合法 P##V##R##）")
+            throw StrictRulesError.missingItems(issues)
+        }
+        guard let shipEuRaw = shipCfg.shippingHwRevEu?.trimmingCharacters(in: .whitespacesAndNewlines), !shipEuRaw.isEmpty,
+              BLEManager.normalizedProductHardwareRevision(shipEuRaw) != nil else {
+            issues.append("[JSON缺失或非法] step_hw_rev_shipping_region.shipping_hw_rev_eu（须为合法 P##V##R##）")
+            throw StrictRulesError.missingItems(issues)
+        }
+        guard let shipAutoWrite = shipCfg.autoWriteWhenMismatch else { issues.append("[JSON缺失] step_hw_rev_shipping_region.auto_write_when_mismatch"); throw StrictRulesError.missingItems(issues) }
+        guard let shipReadTimeout = shipCfg.readTimeoutSeconds else { issues.append("[JSON缺失] step_hw_rev_shipping_region.read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let shipWriteVerifyTimeout = shipCfg.writeVerifyTimeoutSeconds else { issues.append("[JSON缺失] step_hw_rev_shipping_region.write_verify_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let shipWritePollMs = shipCfg.writeVerifyPollIntervalMs else { issues.append("[JSON缺失] step_hw_rev_shipping_region.write_verify_poll_interval_ms"); throw StrictRulesError.missingItems(issues) }
 
         // 3. 全局阈值配置（部分来自 global，部分来自各步骤 config）
         // step_connect
@@ -1218,6 +1260,8 @@ struct ProductionTestView: View {
         guard let rtcWriteEnabled = rtcCfg.writeEnabled else { issues.append("[JSON缺失] step_read_rtc.write_enabled"); throw StrictRulesError.missingItems(issues) }
         guard let rtcWriteRetryCount = rtcCfg.writeRetryCount else { issues.append("[JSON缺失] step_read_rtc.write_retry_count"); throw StrictRulesError.missingItems(issues) }
         guard let rtcReadTimeout = rtcCfg.readTimeoutSeconds else { issues.append("[JSON缺失] step_read_rtc.read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
+        guard let serialCfg = requireStepConfig(rulesById, TestStep.readSerialNumber.id, &issues) else { throw StrictRulesError.missingItems(issues) }
+        guard let serialReadTimeoutSeconds = serialCfg.readTimeoutSeconds else { issues.append("[JSON缺失] step_read_serial_number.read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
         guard let deviceInfoReadTimeout = verifyCfg.deviceInfoReadTimeoutSeconds else { issues.append("[JSON缺失] step_verify_firmware.device_info_read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
 
         // step_valve
@@ -1270,6 +1314,7 @@ struct ProductionTestView: View {
             rtcWriteRetryCount: rtcWriteRetryCount,
             rtcReadTimeout: rtcReadTimeout,
             deviceInfoReadTimeout: deviceInfoReadTimeout,
+            serialReadTimeoutSeconds: serialReadTimeoutSeconds,
             otaStartWaitTimeout: otaStartWaitTimeout,
             deviceReconnectTimeout: deviceReconnectTimeout,
             valveOpenTimeout: valveOpenTimeout,
@@ -1285,11 +1330,15 @@ struct ProductionTestView: View {
             pressureDiffMin: pressureDiffMin,
             pressureDiffMax: pressureDiffMax,
             firmwareUpgradeEnabled: firmwareUpgradeEnabled,
-            hwRevTarget: targetHardwareVersion,
-            hwRevAutoWriteWhenMismatch: hwRevAutoWriteWhenMismatch,
             hwRevReadTimeoutSeconds: hwRevReadTimeoutSeconds,
-            hwRevWriteVerifyTimeoutSeconds: hwRevWriteVerifyTimeoutSeconds,
-            hwRevWriteVerifyPollIntervalMs: hwRevWriteVerifyPollIntervalMs,
+            hwRevReadPollIntervalMs: hwRevReadPollIntervalMs,
+            shippingDestination: shipDestRaw,
+            shippingHwRevUs: BLEManager.normalizedProductHardwareRevision(shipUsRaw)!,
+            shippingHwRevEu: BLEManager.normalizedProductHardwareRevision(shipEuRaw)!,
+            shippingHwRevAutoWriteWhenMismatch: shipAutoWrite,
+            shippingHwRevReadTimeoutSeconds: shipReadTimeout,
+            shippingHwRevWriteVerifyTimeoutSeconds: shipWriteVerifyTimeout,
+            shippingHwRevWriteVerifyPollIntervalMs: shipWritePollMs,
             skipFactoryResetAndDisconnectOnFail: skipFactoryResetAndDisconnectOnFail,
             pressureFailRetryConfirmEnabled: pressureFailRetryConfirmEnabled,
             disableDiagPollIntervalMs: disableDiagPollIntervalMs,
@@ -1333,6 +1382,7 @@ struct ProductionTestView: View {
         let rtcWriteRetryCount: Int          // RTC写入重试次数
         let rtcReadTimeout: Double            // RTC读取超时（秒）
         let deviceInfoReadTimeout: Double      // 设备信息读取超时（秒）
+        let serialReadTimeoutSeconds: Double   // step_read_serial_number：读序列号超时（秒）
         let otaStartWaitTimeout: Double       // OTA启动等待超时（秒）
         let deviceReconnectTimeout: Double    // 设备重新连接超时（秒）
         let valveOpenTimeout: Double          // 阀门打开超时（秒）
@@ -1348,11 +1398,15 @@ struct ProductionTestView: View {
         let pressureDiffMin: Double          // 压力差值下限（mbar）
         let pressureDiffMax: Double          // 压力差值上限（mbar）
         let firmwareUpgradeEnabled: Bool     // 是否启用固件版本升级
-        let hwRevTarget: String               // HW_REV 目标值（step_verify_hw_rev）
-        let hwRevAutoWriteWhenMismatch: Bool  // HW_REV 不一致时是否自动写入修正
-        let hwRevReadTimeoutSeconds: Double   // HW_REV 初次读取超时（秒）
-        let hwRevWriteVerifyTimeoutSeconds: Double // 写入后回读确认超时（秒）
-        let hwRevWriteVerifyPollIntervalMs: Int    // 写入后回读轮询间隔（毫秒）
+        let hwRevReadTimeoutSeconds: Double   // step_verify_hw_rev：读取 2A27 超时（秒）
+        let hwRevReadPollIntervalMs: Int      // step_verify_hw_rev：读轮询间隔（毫秒）；JSON 键仍为 write_verify_poll_interval_ms
+        let shippingDestination: String            // step_hw_rev_shipping_region：us | eu
+        let shippingHwRevUs: String                 // 美国出货 HW_REV（规范化为 P##V##R##）
+        let shippingHwRevEu: String                 // 欧洲出货 HW_REV
+        let shippingHwRevAutoWriteWhenMismatch: Bool
+        let shippingHwRevReadTimeoutSeconds: Double
+        let shippingHwRevWriteVerifyTimeoutSeconds: Double
+        let shippingHwRevWriteVerifyPollIntervalMs: Int
         let skipFactoryResetAndDisconnectOnFail: Bool  // 测试失败时是否跳过恢复出厂与安全断开（默认 false）
         let pressureFailRetryConfirmEnabled: Bool    // 压力读取失败时是否弹窗确认重测（默认 true）
         let disableDiagPollIntervalMs: Int
@@ -2582,7 +2636,7 @@ struct ProductionTestView: View {
         if t.bluetoothPermissionWaitSeconds > 0 {
             self.log("蓝牙权限等待: \(String(format: "%.0f", t.bluetoothPermissionWaitSeconds)) s（连接后若出现弹窗请点击允许）", level: .info)
         }
-        self.log("超时: 设备信息=\(t.deviceInfoReadTimeout)s, OTA启动=\(t.otaStartWaitTimeout)s, 重连=\(t.deviceReconnectTimeout)s, RTC读取=\(t.rtcReadTimeout)s, 阀门=\(t.valveOpenTimeout)s", level: .info)
+        self.log("超时: 读序列号=\(t.serialReadTimeoutSeconds)s, 设备信息=\(t.deviceInfoReadTimeout)s, OTA启动=\(t.otaStartWaitTimeout)s, 重连=\(t.deviceReconnectTimeout)s, RTC读取=\(t.rtcReadTimeout)s, 阀门=\(t.valveOpenTimeout)s", level: .info)
         self.log("RTC: 通过阈值=\(t.rtcPassThreshold)s, 失败阈值=\(t.rtcFailThreshold)s, 写入=\(t.rtcWriteEnabled), 重试=\(t.rtcWriteRetryCount)次", level: .info)
         self.log("压力: 关阀 \(t.pressureClosedMin)~\(t.pressureClosedMax) mbar, 开阀 \(t.pressureOpenMin)~\(t.pressureOpenMax) mbar, 差值检查=\(t.pressureDiffCheckEnabled), 差值 \(t.pressureDiffMin)~\(t.pressureDiffMax) mbar", level: .info)
         self.log("OTA: 若 FW 不匹配则触发 \(t.firmwareUpgradeEnabled ? "是" : "否")", level: .info)
@@ -2672,16 +2726,57 @@ struct ProductionTestView: View {
                     stepResults[step.id] = appLanguage.string("production_test.connected_gatt_ready")
                     stepStatuses[step.id] = .passed
                     recordStepOutcome(stepId: step.id, outcome: "passed")
+
+                case TestStep.readSerialNumber.id:
+                    self.log(appLanguage.string("production_test.read_serial_step_log"), level: .info)
+                    ble.refreshDeviceInformationSerialAndHardware()
+                    let timeoutSeconds = rules.thresholds.serialReadTimeoutSeconds
+                    let maxWaitCount = Int(timeoutSeconds * 10)
+                    var waitCount = 0
+                    while isRunning && waitCount < maxWaitCount {
+                        if let raw = ble.deviceSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                            capturedDeviceSN = raw
+                            capturedDeviceName = ble.connectedDeviceName
+                            self.log(String(format: appLanguage.string("production_test.read_serial_ok_log"), raw), level: .info)
+                            stepResults[step.id] = "SN: \(raw)"
+                            stepStatuses[step.id] = .passed
+                            recordStepOutcome(stepId: step.id, outcome: "passed")
+                            break
+                        }
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        waitCount += 1
+                        if waitCount % 20 == 0 {
+                            ble.refreshDeviceInformationSerialAndHardware()
+                            let elapsed = Double(waitCount) / 10.0
+                            self.log(String(format: appLanguage.string("production_test.read_serial_waiting_log"), elapsed, Int(timeoutSeconds)), level: .debug)
+                        }
+                    }
+                    if stepStatuses[step.id] != .passed {
+                        self.log(appLanguage.string("production_test.read_serial_fail_log"), level: .error)
+                        stepResults[step.id] = appLanguage.string("production_test.read_serial_timeout")
+                        stepStatuses[step.id] = .failed
+                        recordStepOutcome(stepId: step.id, outcome: "failed")
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
+                        break
+                    }
                     
                 case "step_verify_firmware": // 确认固件版本
                     self.log("步骤2: 确认固件版本", level: .info)
                     
-                    // 等待设备信息读取完成（SN、FW、HW 均等待，使用配置的超时时间）
-                    self.log("等待读取设备信息（SN、FW、HW 版本）...", level: .info)
+                    let serialStepEnabled = enabledSteps.contains(where: { $0.id == TestStep.readSerialNumber.id })
+                    // 等待设备信息读取完成：若已单独执行「读序列号」则此处只等 FW/HW；否则与旧版一致等 SN、FW、HW
+                    self.log(serialStepEnabled ? "等待读取设备信息（FW、HW 版本）..." : "等待读取设备信息（SN、FW、HW 版本）...", level: .info)
                     let timeoutSeconds = rules.thresholds.deviceInfoReadTimeout
                     let maxWaitCount = Int(timeoutSeconds * 10) // 每0.1秒检查一次
                     var waitCount = 0
-                    while isRunning && (ble.deviceSerialNumber == nil || ble.currentFirmwareVersion == nil || ble.deviceHardwareRevision == nil) && waitCount < maxWaitCount {
+                    while isRunning && waitCount < maxWaitCount {
+                        let snTrim = ble.deviceSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        let cachedSn = (capturedDeviceSN ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let snReady = serialStepEnabled ? (!cachedSn.isEmpty || !snTrim.isEmpty) : !snTrim.isEmpty
+                        let fwReady = ble.currentFirmwareVersion != nil
+                        let hwTrim = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        let hwReady = !hwTrim.isEmpty
+                        if snReady && fwReady && hwReady { break }
                         try? await Task.sleep(nanoseconds: 100_000_000)
                         waitCount += 1
                         // 每2秒输出一次等待状态
@@ -2697,10 +2792,25 @@ struct ProductionTestView: View {
                         self.log("设备信息读取完成", level: .info)
                     }
                     
-                    // 验证 SN
+                    // 验证 SN（单独「读序列号」步骤已启用时，优先使用已缓存的 SN）
                     var resultMessages: [String] = []
                     
-                    if let sn = ble.deviceSerialNumber, !sn.isEmpty {
+                    let snCandidate: String?
+                    if serialStepEnabled {
+                        let cached = (capturedDeviceSN ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let bleSn = ble.deviceSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        if !cached.isEmpty {
+                            snCandidate = cached
+                        } else if !bleSn.isEmpty {
+                            snCandidate = bleSn
+                        } else {
+                            snCandidate = nil
+                        }
+                    } else {
+                        snCandidate = ble.deviceSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    
+                    if let sn = snCandidate, !sn.isEmpty {
                         self.log("✓ SN 验证通过: \(sn)", level: .info)
                         resultMessages.append("SN: \(sn)")
                         // 立即缓存设备信息，供产测结束后上传使用（步骤2 即使后续 BL/FW/HW 失败也会执行恢复出厂等，上传时仍需 SN）
@@ -2817,12 +2927,10 @@ struct ProductionTestView: View {
                     capturedBootloaderVersion = ble.bootloaderVersion
                     capturedHardwareRevision = ble.deviceHardwareRevision
                     
-                case "step_verify_hw_rev": // 校验 HW_REV；按 JSON 配置可选自动写入并回读确认
-                    self.log("步骤: 校验 HW_REV", level: .info)
-                    let targetHw = rules.thresholds.hwRevTarget.trimmingCharacters(in: .whitespacesAndNewlines)
+                case "step_verify_hw_rev": // 读取 HW_REV（2A27）；读到非空即通过；出货区写入在 step_hw_rev_shipping_region
+                    self.log("步骤: 读取 HW_REV", level: .info)
                     let readTimeout = rules.thresholds.hwRevReadTimeoutSeconds
-                    let verifyTimeout = rules.thresholds.hwRevWriteVerifyTimeoutSeconds
-                    let pollNs = UInt64(max(10, rules.thresholds.hwRevWriteVerifyPollIntervalMs)) * 1_000_000
+                    let pollNs = UInt64(max(10, rules.thresholds.hwRevReadPollIntervalMs)) * 1_000_000
 
                     if ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
                         ble.refreshDeviceInformationSerialAndHardware()
@@ -2830,7 +2938,7 @@ struct ProductionTestView: View {
                     var waited: Double = 0
                     while isRunning && (ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) && waited < readTimeout {
                         try? await Task.sleep(nanoseconds: pollNs)
-                        waited += Double(max(10, rules.thresholds.hwRevWriteVerifyPollIntervalMs)) / 1000.0
+                        waited += Double(max(10, rules.thresholds.hwRevReadPollIntervalMs)) / 1000.0
                     }
                     guard let currentHwRaw = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines), !currentHwRaw.isEmpty else {
                         self.log("错误：无法读取 HW_REV（2A27）", level: .error)
@@ -2841,17 +2949,52 @@ struct ProductionTestView: View {
                         break
                     }
 
-                    if currentHwRaw == targetHw {
-                        self.log("✓ HW_REV 一致: \(currentHwRaw)", level: .info)
-                        stepStatuses[step.id] = .passed
-                        recordStepOutcome(stepId: step.id, outcome: "passed")
-                        stepResults[step.id] = "HW: \(currentHwRaw) ✓"
-                        capturedHardwareRevision = currentHwRaw
+                    self.log("✓ 已读取 HW_REV: \(currentHwRaw)", level: .info)
+                    stepStatuses[step.id] = .passed
+                    recordStepOutcome(stepId: step.id, outcome: "passed")
+                    stepResults[step.id] = "HW: \(currentHwRaw) ✓"
+                    capturedHardwareRevision = currentHwRaw
+
+                case TestStep.hwRevShippingRegion.id: // 出货区域 HW_REV（美/欧）：按 destination 写入目标并回读确认
+                    self.log("步骤: 出货区域 HW_REV", level: .info)
+                    let destLabel = rules.thresholds.shippingDestination == "eu"
+                        ? appLanguage.string("production_test_rules.shipping_destination_eu")
+                        : appLanguage.string("production_test_rules.shipping_destination_us")
+                    let targetHw = (rules.thresholds.shippingDestination == "eu")
+                        ? rules.thresholds.shippingHwRevEu
+                        : rules.thresholds.shippingHwRevUs
+                    let readTimeout = rules.thresholds.shippingHwRevReadTimeoutSeconds
+                    let verifyTimeout = rules.thresholds.shippingHwRevWriteVerifyTimeoutSeconds
+                    let pollNs = UInt64(max(10, rules.thresholds.shippingHwRevWriteVerifyPollIntervalMs)) * 1_000_000
+
+                    if ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                        ble.refreshDeviceInformationSerialAndHardware()
+                    }
+                    var shipWaited: Double = 0
+                    while isRunning && (ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) && shipWaited < readTimeout {
+                        try? await Task.sleep(nanoseconds: pollNs)
+                        shipWaited += Double(max(10, rules.thresholds.shippingHwRevWriteVerifyPollIntervalMs)) / 1000.0
+                    }
+                    guard let shipCurrentRaw = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines), !shipCurrentRaw.isEmpty else {
+                        self.log("错误：无法读取 HW_REV（2A27）", level: .error)
+                        stepStatuses[step.id] = .failed
+                        recordStepOutcome(stepId: step.id, outcome: "failed")
+                        stepResults[step.id] = appLanguage.string("production_test.hardware_version_unreadable")
+                        if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
 
-                    self.log("HW_REV 不一致（期望: \(targetHw), 实际: \(currentHwRaw)）", level: .warning)
-                    guard rules.thresholds.hwRevAutoWriteWhenMismatch else {
+                    if shipCurrentRaw == targetHw {
+                        self.log("✓ 出货区域 HW_REV 一致（\(destLabel)）: \(shipCurrentRaw)", level: .info)
+                        stepStatuses[step.id] = .passed
+                        recordStepOutcome(stepId: step.id, outcome: "passed")
+                        stepResults[step.id] = "\(destLabel) HW: \(shipCurrentRaw) ✓"
+                        capturedHardwareRevision = shipCurrentRaw
+                        break
+                    }
+
+                    self.log("出货区域 HW_REV 不一致（\(destLabel) 期望: \(targetHw), 实际: \(shipCurrentRaw)）", level: .warning)
+                    guard rules.thresholds.shippingHwRevAutoWriteWhenMismatch else {
                         stepStatuses[step.id] = .failed
                         recordStepOutcome(stepId: step.id, outcome: "failed")
                         stepResults[step.id] = appLanguage.string("production_test.hardware_version_mismatch")
@@ -2859,11 +3002,11 @@ struct ProductionTestView: View {
                         break
                     }
 
-                    self.log("尝试写入 HW_REV -> \(targetHw)", level: .info)
-                    let writeResult = await ble.sendDevAccessChangeHardwareRevision(to: targetHw)
-                    switch writeResult {
+                    self.log("尝试写入出货区域 HW_REV -> \(targetHw)（\(destLabel)）", level: .info)
+                    let shipWriteResult = await ble.sendDevAccessChangeHardwareRevision(to: targetHw)
+                    switch shipWriteResult {
                     case .completed:
-                        self.log("HW_REV 写入命令已发送，等待回读确认", level: .info)
+                        self.log("出货区域 HW_REV 写入命令已发送，等待回读确认", level: .info)
                     case .invalidFormat:
                         self.log("错误：目标 HW_REV 格式不合法（需 PXXVXXRXX）", level: .error)
                         stepStatuses[step.id] = .failed
@@ -2872,7 +3015,7 @@ struct ProductionTestView: View {
                         if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     case .emptyValue, .notReady, .rejectedByVersion:
-                        self.log("错误：HW_REV 写入失败（\(String(describing: writeResult))）", level: .error)
+                        self.log("错误：HW_REV 写入失败（\(String(describing: shipWriteResult))）", level: .error)
                         stepStatuses[step.id] = .failed
                         recordStepOutcome(stepId: step.id, outcome: "failed")
                         stepResults[step.id] = appLanguage.string("production_test.hardware_version_write_failed")
@@ -2881,24 +3024,24 @@ struct ProductionTestView: View {
                     }
                     if stepStatuses[step.id] == .failed { break }
 
-                    var verifyElapsed: Double = 0
-                    while isRunning && verifyElapsed < verifyTimeout {
+                    var shipVerifyElapsed: Double = 0
+                    while isRunning && shipVerifyElapsed < verifyTimeout {
                         let got = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                         if got == targetHw {
-                            self.log("✓ HW_REV 回读确认通过: \(got)", level: .info)
+                            self.log("✓ 出货区域 HW_REV 回读确认通过: \(got)", level: .info)
                             stepStatuses[step.id] = .passed
                             recordStepOutcome(stepId: step.id, outcome: "passed")
-                            stepResults[step.id] = "HW: \(got) ✓"
+                            stepResults[step.id] = "\(destLabel) HW: \(got) ✓"
                             capturedHardwareRevision = got
                             break
                         }
                         ble.refreshDeviceInformationSerialAndHardware()
                         try? await Task.sleep(nanoseconds: pollNs)
-                        verifyElapsed += Double(max(10, rules.thresholds.hwRevWriteVerifyPollIntervalMs)) / 1000.0
+                        shipVerifyElapsed += Double(max(10, rules.thresholds.shippingHwRevWriteVerifyPollIntervalMs)) / 1000.0
                     }
                     if stepStatuses[step.id] != .passed {
-                        let actual = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "--"
-                        self.log("错误：HW_REV 回读确认失败（期望: \(targetHw), 实际: \(actual)）", level: .error)
+                        let shipActual = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "--"
+                        self.log("错误：出货区域 HW_REV 回读确认失败（期望: \(targetHw), 实际: \(shipActual)）", level: .error)
                         stepStatuses[step.id] = .failed
                         recordStepOutcome(stepId: step.id, outcome: "failed")
                         stepResults[step.id] = appLanguage.string("production_test.hardware_version_verify_failed")

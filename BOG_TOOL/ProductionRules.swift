@@ -69,17 +69,23 @@ struct ProductionRules: Codable, Equatable {
             // step_connect
             var bluetoothPermissionWaitSeconds: Double?
 
+            // step_read_serial_number（read_timeout_seconds：读 2A25 序列号超时）
             // step_verify_firmware
             var allowedBootloaderVersions: [String]?
             var allowedFirmwareVersions: [String]?
             var allowedHardwareVersions: [String]?
             var firmwareUpgradeEnabled: Bool?
 
-            // step_verify_hw_rev
+            // step_verify_hw_rev（仅读取；read_timeout_seconds + write_verify_poll_interval_ms 作读轮询间隔）
             var targetHardwareVersion: String?
             var autoWriteWhenMismatch: Bool?
             var writeVerifyTimeoutSeconds: Double?
             var writeVerifyPollIntervalMs: Int?
+
+            // step_hw_rev_shipping_region（出货区域：美/欧；写入与回读确认）
+            var shippingDestination: String?
+            var shippingHwRevUs: String?
+            var shippingHwRevEu: String?
 
             // step_read_rtc
             var passThresholdSeconds: Double?
@@ -155,6 +161,10 @@ struct ProductionRules: Codable, Equatable {
                 case autoWriteWhenMismatch = "auto_write_when_mismatch"
                 case writeVerifyTimeoutSeconds = "write_verify_timeout_seconds"
                 case writeVerifyPollIntervalMs = "write_verify_poll_interval_ms"
+
+                case shippingDestination = "shipping_destination"
+                case shippingHwRevUs = "shipping_hw_rev_us"
+                case shippingHwRevEu = "shipping_hw_rev_eu"
 
                 case passThresholdSeconds = "pass_threshold_seconds"
                 case failThresholdSeconds = "fail_threshold_seconds"
@@ -237,6 +247,38 @@ struct ProductionRules: Codable, Equatable {
         case global
         case environment
         case steps
+    }
+}
+
+extension ProductionRules {
+    /// 按内置模板补齐 `steps` 中缺失的条目（顺序与默认 config 一致），并合并 `failure_policy.overrides` 中模板有而当前没有的键。
+    /// App 升级新增步骤 id 时，旧版持久化的 `current_production_rules.json` 可自动升级，无需手工改 JSON。
+    func mergedWithTemplate(_ template: ProductionRules) -> ProductionRules {
+        let templateSorted = template.steps.sorted { $0.order < $1.order }
+        let userById = Dictionary(uniqueKeysWithValues: steps.map { ($0.id, $0) })
+
+        let mergedSteps: [Step] = templateSorted.enumerated().map { index, tmpl in
+            let ord = index + 1
+            if let u = userById[tmpl.id] {
+                return Step(id: u.id, enabled: u.enabled, order: ord, fatalOnFailure: u.fatalOnFailure, config: u.config)
+            }
+            return Step(id: tmpl.id, enabled: tmpl.enabled, order: ord, fatalOnFailure: tmpl.fatalOnFailure, config: tmpl.config)
+        }
+
+        var ov = global.failurePolicy.overrides
+        for (k, v) in template.global.failurePolicy.overrides where ov[k] == nil {
+            ov[k] = v
+        }
+        let mergedGlobal = Global(
+            stepIntervalMs: global.stepIntervalMs,
+            skipFactoryResetAndDisconnectOnFail: global.skipFactoryResetAndDisconnectOnFail,
+            failurePolicy: Global.FailurePolicy(fatalDefault: global.failurePolicy.fatalDefault, overrides: ov)
+        )
+
+        var out = self
+        out.global = mergedGlobal
+        out.steps = mergedSteps
+        return out
     }
 }
 

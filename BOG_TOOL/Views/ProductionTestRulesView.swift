@@ -14,8 +14,12 @@ struct TestStep: Identifiable, Equatable {
     var enabled: Bool  // 是否启用此步骤
     
     static let connectDevice = TestStep(id: "step_connect", key: "step1", isLocked: true, enabled: true)
+    /// 读取设备序列号（Device Information 2A25）；默认位于连接之后、确认固件版本之前
+    static let readSerialNumber = TestStep(id: "step_read_serial_number", key: "step_read_serial_number", isLocked: false, enabled: true)
     static let verifyFirmware = TestStep(id: "step_verify_firmware", key: "step2", isLocked: false, enabled: true)
     static let verifyHardwareRevision = TestStep(id: "step_verify_hw_rev", key: "step_verify_hw_rev", isLocked: false, enabled: true)
+    /// 出货区域（美/欧）：通过写入对应 HW_REV（2A27）实现；默认关闭，需在规则中填写 US/EU 字符串
+    static let hwRevShippingRegion = TestStep(id: "step_hw_rev_shipping_region", key: "step_hw_rev_shipping_region", isLocked: false, enabled: false)
     static let readRTC = TestStep(id: "step_read_rtc", key: "step3", isLocked: false, enabled: true)
     static let readPressure = TestStep(id: "step_read_pressure", key: "step4", isLocked: false, enabled: true)
     /// 屏蔽系统气体自检：向 co2PressureLimits 写入 12 个 0x00（与 Debug 区「Disable diag」共用 BLEManager.writeCo2PressureLimitsZeros）
@@ -71,10 +75,16 @@ struct ProductionTestRulesView: View {
     @State private var bootloaderVersion: String = ""
     @State private var firmwareVersion: String = ""
     @State private var hardwareVersion: String = ""
-    @State private var hwRevAutoWriteWhenMismatch: Bool = true
     @State private var hwRevReadTimeoutSeconds: Double = 3.0
-    @State private var hwRevWriteVerifyTimeoutSeconds: Double = 5.0
-    @State private var hwRevWriteVerifyPollIntervalMs: Int = 150
+    @State private var hwRevReadPollIntervalMs: Int = 150
+    /// step_hw_rev_shipping_region：出货区域（us/eu）及各自 HW_REV，与通用 HW 校验分开存储
+    @State private var shippingDestinationUsEu: String = "us"
+    @State private var shippingHwRevUs: String = "P02V02R02"
+    @State private var shippingHwRevEu: String = "P02V02R01"
+    @State private var shippingHwRevAutoWriteWhenMismatch: Bool = true
+    @State private var shippingHwRevReadTimeoutSeconds: Double = 3.0
+    @State private var shippingHwRevWriteVerifyTimeoutSeconds: Double = 5.0
+    @State private var shippingHwRevWriteVerifyPollIntervalMs: Int = 150
     // 固件版本升级开关（默认关闭，仅在用户显式开启时触发 OTA）
     @State private var firmwareUpgradeEnabled: Bool = false
     @State private var isEditingOrder: Bool = false
@@ -93,6 +103,8 @@ struct ProductionTestRulesView: View {
     // 等待超时配置（单位：秒）
     @State private var rtcReadTimeout: Double = 2.0
     @State private var deviceInfoReadTimeout: Double = 3.0
+    /// step_read_serial_number：读 2A25 序列号超时（秒）
+    @State private var serialReadTimeoutSeconds: Double = 3.0
     @State private var otaStartWaitTimeout: Double = 5.0
     @State private var deviceReconnectTimeout: Double = 5.0
     @State private var valveOpenTimeout: Double = 5.0
@@ -183,6 +195,7 @@ struct ProductionTestRulesView: View {
         var rtcWriteRetryCount: Int
         var rtcReadTimeout: Double
         var deviceInfoReadTimeout: Double
+        var serialReadTimeoutSeconds: Double?
         var otaStartWaitTimeout: Double
         var deviceReconnectTimeout: Double
         var valveOpenTimeout: Double
@@ -230,14 +243,24 @@ struct ProductionTestRulesView: View {
         var gasLeakClosedPhase4PressureBelowMbar: Double?
         var gasLeakSkipClosedWhenOpenPasses: Bool
         
+        var shippingDestinationUsEu: String?
+        var shippingHwRevUs: String?
+        var shippingHwRevEu: String?
+        var shippingHwRevAutoWriteWhenMismatch: Bool?
+        var shippingHwRevReadTimeoutSeconds: Double?
+        var shippingHwRevWriteVerifyTimeoutSeconds: Double?
+        var shippingHwRevWriteVerifyPollIntervalMs: Int?
+        
         var steps: [StepState]
     }
     
     // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「重启」「恢复出厂」等可调顺序步骤（须在第2步到倒数第二步之间）
     private static let defaultSteps: [TestStep] = [
         .connectDevice,
+        .readSerialNumber,
         .verifyFirmware,
         .verifyHardwareRevision,
+        .hwRevShippingRegion,
         .readRTC,
         .readPressure,
         .disableDiag,
@@ -254,7 +277,7 @@ struct ProductionTestRulesView: View {
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .verifyHardwareRevision, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .readSerialNumber, .verifyFirmware, .verifyHardwareRevision, .hwRevShippingRegion, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
         // 加载步骤顺序（旧版 step1～step4 迁移为语义化 id）
@@ -275,6 +298,15 @@ struct ProductionTestRulesView: View {
             steps.removeAll { $0.id == TestStep.connectDevice.id }
             steps.insert(TestStep.connectDevice, at: 0)
         }
+        // 迁移：若无「读取序列号」步骤，插在「确认固件版本」之前（默认：连接 → 读 SN → 校验 FW）
+        if !steps.contains(where: { $0.id == TestStep.readSerialNumber.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }) {
+                steps.insert(TestStep.readSerialNumber, at: idx)
+            } else if steps.count > 1 {
+                steps.insert(TestStep.readSerialNumber, at: 1)
+            }
+        }
+        Self.ensureSerialBeforeFirmwareVerify(steps: &steps)
         if steps.last?.id != TestStep.disconnectDevice.id {
             steps.removeAll { $0.id == TestStep.disconnectDevice.id }
             steps.append(TestStep.disconnectDevice)
@@ -329,6 +361,16 @@ struct ProductionTestRulesView: View {
                 steps.insert(TestStep.gasLeakClosed, at: steps.count - 1)
             }
         }
+        // 迁移：若无「出货区域 HW_REV」步骤，插在通用 HW 校验之后
+        if !steps.contains(where: { $0.id == TestStep.hwRevShippingRegion.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.verifyHardwareRevision.id }) {
+                steps.insert(TestStep.hwRevShippingRegion, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readRTC.id }) {
+                steps.insert(TestStep.hwRevShippingRegion, at: idx)
+            } else {
+                steps.insert(TestStep.hwRevShippingRegion, at: min(3, max(1, steps.count - 2)))
+            }
+        }
         // 迁移：若旧配置中无「重启」「恢复出厂」步骤，则插入在断开连接之前（第2步到倒数第二步之间）
         if !steps.contains(where: { $0.id == TestStep.reset.id }) {
             if let idx = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) {
@@ -344,6 +386,8 @@ struct ProductionTestRulesView: View {
                 steps.insert(TestStep.factoryReset, at: steps.count - 1)
             }
         }
+        // 「读取序列号」须在「确认固件版本」之前
+        ProductionTestRulesView.ensureSerialBeforeFirmwareVerify(steps: &steps)
         // OTA 步骤必须在「确认固件版本」(step_verify_firmware) 之后
         ProductionTestRulesView.ensureOtaAfterFirmwareVerify(steps: &steps)
         // 重启、恢复出厂只允许在倒数第三步或倒数第二步
@@ -528,7 +572,10 @@ struct ProductionTestRulesView: View {
             case TestStep.connectDevice.id:
                 config.bluetoothPermissionWaitSeconds = bluetoothPermissionWaitSeconds
                 config.deviceReconnectTimeoutSeconds = deviceReconnectTimeout
-                
+
+            case TestStep.readSerialNumber.id:
+                config.readTimeoutSeconds = serialReadTimeoutSeconds
+
             case TestStep.verifyFirmware.id:
                 config.allowedBootloaderVersions = [bootloaderVersion]
                 config.allowedFirmwareVersions = firmwareVersion.isEmpty ? [] : [firmwareVersion]
@@ -537,11 +584,17 @@ struct ProductionTestRulesView: View {
                 config.deviceInfoReadTimeoutSeconds = deviceInfoReadTimeout
 
             case TestStep.verifyHardwareRevision.id:
-                config.targetHardwareVersion = hardwareVersion
-                config.autoWriteWhenMismatch = hwRevAutoWriteWhenMismatch
                 config.readTimeoutSeconds = hwRevReadTimeoutSeconds
-                config.writeVerifyTimeoutSeconds = hwRevWriteVerifyTimeoutSeconds
-                config.writeVerifyPollIntervalMs = hwRevWriteVerifyPollIntervalMs
+                config.writeVerifyPollIntervalMs = hwRevReadPollIntervalMs
+
+            case TestStep.hwRevShippingRegion.id:
+                config.shippingDestination = shippingDestinationUsEu.lowercased()
+                config.shippingHwRevUs = shippingHwRevUs
+                config.shippingHwRevEu = shippingHwRevEu
+                config.autoWriteWhenMismatch = shippingHwRevAutoWriteWhenMismatch
+                config.readTimeoutSeconds = shippingHwRevReadTimeoutSeconds
+                config.writeVerifyTimeoutSeconds = shippingHwRevWriteVerifyTimeoutSeconds
+                config.writeVerifyPollIntervalMs = shippingHwRevWriteVerifyPollIntervalMs
                 
             case TestStep.readRTC.id:
                 config.passThresholdSeconds = rtcTimeDiffPassThreshold
@@ -727,8 +780,10 @@ struct ProductionTestRulesView: View {
         // Steps 顺序与启用状态
         let stepMap = [
             TestStep.connectDevice,
+            .readSerialNumber,
             .verifyFirmware,
             .verifyHardwareRevision,
+            .hwRevShippingRegion,
             .readRTC,
             .readPressure,
             .disableDiag,
@@ -757,6 +812,8 @@ struct ProductionTestRulesView: View {
         for step in rules.steps {
             let cfg = step.config
             switch step.id {
+            case TestStep.readSerialNumber.id:
+                if let v = cfg.readTimeoutSeconds { serialReadTimeoutSeconds = v }
             case TestStep.verifyFirmware.id:
                 if let versions = cfg.allowedBootloaderVersions, let first = versions.first {
                     bootloaderVersion = first
@@ -772,11 +829,18 @@ struct ProductionTestRulesView: View {
                 }
                 if let v = cfg.deviceInfoReadTimeoutSeconds { deviceInfoReadTimeout = v }
             case TestStep.verifyHardwareRevision.id:
-                if let v = cfg.targetHardwareVersion, !v.isEmpty { hardwareVersion = v }
-                if let v = cfg.autoWriteWhenMismatch { hwRevAutoWriteWhenMismatch = v }
                 if let v = cfg.readTimeoutSeconds { hwRevReadTimeoutSeconds = v }
-                if let v = cfg.writeVerifyTimeoutSeconds { hwRevWriteVerifyTimeoutSeconds = v }
-                if let v = cfg.writeVerifyPollIntervalMs { hwRevWriteVerifyPollIntervalMs = v }
+                if let v = cfg.writeVerifyPollIntervalMs { hwRevReadPollIntervalMs = v }
+            case TestStep.hwRevShippingRegion.id:
+                if let v = cfg.shippingDestination, !v.isEmpty {
+                    shippingDestinationUsEu = v.lowercased() == "eu" ? "eu" : "us"
+                }
+                if let v = cfg.shippingHwRevUs, !v.isEmpty { shippingHwRevUs = v }
+                if let v = cfg.shippingHwRevEu, !v.isEmpty { shippingHwRevEu = v }
+                if let v = cfg.autoWriteWhenMismatch { shippingHwRevAutoWriteWhenMismatch = v }
+                if let v = cfg.readTimeoutSeconds { shippingHwRevReadTimeoutSeconds = v }
+                if let v = cfg.writeVerifyTimeoutSeconds { shippingHwRevWriteVerifyTimeoutSeconds = v }
+                if let v = cfg.writeVerifyPollIntervalMs { shippingHwRevWriteVerifyPollIntervalMs = v }
             case TestStep.connectDevice.id:
                 if let v = cfg.deviceReconnectTimeoutSeconds { deviceReconnectTimeout = v }
             case TestStep.readRTC.id:
@@ -884,6 +948,7 @@ struct ProductionTestRulesView: View {
             rtcWriteRetryCount: rtcWriteRetryCount,
             rtcReadTimeout: rtcReadTimeout,
             deviceInfoReadTimeout: deviceInfoReadTimeout,
+            serialReadTimeoutSeconds: serialReadTimeoutSeconds,
             otaStartWaitTimeout: otaStartWaitTimeout,
             deviceReconnectTimeout: deviceReconnectTimeout,
             valveOpenTimeout: valveOpenTimeout,
@@ -926,6 +991,13 @@ struct ProductionTestRulesView: View {
             gasLeakClosedPhase4DropWithinSeconds: gasLeakClosedPhase4DropWithinSeconds,
             gasLeakClosedPhase4PressureBelowMbar: gasLeakClosedPhase4PressureBelowMbar,
             gasLeakSkipClosedWhenOpenPasses: gasLeakSkipClosedWhenOpenPasses,
+            shippingDestinationUsEu: shippingDestinationUsEu,
+            shippingHwRevUs: shippingHwRevUs,
+            shippingHwRevEu: shippingHwRevEu,
+            shippingHwRevAutoWriteWhenMismatch: shippingHwRevAutoWriteWhenMismatch,
+            shippingHwRevReadTimeoutSeconds: shippingHwRevReadTimeoutSeconds,
+            shippingHwRevWriteVerifyTimeoutSeconds: shippingHwRevWriteVerifyTimeoutSeconds,
+            shippingHwRevWriteVerifyPollIntervalMs: shippingHwRevWriteVerifyPollIntervalMs,
             steps: testSteps.map { step in
                 let fatalVal = stepFatalOverrides[step.id] ?? TestStep.stepIdsFatalOnFailure.contains(step.id)
                 return RulesSnapshot.StepState(id: step.id, enabled: step.enabled, fatalOnFailure: fatalVal)
@@ -947,6 +1019,7 @@ struct ProductionTestRulesView: View {
         rtcWriteRetryCount = snapshot.rtcWriteRetryCount
         rtcReadTimeout = snapshot.rtcReadTimeout
         deviceInfoReadTimeout = snapshot.deviceInfoReadTimeout
+        serialReadTimeoutSeconds = snapshot.serialReadTimeoutSeconds ?? 3.0
         otaStartWaitTimeout = snapshot.otaStartWaitTimeout
         deviceReconnectTimeout = snapshot.deviceReconnectTimeout
         valveOpenTimeout = snapshot.valveOpenTimeout
@@ -994,9 +1067,17 @@ struct ProductionTestRulesView: View {
         gasLeakClosedPhase4PressureBelowMbar = snapshot.gasLeakClosedPhase4PressureBelowMbar ?? 100
         gasLeakSkipClosedWhenOpenPasses = snapshot.gasLeakSkipClosedWhenOpenPasses
 
+        shippingDestinationUsEu = snapshot.shippingDestinationUsEu ?? "us"
+        shippingHwRevUs = snapshot.shippingHwRevUs ?? "P02V02R02"
+        shippingHwRevEu = snapshot.shippingHwRevEu ?? "P02V02R01"
+        shippingHwRevAutoWriteWhenMismatch = snapshot.shippingHwRevAutoWriteWhenMismatch ?? true
+        shippingHwRevReadTimeoutSeconds = snapshot.shippingHwRevReadTimeoutSeconds ?? 3.0
+        shippingHwRevWriteVerifyTimeoutSeconds = snapshot.shippingHwRevWriteVerifyTimeoutSeconds ?? 5.0
+        shippingHwRevWriteVerifyPollIntervalMs = snapshot.shippingHwRevWriteVerifyPollIntervalMs ?? 150
+
         // 更新本地状态数组
         var newSteps: [TestStep] = []
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .verifyHardwareRevision, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .readSerialNumber, .verifyFirmware, .verifyHardwareRevision, .hwRevShippingRegion, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakOpen, .gasLeakClosed, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         for s in snapshot.steps {
             if var base = stepMap[s.id] {
@@ -1251,6 +1332,7 @@ struct ProductionTestRulesView: View {
                                 .disabled(
                                     index <= 1
                                     || (step.id == TestStep.otaBeforeDisconnect.id && index > 0 && testSteps[index - 1].id == TestStep.verifyFirmware.id)
+                                    || (step.id == TestStep.verifyFirmware.id && index > 0 && testSteps[index - 1].id == TestStep.readSerialNumber.id)
                                     || ((step.id == TestStep.reset.id || step.id == TestStep.factoryReset.id) && index < testSteps.count - 2) // 重启/恢复出厂只能在上移后仍在倒数第二或倒数第三
                                     || (index == testSteps.count - 4 && (testSteps[index - 1].id == TestStep.reset.id || testSteps[index - 1].id == TestStep.factoryReset.id)) // 不能把倒数第三步的重启/恢复出厂顶到更前
                                 )
@@ -1265,6 +1347,7 @@ struct ProductionTestRulesView: View {
                                 .disabled(
                                     index >= testSteps.count - 2
                                     || (step.id == TestStep.verifyFirmware.id && index + 1 < testSteps.count && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id)
+                                    || (step.id == TestStep.readSerialNumber.id && index + 1 < testSteps.count && testSteps[index + 1].id == TestStep.verifyFirmware.id)
                                     || ((step.id == TestStep.reset.id || step.id == TestStep.factoryReset.id) && index < testSteps.count - 3) // 重启/恢复出厂只能在下移后仍在倒数第二或倒数第三
                                     || (index == testSteps.count - 4 && (testSteps[index + 1].id == TestStep.reset.id || testSteps[index + 1].id == TestStep.factoryReset.id)) // 不能把倒数第三步的重启/恢复出厂挤到更前
                                 )
@@ -1362,6 +1445,17 @@ struct ProductionTestRulesView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
     
+    /// 「读取序列号」须在「确认固件版本」之前；若违反则移到 step_verify_firmware 之前
+    private static func ensureSerialBeforeFirmwareVerify(steps: inout [TestStep]) {
+        guard let fwIndex = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }),
+              let serialIndex = steps.firstIndex(where: { $0.id == TestStep.readSerialNumber.id }) else { return }
+        if serialIndex > fwIndex {
+            let serial = steps.remove(at: serialIndex)
+            let insertAt = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }) ?? 1
+            steps.insert(serial, at: insertAt)
+        }
+    }
+
     /// OTA 步骤必须在「确认固件版本」(step_verify_firmware) 之后；若违反则把 step_ota 移到 step_verify_firmware 之后
     private static func ensureOtaAfterFirmwareVerify(steps: inout [TestStep]) {
         guard let fwIndex = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }),
@@ -1437,6 +1531,7 @@ struct ProductionTestRulesView: View {
             updatedSteps.removeAll { $0.id == TestStep.disconnectDevice.id }
             updatedSteps.append(TestStep.disconnectDevice)
         }
+        Self.ensureSerialBeforeFirmwareVerify(steps: &updatedSteps)
         Self.ensureOtaAfterFirmwareVerify(steps: &updatedSteps)
         Self.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &updatedSteps)
         
@@ -1451,12 +1546,15 @@ struct ProductionTestRulesView: View {
         guard index > 1 else { return }
         // OTA 步骤不能在「确认固件版本」之前
         if testSteps[index].id == TestStep.otaBeforeDisconnect.id && testSteps[index - 1].id == TestStep.verifyFirmware.id { return }
+        // 「确认固件版本」不能移到「读取序列号」之前
+        if testSteps[index].id == TestStep.verifyFirmware.id && testSteps[index - 1].id == TestStep.readSerialNumber.id { return }
         // 重启/恢复出厂只能处于倒数第二或倒数第三步，上移后仍须在此两格
         if (testSteps[index].id == TestStep.reset.id || testSteps[index].id == TestStep.factoryReset.id) && index < testSteps.count - 2 { return }
         // 不能把倒数第三步的重启/恢复出厂顶到更前
         if index == testSteps.count - 4 && (testSteps[index - 1].id == TestStep.reset.id || testSteps[index - 1].id == TestStep.factoryReset.id) { return }
         
         testSteps.swapAt(index, index - 1)
+        Self.ensureSerialBeforeFirmwareVerify(steps: &testSteps)
         saveStepsOrder()
     }
     
@@ -1467,12 +1565,15 @@ struct ProductionTestRulesView: View {
         guard index < testSteps.count - 2 else { return }
         // 「确认固件版本」不能在 OTA 步骤之后
         if testSteps[index].id == TestStep.verifyFirmware.id && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id { return }
+        // 「读取序列号」不能移到「确认固件版本」之后
+        if testSteps[index].id == TestStep.readSerialNumber.id && testSteps[index + 1].id == TestStep.verifyFirmware.id { return }
         // 重启/恢复出厂只能处于倒数第二或倒数第三步，下移后仍须在此两格
         if (testSteps[index].id == TestStep.reset.id || testSteps[index].id == TestStep.factoryReset.id) && index < testSteps.count - 3 { return }
         // 不能把倒数第三步的重启/恢复出厂挤到更前（与下方交换会把它换到 count-4）
         if index == testSteps.count - 4 && (testSteps[index + 1].id == TestStep.reset.id || testSteps[index + 1].id == TestStep.factoryReset.id) { return }
         
         testSteps.swapAt(index, index + 1)
+        Self.ensureSerialBeforeFirmwareVerify(steps: &testSteps)
         saveStepsOrder()
     }
     
@@ -1593,10 +1694,14 @@ struct ProductionTestRulesView: View {
             }
             
             switch step.id {
+            case TestStep.readSerialNumber.id:
+                serialReadConfigurationView
             case "step_verify_firmware": // 确认固件版本
                 versionConfigurationView
-            case "step_verify_hw_rev": // 校验/可选改写 HW_REV
+            case "step_verify_hw_rev": // 读取 HW_REV（写入与回读确认在出货区域步骤）
                 verifyHwRevConfigurationView
+            case TestStep.hwRevShippingRegion.id:
+                shippingHwRevRegionConfigurationView
             case "step_read_rtc": // 检查RTC
                 rtcConfigurationView
             case "step_read_pressure": // 读取压力值
@@ -1616,6 +1721,22 @@ struct ProductionTestRulesView: View {
         .padding(.vertical, 4)
     }
     
+    private var serialReadConfigurationView: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test_rules.serial_read_timeout_section"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.serial_read_timeout_label"),
+                value: $serialReadTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_serial_read_timeout"
+            )
+            .onChange(of: serialReadTimeoutSeconds) { _ in hasUnsavedChanges = true }
+        }
+        .padding(UIDesignSystem.Padding.md)
+    }
+
     /// 版本配置视图（步骤2）
     private var versionConfigurationView: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
@@ -1855,35 +1976,12 @@ struct ProductionTestRulesView: View {
     }
     
 
-    /// HW_REV 步骤配置（独立步骤：读取→比对→可选改写→回读确认）
+    /// HW_REV 步骤配置：仅读取 2A27（超时与读轮询）
     private var verifyHwRevConfigurationView: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.verify_hw_rev_title"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
-
-            HStack(spacing: UIDesignSystem.Spacing.lg) {
-                Text(appLanguage.string("production_test_rules.hardware_version_label"))
-                    .font(UIDesignSystem.Typography.body)
-                    .foregroundStyle(.secondary)
-                    .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
-
-                TextField(appLanguage.string("production_test_rules.hardware_version_placeholder"), text: $hardwareVersion)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 140)
-                    .onChange(of: hardwareVersion) { _ in hasUnsavedChanges = true }
-            }
-
-            HStack(spacing: UIDesignSystem.Spacing.lg) {
-                Text(appLanguage.string("production_test_rules.hw_rev_auto_write_when_mismatch"))
-                    .font(UIDesignSystem.Typography.body)
-                    .foregroundStyle(.primary)
-                Spacer()
-                Toggle("", isOn: $hwRevAutoWriteWhenMismatch)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .onChange(of: hwRevAutoWriteWhenMismatch) { _ in hasUnsavedChanges = true }
-            }
 
             thresholdRow(
                 label: appLanguage.string("production_test_rules.hw_rev_read_timeout"),
@@ -1891,16 +1989,105 @@ struct ProductionTestRulesView: View {
                 unit: appLanguage.string("production_test_rules.unit_seconds"),
                 key: "production_test_hw_rev_read_timeout"
             )
+            thresholdIntRow(
+                label: appLanguage.string("production_test_rules.hw_rev_read_poll_interval"),
+                value: $hwRevReadPollIntervalMs,
+                key: "production_test_hw_rev_read_poll_interval"
+            )
+        }
+        .padding(UIDesignSystem.Padding.md)
+    }
+
+    /// 出货区域 HW_REV（美/欧两套字符串 + 本产线 destination）
+    private var shippingHwRevRegionConfigurationView: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test_rules.shipping_hw_rev_section_title"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Text(appLanguage.string("production_test_rules.shipping_hw_rev_hint"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.shipping_destination_label"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
+                Picker("", selection: $shippingDestinationUsEu) {
+                    Text(appLanguage.string("production_test_rules.shipping_destination_us")).tag("us")
+                    Text(appLanguage.string("production_test_rules.shipping_destination_eu")).tag("eu")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 280)
+                .onChange(of: shippingDestinationUsEu) { _ in hasUnsavedChanges = true }
+            }
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.shipping_hw_rev_us_label"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
+                TextField(appLanguage.string("production_test_rules.hardware_version_placeholder"), text: $shippingHwRevUs)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .onChange(of: shippingHwRevUs) { _ in hasUnsavedChanges = true }
+            }
+            if !shippingHwRevUs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               BLEManager.normalizedProductHardwareRevision(shippingHwRevUs) == nil {
+                Text(appLanguage.string("production_test_rules.shipping_hw_rev_format_invalid"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.shipping_hw_rev_eu_label"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
+                TextField(appLanguage.string("production_test_rules.hardware_version_placeholder"), text: $shippingHwRevEu)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .onChange(of: shippingHwRevEu) { _ in hasUnsavedChanges = true }
+            }
+            if !shippingHwRevEu.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               BLEManager.normalizedProductHardwareRevision(shippingHwRevEu) == nil {
+                Text(appLanguage.string("production_test_rules.shipping_hw_rev_format_invalid"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.hw_rev_auto_write_when_mismatch"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Toggle("", isOn: $shippingHwRevAutoWriteWhenMismatch)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .onChange(of: shippingHwRevAutoWriteWhenMismatch) { _ in hasUnsavedChanges = true }
+            }
+
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.hw_rev_read_timeout"),
+                value: $shippingHwRevReadTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_shipping_hw_rev_read_timeout"
+            )
             thresholdRow(
                 label: appLanguage.string("production_test_rules.hw_rev_verify_timeout"),
-                value: $hwRevWriteVerifyTimeoutSeconds,
+                value: $shippingHwRevWriteVerifyTimeoutSeconds,
                 unit: appLanguage.string("production_test_rules.unit_seconds"),
-                key: "production_test_hw_rev_verify_timeout"
+                key: "production_test_shipping_hw_rev_verify_timeout"
             )
             thresholdIntRow(
                 label: appLanguage.string("production_test_rules.hw_rev_verify_poll_interval"),
-                value: $hwRevWriteVerifyPollIntervalMs,
-                key: "production_test_hw_rev_verify_poll_interval"
+                value: $shippingHwRevWriteVerifyPollIntervalMs,
+                key: "production_test_shipping_hw_rev_verify_poll_interval"
             )
         }
         .padding(UIDesignSystem.Padding.md)
