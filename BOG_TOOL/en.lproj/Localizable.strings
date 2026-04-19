@@ -275,6 +275,9 @@
 "production_test.step_disabled_in_rules" = "Skipped: step not enabled in production rules.";
 "production_test.test_result" = "Test Result";
 "production_test.execution_log" = "Execution Log";
+"production_test.report_meta_sop" = "SOP version: %@";
+"production_test.report_meta_schema" = "Rules schema: %d";
+"production_test.report_meta_bog_tool" = "BOG Tool: %@";
 "production_test.connected" = "Device Connected";
 "production_test.disconnected" = "Disconnected";
 "production_test.disconnected_after_ota" = "Disconnected (OTA reboot)";
@@ -342,8 +345,9 @@
 "production_test_rules.step4_criteria" = "✓ Pass: Closed state > 1.300 mbar, Open state > 1.1 mbar.";
 "production_test_rules.step_disable_diag_title" = "Disable gas self-check (Disable diag)";
 "production_test_rules.step_disable_diag_desc" = "Write 12×0x00 to co2PressureLimits to disable gas self-check.";
-"production_test_rules.step_disable_diag_criteria" = "Pass: 12×0x00 written, gas status = expected.";
-"production_test_rules.step_disable_diag_fail_timeout" = "Disable diag: gas status not %2$@ within %1$@";
+"production_test_rules.step_disable_diag_pass_polled" = "Pass: wrote 12×0x00 to pressure limits. Rules %1$@ · wait %2$@ s · poll ≤ %3$@ s · read %4$@ · allowed gas codes %5$@";
+"production_test_rules.step_disable_diag_pass_no_poll" = "Pass: wrote 12×0x00 to pressure limits. Rules %1$@ · wait %2$@ s · gas status polling off · allowed codes %3$@";
+"production_test_rules.step_disable_diag_fail_timeout" = "Fail: gas status not in {%2$@} within %1$@ s polling (rules %3$@)";
 "production_test_rules.disable_diag_config_title" = "Disable diag (wait & poll)";
 "production_test_rules.disable_diag_wait_seconds" = "Wait after send";
 "production_test_rules.disable_diag_poll_gas_status_enabled" = "Poll gas status to expected";
@@ -603,6 +607,7 @@
 
 /* Production test rules toolbar */
 "production_test_rules.current_file_label" = "Current rules file: %@";
+"production_test_rules.current_file_with_import" = "Current rules file: %1$@ (imported from %2$@)";
 "production_test_rules.current_file_dirty_suffix" = " (modified, not applied)";
 "production_test_rules.export_rules" = "Export JSON";
 "production_test_rules.import_rules" = "Import JSON";

@@ -458,6 +458,9 @@ struct ProductionTestView: View {
                     criteria: overallTestCriteria,
                     timeString: productionTestEndTimeString,
                     needRetest: needRetestAfterOtaReboot,
+                    sopVersionDisplay: displayableSOPVersion,
+                    rulesSchemaVersion: productionRulesStore.rules.schemaVersion,
+                    bogToolVersionDisplay: bogToolVersionPayloadString,
                     onDismiss: { showResultOverlay = false }
                 )
                 .environmentObject(appLanguage)
@@ -1471,6 +1474,22 @@ struct ProductionTestView: View {
         Double(String(format: "%.3f", value)) ?? value
     }
 
+    /// 与 `buildProductionTestPayload` 中 `bogToolVersion` 字段一致（上报与本地产测 JSON 共用）。
+    private var bogToolVersionPayloadString: String? {
+        let shortVer = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let buildVer = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !shortVer.isEmpty else { return nil }
+        return buildVer.isEmpty ? shortVer : "\(shortVer) (\(buildVer))"
+    }
+
+    /// 日志/弹窗中与 payload `productionRulesVersion` 对齐的展示字符串。
+    private var displayableSOPVersion: String {
+        let v = productionRulesStore.rules.rulesVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        return v.isEmpty ? "N.A" : v
+    }
+
     /// 构建与 API 一致的产测 payload（summary），供本地写入与上传共用。
     /// `stepsSummary` / 合并后的 `stepResults` 覆盖 **完整 SOP 顺序**（`currentTestSteps`），含规则中关闭的步骤。
     private func buildProductionTestPayload() -> [String: Any] {
@@ -1556,12 +1575,8 @@ struct ProductionTestView: View {
         let rulesMeta = productionRulesStore.rules
         body["productionRulesVersion"] = rulesMeta.rulesVersion
         body["productionRulesSchemaVersion"] = rulesMeta.schemaVersion
-        let shortVer = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let buildVer = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !shortVer.isEmpty {
-            body["bogToolVersion"] = buildVer.isEmpty ? shortVer : "\(shortVer) (\(buildVer))"
+        if let bog = bogToolVersionPayloadString {
+            body["bogToolVersion"] = bog
         }
         return body
     }
@@ -2729,6 +2744,10 @@ struct ProductionTestView: View {
                     
                     // 验证 SN（单独「读序列号」步骤已启用时，优先使用已缓存的 SN）
                     var resultMessages: [String] = []
+                    let joinFirmwareStepFailureBody: (String) -> String = { tail in
+                        let head = resultMessages.filter { !$0.isEmpty }.joined(separator: "\n")
+                        return head.isEmpty ? tail : head + "\n" + tail
+                    }
                     
                     let snCandidate: String?
                     if serialStepEnabled {
@@ -2747,7 +2766,10 @@ struct ProductionTestView: View {
                     
                     if let sn = snCandidate, !sn.isEmpty {
                         self.log("✓ SN 验证通过: \(sn)", level: .info)
-                        resultMessages.append("SN: \(sn)")
+                        // 本步骤已校验 SN；仅当未单独启用「读序列号」步骤时，才在步骤结果里再写一行 SN（否则与上一步重复；上传仍用 capturedDeviceSN）
+                        if !serialStepEnabled {
+                            resultMessages.append("SN: \(sn)")
+                        }
                         // 立即缓存设备信息，供产测结束后上传使用（步骤2 即使后续 BL/FW/HW 失败也会执行恢复出厂等，上传时仍需 SN）
                         capturedDeviceSN = sn.trimmingCharacters(in: .whitespacesAndNewlines)
                         capturedDeviceName = ble.connectedDeviceName
@@ -2784,7 +2806,7 @@ struct ProductionTestView: View {
                                     self.log("错误：Bootloader 版本不匹配（期望: \(rules.bootloaderVersion), 实际: \(blVersionStr)）", level: .error)
                                     stepStatuses[step.id] = .failed
                     recordStepOutcome(stepId: step.id, outcome: "failed")
-                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_version_mismatch")
+                                    stepResults[step.id] = joinFirmwareStepFailureBody(appLanguage.string("production_test.bootloader_version_mismatch"))
                                     if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                                     break
                                 }
@@ -2794,7 +2816,7 @@ struct ProductionTestView: View {
                                     self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
                                     stepStatuses[step.id] = .failed
                     recordStepOutcome(stepId: step.id, outcome: "failed")
-                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
+                                    stepResults[step.id] = joinFirmwareStepFailureBody(appLanguage.string("production_test.bootloader_too_old"))
                                     if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                                     break
                                 }
@@ -2806,7 +2828,7 @@ struct ProductionTestView: View {
                                 self.log("错误：Bootloader 版本过低（当前: \(blVersionStr)，要求 ≥ 2）", level: .error)
                                 stepStatuses[step.id] = .failed
                     recordStepOutcome(stepId: step.id, outcome: "failed")
-                                stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_too_old")
+                                stepResults[step.id] = joinFirmwareStepFailureBody(appLanguage.string("production_test.bootloader_too_old"))
                                 if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                                 break
                             }
@@ -2816,7 +2838,7 @@ struct ProductionTestView: View {
                         self.log("错误：无法读取 Bootloader 版本", level: .error)
                         stepStatuses[step.id] = .failed
                     recordStepOutcome(stepId: step.id, outcome: "failed")
-                        stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.bootloader_unreadable")
+                        stepResults[step.id] = joinFirmwareStepFailureBody(appLanguage.string("production_test.bootloader_unreadable"))
                         if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
@@ -2834,7 +2856,7 @@ struct ProductionTestView: View {
                                     self.log("错误：服务器未提供版本 \(rules.firmwareVersion) 的产线固件，请检查服务器固件列表或产线可见配置", level: .error, category: "OTA")
                                     stepStatuses[step.id] = .failed
                     recordStepOutcome(stepId: step.id, outcome: "failed")
-                                    stepResults[step.id] = resultMessages.joined(separator: "\n") + "\n" + String(format: appLanguage.string("production_test.server_no_firmware"), rules.firmwareVersion)
+                                    stepResults[step.id] = joinFirmwareStepFailureBody(String(format: appLanguage.string("production_test.server_no_firmware"), rules.firmwareVersion))
                                     if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                                     break
                                 }
@@ -3338,9 +3360,12 @@ struct ProductionTestView: View {
                     let expectedStatuses: [Int] = rules.thresholds.disableDiagExpectedGasStatuses
                     let expectedDescription = expectedStatuses.map(String.init).joined(separator: ",")
                     let waitSecondsStr = String(format: "%.1f", rules.thresholds.disableDiagWaitSeconds)
-                    let pollTimeoutStr = String(format: "%.1f", rules.thresholds.disableDiagPollTimeoutSeconds)
+                    let pollTimeoutSec = max(0.1, rules.thresholds.disableDiagPollTimeoutSeconds)
+                    let pollWindowStr = String(format: "%.1f", pollTimeoutSec)
+                    let sopVersionLabel = productionRulesStore.rules.rulesVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let rulesLabelForMessage = sopVersionLabel.isEmpty ? "—" : sopVersionLabel
 
-                    self.log("Disable diag 判定准则：向 CO2 Pressure Limits 写入 12×0x00 后，等待 \(waitSecondsStr) 秒，再在 \(pollTimeoutStr) 秒轮询内，Gas system status 必须变为期望值集合中的任意一个：\(expectedDescription)。", level: .info)
+                    self.log("Disable diag 判定准则：向 CO2 Pressure Limits 写入 12×0x00 后，等待 \(waitSecondsStr) 秒，再在 \(pollWindowStr) 秒轮询内，Gas system status 必须变为期望值集合中的任意一个：\(expectedDescription)。", level: .info)
                     ble.writeCo2PressureLimitsZeros()
                     let waitSec = max(0, rules.thresholds.disableDiagWaitSeconds)
                     if waitSec > 0 {
@@ -3348,28 +3373,34 @@ struct ProductionTestView: View {
                         try? await Task.sleep(nanoseconds: UInt64(waitSec * 1_000_000_000))
                     }
                     if rules.thresholds.disableDiagPollGasStatusEnabled {
-                        let pollTimeout = max(0.1, rules.thresholds.disableDiagPollTimeoutSeconds)
-                        let pollTimeoutStr = String(format: "%.1f", pollTimeout)
-                        self.log("轮询 Gas system status 直至为集合中的任意一个值 [\(expectedDescription)]（超时 \(pollTimeoutStr)s）…", level: .info)
+                        self.log("轮询 Gas system status 直至为集合中的任意一个值 [\(expectedDescription)]（超时 \(pollWindowStr)s）…", level: .info)
                         let pollStart = Date()
                         var gasReached = false
-                        while isRunning, ble.isConnected, ble.areCharacteristicsReady, Date().timeIntervalSince(pollStart) < pollTimeout {
+                        var matchedGasRawForDisableDiag: String?
+                        while isRunning, ble.isConnected, ble.areCharacteristicsReady, Date().timeIntervalSince(pollStart) < pollTimeoutSec {
                             ble.readGasSystemStatus(silent: true)
                             try? await Task.sleep(nanoseconds: UInt64(max(1, rules.thresholds.disableDiagPollIntervalMs)) * 1_000_000)
                             let raw = ble.lastGasSystemStatusValue
                             let parsed: Int? = raw.split(separator: " ").first.flatMap { Int(String($0)) }
                             if let v = parsed, expectedStatuses.contains(v) {
                                 gasReached = true
+                                matchedGasRawForDisableDiag = raw
                                 self.log("Gas system status 已满足期望集合 [\(expectedDescription)]: \(raw)", level: .info)
                                 break
                             }
                         }
                         if gasReached {
+                            let gasReadoutForSummary = (matchedGasRawForDisableDiag ?? ble.lastGasSystemStatusValue).trimmingCharacters(in: .whitespacesAndNewlines)
+                            let gasReadoutDisplay = gasReadoutForSummary.isEmpty ? "—" : gasReadoutForSummary
+                            let passPolledSummary = String(
+                                format: appLanguage.string("production_test_rules.step_disable_diag_pass_polled"),
+                                rulesLabelForMessage, waitSecondsStr, pollWindowStr, gasReadoutDisplay, expectedDescription
+                            )
                             // 自检成功禁用后，再执行一次阀门开/关检查与压力读取（仅记录）
                             if valveCheckEnabled {
                                 let valveOkForDisableDiag = await runDisableDiagValveCheck(settleSeconds: valveCheckSettleSeconds, pressureReadDelaySeconds: valveCheckPressureReadDelaySeconds)
                                 if valveOkForDisableDiag {
-                                    stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                                    stepResults[step.id] = passPolledSummary
                                     stepStatuses[step.id] = .passed
                                     recordStepOutcome(stepId: step.id, outcome: "passed")
                                 } else {
@@ -3381,25 +3412,28 @@ struct ProductionTestView: View {
                                     if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                                 }
                             } else {
-                                stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                                stepResults[step.id] = passPolledSummary
                                 stepStatuses[step.id] = .passed
                                 recordStepOutcome(stepId: step.id, outcome: "passed")
                             }
                         } else {
                             let elapsed = String(format: "%.1f", Date().timeIntervalSince(pollStart))
-                            let pollTimeoutStr = String(format: "%.1f", pollTimeout)
-                            self.log("错误：\(pollTimeoutStr)s 内 Gas system status 未进入期望集合 [\(expectedDescription)]（当前: \(ble.lastGasSystemStatusValue)）", level: .error)
-                            stepResults[step.id] = String(format: appLanguage.string("production_test_rules.step_disable_diag_fail_timeout"), elapsed, expectedDescription)
+                            self.log("错误：\(pollWindowStr)s 内 Gas system status 未进入期望集合 [\(expectedDescription)]（当前: \(ble.lastGasSystemStatusValue)）", level: .error)
+                            stepResults[step.id] = String(format: appLanguage.string("production_test_rules.step_disable_diag_fail_timeout"), elapsed, expectedDescription, rulesLabelForMessage)
                             stepStatuses[step.id] = .failed
                             recordStepOutcome(stepId: step.id, outcome: "failed")
                             if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         }
                     } else {
                         // 不轮询 Gas status 的场景：写入 12×0x00 后，同样在禁用自检后执行阀门检查
+                        let passNoPollSummary = String(
+                            format: appLanguage.string("production_test_rules.step_disable_diag_pass_no_poll"),
+                            rulesLabelForMessage, waitSecondsStr, expectedDescription
+                        )
                         if valveCheckEnabled {
                             let valveOkForDisableDiag = await runDisableDiagValveCheck(settleSeconds: valveCheckSettleSeconds, pressureReadDelaySeconds: valveCheckPressureReadDelaySeconds)
                             if valveOkForDisableDiag {
-                                stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                                stepResults[step.id] = passNoPollSummary
                                 stepStatuses[step.id] = .passed
                                 recordStepOutcome(stepId: step.id, outcome: "passed")
                             } else {
@@ -3411,7 +3445,7 @@ struct ProductionTestView: View {
                                 if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                             }
                         } else {
-                            stepResults[step.id] = appLanguage.string("production_test_rules.step_disable_diag_criteria")
+                            stepResults[step.id] = passNoPollSummary
                             stepStatuses[step.id] = .passed
                             recordStepOutcome(stepId: step.id, outcome: "passed")
                         }
@@ -3867,6 +3901,11 @@ struct ProductionTestView: View {
         self.log("", level: .info)
         self.log("────────── 产测报表 ──────────", level: .info)
         self.log("时间: \(timeStr)", level: .info)
+        self.log(String(format: appLanguage.string("production_test.report_meta_sop"), displayableSOPVersion), level: .info)
+        self.log(String(format: appLanguage.string("production_test.report_meta_schema"), productionRulesStore.rules.schemaVersion), level: .info)
+        if let bog = bogToolVersionPayloadString {
+            self.log(String(format: appLanguage.string("production_test.report_meta_bog_tool"), bog), level: .info)
+        }
         if needRetestAfterOtaReboot {
             self.log("需要重测（本次因当前固件不支持恢复出厂/重启而在 OTA 后发送了 reboot，请重测以执行后续步骤）", level: .warning)
         }
@@ -3926,6 +3965,9 @@ private struct ProductionTestResultOverlay: View {
     let criteria: [(name: String, ok: Bool, isWarning: Bool, detail: String?)]
     let timeString: String
     let needRetest: Bool
+    let sopVersionDisplay: String
+    let rulesSchemaVersion: Int
+    let bogToolVersionDisplay: String?
     let onDismiss: () -> Void
     
     /// 需要重测时也按「测试失败」展示标题与主色，仅通过说明文案提示用户重测
@@ -3974,6 +4016,19 @@ private struct ProductionTestResultOverlay: View {
                         Text(timeString)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(String(format: appLanguage.string("production_test.report_meta_sop"), sopVersionDisplay))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                            Text(String(format: appLanguage.string("production_test.report_meta_schema"), rulesSchemaVersion))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                            if let bog = bogToolVersionDisplay {
+                                Text(String(format: appLanguage.string("production_test.report_meta_bog_tool"), bog))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                            }
+                        }
                         if needRetest {
                             Text(appLanguage.string("production_test.need_retest_detail"))
                                 .font(.subheadline)

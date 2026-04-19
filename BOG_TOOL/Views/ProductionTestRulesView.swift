@@ -68,6 +68,8 @@ struct ProductionTestRulesView: View {
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var hasAppliedThisSession: Bool = false
     @State private var hasUnsavedChanges: Bool = false
+    /// 最近一次从外部 JSON 导入时的文件名（用于标题行；持久化仍为 Application Support 下的 current_production_rules.json）
+    @State private var lastExternalRulesImportFileName: String? = nil
     
     private let hardwareVersionPresets = ["P02V02R01", "P02V02R00"]
     @State private var bootloaderVersion: String = ""
@@ -420,7 +422,13 @@ struct ProductionTestRulesView: View {
             let rules = productionRulesStore.rules
             let titleBase = appLanguage.string("production_test_rules.title")
             let versionText = rules.rulesVersion
-            let fileName = "current_production_rules.json"
+            let persistedFileName = "current_production_rules.json"
+            let baseLabel: String = {
+                if let src = lastExternalRulesImportFileName {
+                    return String(format: appLanguage.string("production_test_rules.current_file_with_import"), persistedFileName, src)
+                }
+                return String(format: appLanguage.string("production_test_rules.current_file_label"), persistedFileName)
+            }()
             
             HStack {
                 Text(titleBase)
@@ -469,8 +477,7 @@ struct ProductionTestRulesView: View {
                 }
             }
             
-            // 当前规则文件 + 版本 + 脏标记
-            let baseLabel = String(format: appLanguage.string("production_test_rules.current_file_label"), fileName)
+            // 当前规则文件 + 版本 + 脏标记（文件行随导入 / Apply / 恢复默认更新）
             Text("\(baseLabel) · SOP=\(versionText)\(hasUnsavedChanges ? "*" : "")")
                 .font(UIDesignSystem.Typography.caption)
                 .foregroundStyle(.secondary)
@@ -486,6 +493,7 @@ struct ProductionTestRulesView: View {
         let oldRules = productionRulesStore.rules
         let rules = makeCurrentProductionRules()
         productionRulesStore.apply(rules)
+        lastExternalRulesImportFileName = nil
         NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
 
         // 构造变更摘要（按大区块粗粒度对比）
@@ -695,6 +703,7 @@ struct ProductionTestRulesView: View {
                 let rules = try decoder.decode(ProductionRules.self, from: data)
                 applyProductionRules(rules)
                 productionRulesStore.apply(rules)
+                lastExternalRulesImportFileName = url.lastPathComponent
                 hasUnsavedChanges = false
                 ble.appendLog("[Rules] Imported rules JSON from: \(url.lastPathComponent)", level: .info)
             } catch {
@@ -709,6 +718,7 @@ struct ProductionTestRulesView: View {
         if let rules = try? ProductionRulesLoader.loadBundledDefaultRules() {
             applyProductionRules(rules)
             productionRulesStore.apply(rules)
+            lastExternalRulesImportFileName = nil
             hasUnsavedChanges = false
             ble.appendLog("[Rules] Reset rules from bundled default_production_rules.json", level: .info)
         } else {

@@ -4,6 +4,8 @@ import SwiftUI
 struct DeviceListView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var productionState: ProductionTestState
+    @EnvironmentObject private var productionRulesStore: ProductionRulesStore
+    @EnvironmentObject private var serverClient: ServerClient
     @ObservedObject var ble: BLEManager
     var selectedMode: AppMode  // 当前模式：产测或Debug
     @ObservedObject var firmwareManager: FirmwareManager
@@ -37,6 +39,10 @@ struct DeviceListView: View {
         .sheet(isPresented: $showProductionTestRules) {
             ProductionTestRulesView(firmwareManager: firmwareManager)
                 .environmentObject(ble)
+                .environmentObject(productionRulesStore)
+                .environmentObject(appLanguage)
+                .environmentObject(serverClient)
+                .environmentObject(productionState)
         }
         .sheet(isPresented: $showGattProtocol) {
             GattProtocolView()

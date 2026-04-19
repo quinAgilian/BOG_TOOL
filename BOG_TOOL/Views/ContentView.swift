@@ -104,6 +104,7 @@ struct ContentView: View {
     @EnvironmentObject private var appSettings: AppSettings
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverSettings: ServerSettings
+    @EnvironmentObject private var productionRulesStore: ProductionRulesStore
     @StateObject private var ble = BLEManager()
     @StateObject private var productionState = ProductionTestState()
     @StateObject private var firmwareManager = FirmwareManager.shared
@@ -127,10 +128,10 @@ struct ContentView: View {
         return build != "1" ? "\(short) (\(build))" : short
     }
     
-    /// 产测 SOP 版本（UserDefaults，未设置时为 N.A）
-    private static let sopVersionKey = "production_test_sop_version"
+    /// 产测 SOP 版本：与 `ProductionRulesStore` 一致（导入/应用规则后立即更新）
     private var sopVersionString: String {
-        UserDefaults.standard.string(forKey: Self.sopVersionKey) ?? "N.A"
+        let v = productionRulesStore.rules.rulesVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        return v.isEmpty ? "N.A" : v
     }
 
     var body: some View {
@@ -756,4 +757,6 @@ private struct LogLevelFilterView: View {
     ContentView()
         .environmentObject(AppSettings())
         .environmentObject(AppLanguage())
+        .environmentObject(ServerSettings())
+        .environmentObject(ProductionRulesStore())
 }
