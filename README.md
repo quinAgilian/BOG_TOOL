@@ -115,7 +115,8 @@ BOG_TOOL/
 
 产测结束后，若开启「上传至服务器」，APP 会将结果 POST 到远程部署的 `bog-test-server` 服务。  
 - 在 **服务器设置**（菜单 `Server → 服务器设置`）中配置 **base URL**：当前默认 `http://8.129.99.18:8000`（生产环境），测试环境可配置为 `http://8.129.99.18:8001`，后续备案完成后可改用域名（如 `http://bog.generalquin.top`）。  
-- 服务器部署说明与自动部署流程见独立的 `bog-test-server` 仓库 README。
+- **HTTP API 契约**（路径、字段、查询参数）以本仓库内子模块 **`server/API_SPEC.md`** 为准；文档与代码对照见 **`server/docs/API_SPEC_AUDIT.md`**。  
+- 服务器部署说明与自动部署流程见子模块 **`server/README.md`**（独立仓库通常为 `bog-test-server`）。
 
 ## 固件约定（供参考）
 

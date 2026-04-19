@@ -8,7 +8,7 @@
 |--------------|------------|------|
 | 产测顺序     | **是（实现规则 JSON 化）**     | 步骤顺序和启用状态现在统一来自 `ProductionRules`（JSON），不再依赖 `UserDefaults["production_test_steps_order"]` 作为规则来源；整体执行顺序与之前保持一致。 |
 | 判定规则     | **是（规则来源切换为 JSON）**  | 所有阈值、判定线下限、limit 基准等均由 `ProductionRules` 加载（bundle 内置 `rules/default_production_rules.json` + 应用时写出的 `current_production_rules.json`），不再从 UserDefaults 读取；具体数值含义与单位（bar/mbar）保持不变，仅规则的存储介质与加载入口变更。 |
-| API 契约     | **是（向后兼容扩展，已落地）** | 产测上传 payload 中新增可选字段 `rules`（本次产测使用的完整 `ProductionRules` JSON 快照），以及查询接口 `/api/production_rules/versions`，旧服务端与旧客户端在缺省 `rules` 字段时完全兼容。 |
+| API 契约     | **是（向后兼容扩展）** | 产测上传 payload 中新增可选字段 `rules`（本次产测使用的完整 `ProductionRules` JSON 快照，服务端按 `API_SPEC` 接受；**`rules` 快照是否入库以服务端实现为准**）、可选 `clientRunId`。**`GET /api/production_rules/versions` 仅在 `server/API_SPEC.md` §1.3 中规划，当前服务端尚未实现**（勿在生产依赖）。旧客户端不传新字段时仍兼容。 |
 
 ---
 
@@ -63,7 +63,7 @@
 
 与 `server/API_SPEC.md` 及现有服务端一致：
 
-- **顶层**：`deviceSerialNumber`、`overallPassed`、`needRetest`、`startTime`、`endTime`、`durationSeconds`、`deviceName`、设备版本字段、`stepsSummary`、`stepResults`、`testDetails`，以及**新增的可选字段** `rules`（本次产测使用的完整规则 JSON 快照）。
+- **顶层**：`deviceSerialNumber`、`overallPassed`、`needRetest`、`startTime`、`endTime`、`durationSeconds`、`deviceName`、设备版本字段、`stepsSummary`、`stepResults`、`testDetails`，以及**可选字段** `rules`（完整规则 JSON 快照）、`clientRunId`（客户端会话 UUID，与本地记录同源追溯）。
 - **stepsSummary**：仍为 `stepIndex`、`stepName`、`stepId`、`status`；顺序与 enabledSteps 一致，未改。
 - **stepResults**：仍为 `{ [stepId: string]: string }`。仅 value 的**文案内容**由「x.xx bar」改为「xxx mbar」等，key 与类型未改；服务端按原样存并展示，契约不变。
 
@@ -83,10 +83,10 @@
 - 服务端：`testDetails` 仍为 `Optional[Dict[str, Any]]`，未改 schema。
 - Dashboard：仍按 `pressureClosedMbar`（mbar）、`pressureBar`（bar）、`gasLeakClosedLimitBar`（bar）等解析与展示；客户端上传单位未变，故**无影响**。
 
-**结论**：在保持原有字段与单位不变的前提下，API 契约新增并已经实现了**向后兼容的扩展字段与只读查询接口**：
+**结论**：在保持原有字段与单位不变的前提下，API 契约为**向后兼容的扩展**：
 
-- `POST /api/production-test` / `/api/production-test/batch`：新增可选字段 `rules`，用于上传当前规则快照（`ProductionRules` JSON），旧客户端不传该字段仍然兼容；
-- `GET /api/production_rules/versions`：新增只读查询接口，用于按规则版本维度查看历史使用情况。
+- `POST /api/production-test` / `/api/production-test/batch`：可选上传 `rules` 快照、**`clientRunId`** 等；旧客户端不传仍兼容。规则版本类元数据仍以 `productionRulesVersion` / `productionRulesSchemaVersion` 等字段为准（见 `server/API_SPEC.md`）。
+- **`GET /api/production_rules/versions`**：规范中预留，**当前服务端未实现**；若需按规则版本统计，可暂时以导出产测 CSV 或 `GET /api/records` 在外部汇总，实现进度以 `server/API_SPEC.md` §1.3 为准。
 
 ---
 

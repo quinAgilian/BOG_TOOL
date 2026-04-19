@@ -120,7 +120,8 @@ BOG_TOOL/
 - **烧录**：`POST /api/burn-record`、`/api/burn-record/batch`，`GET /api/burn-records`、`/api/burn-bin-list`
 - **PCBA**：`POST /api/pcba-test-record`、`/api/pcba-test-record/batch`，`GET /api/pcba-test-records`、`/api/pcba-mac-list`
 - **固件升级**：`POST /api/firmware-upgrade-record`；`GET /api/firmware-history`
-- **固件文件管理**（需管理员）：`GET /api/bog/firmware`，上传/删除/下载见 API_SPEC 2.5
+- **固件列表（只读）**：`GET /api/firmware`、`GET /api/firmware/{id}/download`
+- **固件管理（管理员）**：`GET/POST/PATCH/DELETE /api/admin/firmware` 等，见 API_SPEC §2.6（页面入口 `/bog/firmware` 仅重定向到 `/admin/firmware`，非 JSON API）
 - **其他**：`GET /api/deploy-info`、`/api/viewers`，`DELETE /api/clear-test-data`（仅 dev），Dashboard 与 admin 页面
 
 ### 4.3 部署（deploy/）
@@ -156,6 +157,7 @@ BOG_TOOL/
 | `docs/PROJECT_INDEX.md` | 本索引 |
 | `docs/FIRMWARE_LOADING_LOGIC.md` | 固件加载：FirmwareManager、FirmwareEntry、版本解析、OTA/产测规则入口 |
 | `server/API_SPEC.md` | 服务端 API 规范 |
+| `server/docs/API_SPEC_AUDIT.md` | 服务端文档与代码一致性审计（非规范正文） |
 | `server/README.md` | 服务端使用与部署 |
 | `VERSION_AND_RELEASE.md` | 版本与发布说明 |
 | `OTA_SPEED_ANALYSIS.md` | OTA 速度分析 |
