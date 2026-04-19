@@ -144,4 +144,6 @@ entities.json
 /bog-test-server/
 /bog-test-server-backup/
 /release/
+# Xcode 导出 / 本地分发拷贝（勿提交）
+/deploy/
 gas_leak_20260306_154906.csv
