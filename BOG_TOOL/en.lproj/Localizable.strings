@@ -260,6 +260,7 @@
 "production_test.title" = "Production Test";
 "production_test.log_title" = "Test log";
 "production_test.steps_title" = "Test Steps";
+"production_test.steps_list_sop_hint" = "Full SOP order. Dimmed rows are not enabled in current production rules.";
 "production_test.connect_first" = "Please connect a device first";
 "production_test.required_rules_missing" = "Error: %@ in production test rules must not be empty. Fill it in before starting the test.";
 "production_test.start" = "Start test";

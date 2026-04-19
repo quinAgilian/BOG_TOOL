@@ -260,6 +260,7 @@
 "production_test.title" = "产测模式";
 "production_test.log_title" = "产测日志";
 "production_test.steps_title" = "测试步骤";
+"production_test.steps_list_sop_hint" = "完整 SOP 顺序。灰色行为当前产测规则中未启用的步骤。";
 "production_test.connect_first" = "请先连接设备";
 "production_test.required_rules_missing" = "错误：产测规则中的 %@ 不能为空，请先在规则面板中填写后再启动产测";
 "production_test.start" = "开始产测";

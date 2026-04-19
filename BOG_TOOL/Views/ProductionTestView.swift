@@ -292,6 +292,11 @@ struct ProductionTestView: View {
                     Spacer()
                 }
                 .padding(.horizontal, UIDesignSystem.Padding.xs)
+                Text(appLanguage.string("production_test.steps_list_sop_hint"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, UIDesignSystem.Padding.xs)
                 
                 ScrollViewReader { _ in
                     ScrollView {
@@ -511,41 +516,45 @@ struct ProductionTestView: View {
         currentTestSteps = rules.steps
     }
     
-    /// 测试步骤功能区 - 垂直布局，每行一个步骤
+    /// 测试步骤功能区：完整 SOP 顺序（含规则中未启用的步骤），序号与上报 `stepIndex` 一致。
     private var testStepsSection: some View {
-        let enabledSteps = currentTestSteps.filter { $0.enabled }
-        
-        return VStack(spacing: UIDesignSystem.Spacing.xs) {
-            ForEach(Array(enabledSteps.enumerated()), id: \.element.id) { index, step in
+        VStack(spacing: UIDesignSystem.Spacing.xs) {
+            ForEach(Array(currentTestSteps.enumerated()), id: \.element.id) { index, step in
                 stepRow(step: step, stepNumber: index + 1)
                     .id(step.id)
             }
         }
     }
     
-    /// 步骤行 - 水平布局，对号在最右侧，支持展开/折叠
+    /// 步骤行 - 水平布局，对号在最右侧；规则中关闭的步骤弱化展示且不可展开详细日志。
     private func stepRow(step: TestStep, stepNumber: Int) -> some View {
+        let disabledInRules = !step.enabled
         let status = stepStatuses[step.id] ?? .pending
-        let isCurrent = currentStepId == step.id
+        let isCurrent = !disabledInRules && currentStepId == step.id
         let result = stepResults[step.id] ?? ""
         let isExpanded = expandedSteps.contains(step.id)
+        let captionWhenDisabledRules: String = {
+            let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+            return appLanguage.string("production_test.step_disabled_in_rules")
+        }()
         
         return VStack(alignment: .leading, spacing: 0) {
-            // 主行：可点击展开/折叠
+            // 主行：启用步骤可点击展开/折叠；规则中关闭仅展示说明
             HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 // 左侧：步骤编号圆圈
                 ZStack {
                     Circle()
-                        .fill(status.color.opacity(0.2))
+                        .fill(disabledInRules ? Color.gray.opacity(0.2) : status.color.opacity(0.2))
                         .frame(width: 28, height: 28)
                     
-                    if status == .running {
+                    if !disabledInRules && status == .running {
                         ProgressView()
                             .scaleEffect(0.6)
                     } else {
                         Text("\(stepNumber)")
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(status.color)
+                            .foregroundStyle(disabledInRules ? Color.secondary : status.color)
                     }
                 }
                 
@@ -554,15 +563,25 @@ struct ProductionTestView: View {
                     HStack(spacing: 4) {
                         Text(appLanguage.string("production_test_rules.\(step.key)_title"))
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(disabledInRules ? Color.secondary : Color.primary)
                         
-                        // 展开/折叠图标（任意时刻可点击切换）
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        if disabledInRules {
+                            Image(systemName: "eye.slash.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     
-                    if !result.isEmpty {
+                    if disabledInRules {
+                        Text(captionWhenDisabledRules)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(3)
+                    } else if !result.isEmpty {
                         Text(result)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -578,16 +597,14 @@ struct ProductionTestView: View {
                 
                 // 最右侧：状态图标/对号
                 HStack(spacing: UIDesignSystem.Spacing.xs) {
-                    // 进度条（仅在运行中时显示）
-                    if status == .running {
+                    if !disabledInRules && status == .running {
                         ProgressView()
                             .scaleEffect(0.7)
                             .frame(width: 16)
                     }
                     
-                    // 状态图标（对号在最右侧）
-                    Image(systemName: status.icon)
-                        .foregroundStyle(status.color)
+                    Image(systemName: disabledInRules ? "minus.circle.fill" : status.icon)
+                        .foregroundStyle(disabledInRules ? Color.secondary.opacity(0.7) : status.color)
                         .font(.system(size: 22, weight: .semibold))
                         .frame(width: 28, height: 28)
                 }
@@ -597,8 +614,9 @@ struct ProductionTestView: View {
             .padding(.vertical, UIDesignSystem.Padding.xs)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .opacity(disabledInRules ? 0.92 : 1)
             .onTapGesture {
-                // 任意时刻点击均可展开/折叠该步骤
+                guard !disabledInRules else { return }
                 if isExpanded {
                     expandedSteps.remove(step.id)
                 } else {
@@ -637,10 +655,9 @@ struct ProductionTestView: View {
                 y: 2
             )
             
-            // 展开的详细信息区域
-            if isExpanded {
+            if !disabledInRules && isExpanded {
                 stepDetailView(step: step, status: status, result: result)
-                    .padding(.leading, UIDesignSystem.Padding.md + 28 + UIDesignSystem.Spacing.md) // 对齐到内容
+                    .padding(.leading, UIDesignSystem.Padding.md + 28 + UIDesignSystem.Spacing.md)
                     .padding(.top, UIDesignSystem.Padding.xs)
                     .padding(.bottom, UIDesignSystem.Padding.sm)
             }
