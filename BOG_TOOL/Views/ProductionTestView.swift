@@ -131,24 +131,15 @@ struct ProductionTestView: View {
     @State private var capturedPressureOpenMbar: Double?
     @State private var capturedGasSystemStatus: String?
     @State private var capturedValveState: String?
-    @State private var capturedGasLeakOpenDeltaMbar: Double?
     @State private var capturedGasLeakClosedDeltaMbar: Double?
-    @State private var capturedGasLeakOpenDurationSeconds: Double?
     @State private var capturedGasLeakClosedDurationSeconds: Double?
-    @State private var capturedGasLeakOpenPhase1AvgBar: Double?
     @State private var capturedGasLeakClosedPhase1AvgBar: Double?
-    @State private var capturedGasLeakOpenThresholdMbar: Double?
     @State private var capturedGasLeakClosedThresholdMbar: Double?
-    @State private var capturedGasLeakOpenLimitBar: Double?
     @State private var capturedGasLeakClosedLimitBar: Double?
     @State private var capturedGasLeakClosedRefBar: Double?
-    @State private var capturedGasLeakOpenLimitSource: String?
     @State private var capturedGasLeakClosedLimitSource: String?
-    @State private var capturedGasLeakOpenPhase3FirstBar: Double?
     @State private var capturedGasLeakClosedPhase3FirstBar: Double?
-    @State private var capturedGasLeakOpenUserActionSeconds: Double?
     @State private var capturedGasLeakClosedUserActionSeconds: Double?
-    @State private var capturedGasLeakOpenSamples: [[String: Any]]?
     @State private var capturedGasLeakClosedSamples: [[String: Any]]?
     /// 本轮产测是否真正执行过「气体泄漏检测（关阀压力）」步骤（不含被规则跳过的情况）
     @State private var didRunGasLeakClosedStep: Bool = false
@@ -177,20 +168,8 @@ struct ProductionTestView: View {
         }
     }
 
-    /// 清空所有气体泄漏相关的 captured 字段（开阀 / 关阀）
+    /// 清空气体泄漏（关阀压力）步骤的 captured 字段
     private func resetCapturedGasLeakValues() {
-        // Open
-        capturedGasLeakOpenDeltaMbar = nil
-        capturedGasLeakOpenDurationSeconds = nil
-        capturedGasLeakOpenPhase1AvgBar = nil
-        capturedGasLeakOpenThresholdMbar = nil
-        capturedGasLeakOpenLimitBar = nil
-        capturedGasLeakOpenLimitSource = nil
-        capturedGasLeakOpenPhase3FirstBar = nil
-        capturedGasLeakOpenUserActionSeconds = nil
-        capturedGasLeakOpenSamples = nil
-
-        // Closed
         capturedGasLeakClosedDeltaMbar = nil
         capturedGasLeakClosedDurationSeconds = nil
         capturedGasLeakClosedPhase1AvgBar = nil
@@ -508,21 +487,6 @@ struct ProductionTestView: View {
         capturedGasSystemStatus = nil
         capturedValveState = nil
         resetCapturedGasLeakValues()
-        capturedGasLeakOpenPhase1AvgBar = nil
-        capturedGasLeakClosedPhase1AvgBar = nil
-        capturedGasLeakOpenThresholdMbar = nil
-        capturedGasLeakClosedThresholdMbar = nil
-        capturedGasLeakOpenLimitBar = nil
-        capturedGasLeakClosedLimitBar = nil
-        capturedGasLeakClosedRefBar = nil
-        capturedGasLeakOpenLimitSource = nil
-        capturedGasLeakClosedLimitSource = nil
-        capturedGasLeakOpenPhase3FirstBar = nil
-        capturedGasLeakClosedPhase3FirstBar = nil
-        capturedGasLeakOpenUserActionSeconds = nil
-        capturedGasLeakClosedUserActionSeconds = nil
-        capturedGasLeakOpenSamples = nil
-        capturedGasLeakClosedSamples = nil
         lastTestStartTime = nil
         lastTestEndTime = nil
     }
@@ -804,15 +768,13 @@ struct ProductionTestView: View {
         let pressureOk = !enabled.contains(where: { $0.id == TestStep.readPressure.id }) || stepStatuses[TestStep.readPressure.id] == .passed
         let disableDiagOk = stepOkForOverall(stepId: TestStep.disableDiag.id, enabled: enabled)
         let gasSystemStatusOk = !enabled.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) || stepStatuses[TestStep.readGasSystemStatus.id] == .passed
-        let gasLeakOpenOk = stepOkForOverall(stepId: TestStep.gasLeakOpen.id, enabled: enabled)
         let gasLeakClosedOk = stepOkForOverall(stepId: TestStep.gasLeakClosed.id, enabled: enabled)
-        let tbdOk = stepOkForOverall(stepId: TestStep.tbd.id, enabled: enabled)
         let valveOk = !enabled.contains(where: { $0.id == TestStep.ensureValveOpen.id }) || stepStatuses[TestStep.ensureValveOpen.id] == .passed
         // 恢复出厂 / 重启：若步骤启用则必须真正执行通过，未执行（如版本不支持而跳过）则整体判失败
         let factoryResetOk = !enabled.contains(where: { $0.id == TestStep.factoryReset.id }) || stepStatuses[TestStep.factoryReset.id] == .passed
         let resetOk = !enabled.contains(where: { $0.id == TestStep.reset.id }) || stepStatuses[TestStep.reset.id] == .passed
         let disconnectOk = stepOkForOverall(stepId: TestStep.disconnectDevice.id, enabled: enabled)
-        return connectOk && serialOk && rtcOk && fwOk && hwRevOk && hwRevShipOk && pressureOk && disableDiagOk && gasSystemStatusOk && gasLeakOpenOk && gasLeakClosedOk && tbdOk && valveOk && factoryResetOk && resetOk && disconnectOk
+        return connectOk && serialOk && rtcOk && fwOk && hwRevOk && hwRevShipOk && pressureOk && disableDiagOk && gasSystemStatusOk && gasLeakClosedOk && valveOk && factoryResetOk && resetOk && disconnectOk
     }
     
     /// 用于 overlay 报表的判定项列表：(名称, 是否通过, 是否仅警告通过, 测试数据备注)。禁用的步骤也保留，标记为警告并注明「测试跳过」。
@@ -888,12 +850,6 @@ struct ProductionTestView: View {
         } else if currentTestSteps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
             list.append((appLanguage.string("production_test_rules.step_gas_system_status_title"), true, true, skippedDetail))
         }
-        // 气体泄漏检测（开阀压力）
-        if enabled.contains(where: { $0.id == TestStep.gasLeakOpen.id }) {
-            list.append((appLanguage.string("production_test_rules.step_gas_leak_open_title"), stepStatuses[TestStep.gasLeakOpen.id] == .passed, stepStatuses[TestStep.gasLeakOpen.id] == .skipped, detail(for: TestStep.gasLeakOpen.id)))
-        } else if currentTestSteps.contains(where: { $0.id == TestStep.gasLeakOpen.id }) {
-            list.append((appLanguage.string("production_test_rules.step_gas_leak_open_title"), true, true, skippedDetail))
-        }
         // 气体泄漏检测（关阀压力）
         if enabled.contains(where: { $0.id == TestStep.gasLeakClosed.id }) {
             list.append((appLanguage.string("production_test_rules.step_gas_leak_closed_title"), stepStatuses[TestStep.gasLeakClosed.id] == .passed, stepStatuses[TestStep.gasLeakClosed.id] == .skipped, detail(for: TestStep.gasLeakClosed.id)))
@@ -917,12 +873,6 @@ struct ProductionTestView: View {
             list.append((appLanguage.string("production_test_rules.step_factory_reset_title"), stepStatuses[TestStep.factoryReset.id] == .passed, stepStatuses[TestStep.factoryReset.id] == .skipped, detail(for: TestStep.factoryReset.id)))
         } else if currentTestSteps.contains(where: { $0.id == TestStep.factoryReset.id }) {
             list.append((appLanguage.string("production_test_rules.step_factory_reset_title"), true, true, skippedDetail))
-        }
-        // 待定（step5）
-        if enabled.contains(where: { $0.id == TestStep.tbd.id }) {
-            list.append((appLanguage.string("production_test_rules.step5_title"), stepStatuses[TestStep.tbd.id] == .passed, stepStatuses[TestStep.tbd.id] == .skipped, detail(for: TestStep.tbd.id)))
-        } else if currentTestSteps.contains(where: { $0.id == TestStep.tbd.id }) {
-            list.append((appLanguage.string("production_test_rules.step5_title"), true, true, skippedDetail))
         }
         // 安全断开连接
         if enabled.contains(where: { $0.id == TestStep.disconnectDevice.id }) {
@@ -1144,12 +1094,13 @@ struct ProductionTestView: View {
         var rules = productionRulesStore.rules
         // App 升级后内置模板可能新增步骤 id；旧版持久化/导入的 JSON 缺步时，按 bundle 默认补齐并写回 store，避免产测无法启动
         let template = try ProductionRulesLoader.loadBundledDefaultRules()
-        let requiredFromBundle = Set(template.steps.map(\.id))
+        let templateIds = Set(template.steps.map(\.id))
         let declared = Set(rules.steps.map(\.id))
-        if !requiredFromBundle.subtracting(declared).isEmpty {
+        // 内置模板增减步骤 id 时（补齐新步或移除废弃步），与用户持久化不一致则按模板合并并保存
+        if templateIds != declared {
             rules = rules.mergedWithTemplate(template)
             productionRulesStore.apply(rules)
-            ble.appendLog("[Rules] 已从内置默认补齐缺失的步骤定义并保存（例如新增 step_read_serial_number），当前 steps=\(rules.steps.count)", level: .info)
+            ble.appendLog("[Rules] 已按内置模板同步步骤列表并保存（补齐缺失或移除废弃 id），当前 steps=\(rules.steps.count)", level: .info)
         }
         var issues: [String] = []
 
@@ -1169,20 +1120,20 @@ struct ProductionTestView: View {
             .readPressure,
             .disableDiag,
             .readGasSystemStatus,
-            .gasLeakOpen,
             .gasLeakClosed,
-            .tbd,
             .ensureValveOpen,
             .reset,
             .factoryReset,
             .otaBeforeDisconnect,
             .disconnectDevice
         ]
-        let knownStepMap = baseSteps.reduce(into: [String: TestStep]()) { $0[$1.id] = $1 }
+        /// 旧版占位步骤 `step5`（待定）：仍可从旧 JSON 读出，但构建运行列表时会过滤掉，不参与产测。
+        let knownStepMap = (baseSteps + [TestStep.tbd]).reduce(into: [String: TestStep]()) { $0[$1.id] = $1 }
         let declaredStepIds = Set(rules.steps.map(\.id))
         let requiredStepIds = Set(baseSteps.map(\.id))
+        let allowedDeclaredIds = requiredStepIds.union([TestStep.tbd.id])
         let missingSteps = requiredStepIds.subtracting(declaredStepIds).sorted()
-        let unknownSteps = declaredStepIds.subtracting(requiredStepIds).sorted()
+        let unknownSteps = declaredStepIds.subtracting(allowedDeclaredIds).sorted()
         if !missingSteps.isEmpty {
             issues.append("[JSON缺失] steps 缺少: \(missingSteps.joined(separator: ", "))")
         }
@@ -1193,7 +1144,10 @@ struct ProductionTestView: View {
             throw StrictRulesError.missingItems(issues)
         }
         let rulesById = Dictionary(uniqueKeysWithValues: rules.steps.map { ($0.id, $0) })
-        let steps: [TestStep] = rules.steps.sorted(by: { $0.order < $1.order }).compactMap { stepRule in
+        let steps: [TestStep] = rules.steps
+            .filter { $0.id != TestStep.tbd.id }
+            .sorted(by: { $0.order < $1.order })
+            .compactMap { stepRule in
             guard let base = knownStepMap[stepRule.id] else { return nil }
             return TestStep(id: base.id, key: base.key, isLocked: base.isLocked, enabled: stepRule.enabled)
         }
@@ -1301,8 +1255,7 @@ struct ProductionTestView: View {
         guard let otaStartWaitTimeout = otaCfg.otaStartWaitTimeoutSeconds else { issues.append("[JSON缺失] step_ota.ota_start_wait_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
         guard let gasStatusCfg = requireStepConfig(rulesById, TestStep.readGasSystemStatus.id, &issues) else { throw StrictRulesError.missingItems(issues) }
         guard let gasStatusExpectedValues = gasStatusCfg.expectedGasStatusValues, !gasStatusExpectedValues.isEmpty else { issues.append("[JSON缺失] step_gas_system_status.expected_gas_status_values"); throw StrictRulesError.missingItems(issues) }
-        guard let gasLeakClosedCfg = requireStepConfig(rulesById, TestStep.gasLeakClosed.id, &issues) else { throw StrictRulesError.missingItems(issues) }
-        guard let skipClosedWhenOpenPasses = gasLeakClosedCfg.skipClosedWhenOpenPasses else { issues.append("[JSON缺失] step_gas_leak_closed.skip_closed_when_open_passes"); throw StrictRulesError.missingItems(issues) }
+        guard let _ = requireStepConfig(rulesById, TestStep.gasLeakClosed.id, &issues) else { throw StrictRulesError.missingItems(issues) }
         let skipFactoryResetAndDisconnectOnFail = rules.global.skipFactoryResetAndDisconnectOnFail
 
         let thresholds = TestThresholds(
@@ -1350,8 +1303,7 @@ struct ProductionTestView: View {
             pressureReadPollIntervalMs: pressureReadPollIntervalMs,
             pressureRetryReadTimeoutSeconds: pressureRetryReadTimeoutSeconds,
             pressureRetryReadPollIntervalMs: pressureRetryReadPollIntervalMs,
-            gasSystemStatusExpectedValues: gasStatusExpectedValues.map { max(0, min(9, $0)) },
-            skipClosedWhenOpenPasses: skipClosedWhenOpenPasses
+            gasSystemStatusExpectedValues: gasStatusExpectedValues.map { max(0, min(9, $0)) }
         )
 
         // 4. 每步「失败时是否终止产测」：优先 step.fatalOnFailure，否则沿用 global.failurePolicy
@@ -1419,7 +1371,6 @@ struct ProductionTestView: View {
         let pressureRetryReadTimeoutSeconds: Double
         let pressureRetryReadPollIntervalMs: Int
         let gasSystemStatusExpectedValues: [Int]
-        let skipClosedWhenOpenPasses: Bool
     }
     
     /// 日志函数（类级别，供所有方法使用）：写入产测日志区，并同步到主日志区（格式 [FQC] 或 [FQC][OTA]:，遵循日志等级配置）
@@ -1520,8 +1471,9 @@ struct ProductionTestView: View {
         Double(String(format: "%.3f", value)) ?? value
     }
 
-    /// 构建与 API 一致的产测 payload（summary），供本地写入与上传共用
-    private func buildProductionTestPayload(enabledSteps: [TestStep]) -> [String: Any] {
+    /// 构建与 API 一致的产测 payload（summary），供本地写入与上传共用。
+    /// `stepsSummary` / 合并后的 `stepResults` 覆盖 **完整 SOP 顺序**（`currentTestSteps`），含规则中关闭的步骤。
+    private func buildProductionTestPayload() -> [String: Any] {
         let roundTo3: (Double) -> Double = { Self.roundDoubleForJSON($0) }
         let sn = (capturedDeviceSN ?? ble.deviceSerialNumber)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let endTime = lastTestEndTime ?? Date()
@@ -1531,21 +1483,32 @@ struct ProductionTestView: View {
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let startTimeStr = isoFormatter.string(from: startTime)
         let endTimeStr = isoFormatter.string(from: endTime)
-        let stepsSummary: [[String: Any]] = enabledSteps.enumerated().map { index, step in
+        let sopSteps = currentTestSteps
+        var executionOrdinalCounter = 0
+        let stepsSummary: [[String: Any]] = sopSteps.enumerated().map { index, step in
             let status: String
-            switch stepStatuses[step.id] ?? .pending {
-            case .passed: status = "passed"
-            case .failed: status = "failed"
-            case .skipped: status = "skipped"
-            case .pending, .running: status = "pending"
+            if !step.enabled {
+                status = "skipped"
+            } else {
+                switch stepStatuses[step.id] ?? .pending {
+                case .passed: status = "passed"
+                case .failed: status = "failed"
+                case .skipped: status = "skipped"
+                case .pending, .running: status = "pending"
+                }
             }
             let stepName = appLanguage.string("production_test_rules.\(step.key)_title")
-            return [
+            var row: [String: Any] = [
                 "stepIndex": index + 1,
                 "stepName": stepName,
                 "stepId": step.id,
                 "status": status,
-            ] as [String: Any]
+            ]
+            if step.enabled {
+                executionOrdinalCounter += 1
+                row["executionOrdinal"] = executionOrdinalCounter
+            }
+            return row
         }
         var body: [String: Any] = [
             "deviceSerialNumber": sn,
@@ -1561,7 +1524,14 @@ struct ProductionTestView: View {
         if let v = capturedFirmwareVersion ?? ble.currentFirmwareVersion { body["deviceFirmwareVersion"] = v }
         if let v = capturedBootloaderVersion ?? ble.bootloaderVersion { body["deviceBootloaderVersion"] = v }
         if let v = capturedHardwareRevision ?? ble.deviceHardwareRevision { body["deviceHardwareRevision"] = v }
-        if !stepResults.isEmpty { body["stepResults"] = stepResults }
+        var mergedStepResults = stepResults
+        let disabledHint = appLanguage.string("production_test.step_disabled_in_rules")
+        for step in sopSteps where !step.enabled {
+            if mergedStepResults[step.id]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                mergedStepResults[step.id] = disabledHint
+            }
+        }
+        if !mergedStepResults.isEmpty { body["stepResults"] = mergedStepResults }
         var testDetails: [String: Any] = [:]
         if let v = capturedRtcDeviceTime { testDetails["rtcDeviceTime"] = v }
         if let v = capturedRtcSystemTime { testDetails["rtcSystemTime"] = v }
@@ -1570,32 +1540,26 @@ struct ProductionTestView: View {
         if let v = capturedPressureOpenMbar { testDetails["pressureOpenMbar"] = roundTo3(v) }
         if let v = capturedGasSystemStatus { testDetails["gasSystemStatus"] = v }
         if let v = capturedValveState { testDetails["valveState"] = v }
-        if let v = capturedGasLeakOpenDeltaMbar { testDetails["gasLeakOpenDeltaMbar"] = roundTo3(v) }
-        if let v = capturedGasLeakOpenDurationSeconds { testDetails["gasLeakOpenDurationSeconds"] = roundTo3(v) }
         if didRunGasLeakClosedStep {
             if let v = capturedGasLeakClosedDeltaMbar { testDetails["gasLeakClosedDeltaMbar"] = roundTo3(v) }
             if let v = capturedGasLeakClosedDurationSeconds { testDetails["gasLeakClosedDurationSeconds"] = roundTo3(v) }
-        }
-        if let v = capturedGasLeakOpenPhase1AvgBar { testDetails["gasLeakOpenPhase1AvgBar"] = roundTo3(v) }
-        if didRunGasLeakClosedStep {
             if let v = capturedGasLeakClosedPhase1AvgBar { testDetails["gasLeakClosedPhase1AvgBar"] = roundTo3(v) }
-        }
-        if let v = capturedGasLeakOpenThresholdMbar { testDetails["gasLeakOpenThresholdMbar"] = roundTo3(v) }
-        if didRunGasLeakClosedStep {
             if let v = capturedGasLeakClosedThresholdMbar { testDetails["gasLeakClosedThresholdMbar"] = roundTo3(v) }
             if let v = capturedGasLeakClosedLimitBar { testDetails["gasLeakClosedLimitBar"] = roundTo3(v) }
             if let v = capturedGasLeakClosedRefBar { testDetails["gasLeakClosedRefBar"] = roundTo3(v) }
             if let v = capturedGasLeakClosedLimitSource { testDetails["gasLeakClosedLimitSource"] = v }
-        }
-        if let v = capturedGasLeakOpenPhase3FirstBar { testDetails["gasLeakOpenPhase3FirstBar"] = roundTo3(v) }
-        if let v = capturedGasLeakOpenUserActionSeconds { testDetails["gasLeakOpenUserActionSeconds"] = roundTo3(v) }
-        if let v = capturedGasLeakOpenSamples { testDetails["gasLeakOpenSamples"] = v }
-        if didRunGasLeakClosedStep {
             if let v = capturedGasLeakClosedPhase3FirstBar { testDetails["gasLeakClosedPhase3FirstBar"] = roundTo3(v) }
             if let v = capturedGasLeakClosedUserActionSeconds { testDetails["gasLeakClosedUserActionSeconds"] = roundTo3(v) }
             if let v = capturedGasLeakClosedSamples { testDetails["gasLeakClosedSamples"] = v }
         }
         if !testDetails.isEmpty { body["testDetails"] = testDetails }
+        let rulesMeta = productionRulesStore.rules
+        body["productionRulesVersion"] = rulesMeta.rulesVersion
+        body["productionRulesSchemaVersion"] = rulesMeta.schemaVersion
+        if let bv = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+           !bv.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body["bogToolVersion"] = bv.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         return body
     }
     
@@ -1934,11 +1898,10 @@ struct ProductionTestView: View {
         return true
     }
     
-    /// 从 ProductionRules(JSON) 加载产测气体泄漏步骤配置（严格模式：缺键即抛错）
-    private func loadProductionGasLeakConfig(keyPrefix: String) throws -> ProductionGasLeakConfig {
+    /// 从 ProductionRules(JSON) 加载「关阀压力」气体泄漏步骤配置（严格模式：缺键即抛错）
+    private func loadProductionGasLeakConfig() throws -> ProductionGasLeakConfig {
         let rules = productionRulesStore.rules
-        let useClosed = (keyPrefix.contains("closed"))
-        let targetId = useClosed ? TestStep.gasLeakClosed.id : TestStep.gasLeakOpen.id
+        let targetId = TestStep.gasLeakClosed.id
         guard let cfg = rules.steps.first(where: { $0.id == targetId })?.config else {
             throw StrictRulesError.missingItems(["[JSON缺失] \(targetId).config"])
         }
@@ -1984,19 +1947,18 @@ struct ProductionTestView: View {
             ble.suppressSensorDetailLogs = false
         }
 
-        let useOpenPressure = (stepId == TestStep.gasLeakOpen.id)
         let preDur = max(0, config.preCloseDurationSeconds)
         let postDur = max(0, config.postCloseDurationSeconds)
         let interval = max(0.1, min(3.0, config.intervalSeconds))
         let thresholdMbar = max(0, config.dropThresholdMbar)
         
         self.log(
-            "\(stepLabel)：判定压力=\(useOpenPressure ? "开阀" : "关阀")，Phase 1=\(preDur)s，Phase 3=\(postDur)s，间隔=\(String(format: "%.2f", interval))s，阈值=\(String(format: "%.1f", thresholdMbar)) mbar，limitSource=\(config.limitSource)，floor=\(String(format: "%.0f", config.limitFloorBar * 1000)) mbar",
+            "\(stepLabel)：判定压力=关阀，Phase 1=\(preDur)s，Phase 3=\(postDur)s，间隔=\(String(format: "%.2f", interval))s，阈值=\(String(format: "%.1f", thresholdMbar)) mbar，limitSource=\(config.limitSource)，floor=\(String(format: "%.0f", config.limitFloorBar * 1000)) mbar",
             level: .info
         )
         
-        // 1. 阀门预置：切换到判定压力对应状态
-        let valveOk = await ensureValveState(open: useOpenPressure)
+        // 1. 阀门预置：关阀压力判定
+        let valveOk = await ensureValveState(open: false)
         guard valveOk else {
             return (false, "电磁阀未能切换到判定压力对应状态")
         }
@@ -2042,8 +2004,8 @@ struct ProductionTestView: View {
         let afterReadWaitNs: UInt64 = 600_000_000
         // 为后续判定流程缓存 Phase 1 平均值，避免多次独立计算导致日志与判定存在细微数值差异
         var cachedPhase1Avg: Double?
-        // 统一根据当前步骤使用的压力通道（开阀/关阀）提取用于判定的压力值
-        func value(for p: SamplePoint) -> Double? { useOpenPressure ? p.pressureOpen : p.pressureClosed }
+        // 关阀压力通道
+        func value(for p: SamplePoint) -> Double? { p.pressureClosed }
         // Gas leak 连续采样中若连续两次读到 0，仅告警，不直接判失败
         var consecutiveZeroCount = 0
         var lastZeroWarnAt: String?
@@ -2057,7 +2019,7 @@ struct ProductionTestView: View {
                 if consecutiveZeroCount >= 2 {
                     let stamp = "\(phaseLabel)-\(String(format: "%.1f", t))"
                     if lastZeroWarnAt != stamp {
-                        let channel = useOpenPressure ? "开阀" : "关阀"
+                        let channel = "关阀"
                         self.log("\(stepLabel)：[\(phaseLabel)] 连续采样检测到\(channel)压力为 0 mbar（仅告警，不直接判失败）", level: .warning)
                         lastZeroWarnAt = stamp
                     }
@@ -2304,58 +2266,31 @@ struct ProductionTestView: View {
             if let v = s.gasSystemStatus, !v.isEmpty { d["gasSystemStatus"] = v }
             return d
         }
-        if useOpenPressure {
-            // 统一定义：Delta 始终为 referenceBar → Phase 3 最低值的压降（由 limitSource 决定参考值）
-            capturedGasLeakOpenDeltaMbar = dropFromRefMbar
-            capturedGasLeakOpenDurationSeconds = totalDurationSeconds
-            capturedGasLeakOpenPhase1AvgBar = phase1Avg
-            capturedGasLeakOpenThresholdMbar = thresholdMbar
-            capturedGasLeakOpenLimitBar = effectiveLimitBar
-            capturedGasLeakOpenLimitSource = config.limitSource
-            capturedGasLeakOpenPhase3FirstBar = phase3First
-            capturedGasLeakOpenUserActionSeconds = userActionDuration > 0 ? userActionDuration : nil
+        // 统一定义：Delta 始终为 referenceBar → Phase 3 最低值的压降（由 limitSource 决定参考值）
+        capturedGasLeakClosedDeltaMbar = dropFromRefMbar
+        capturedGasLeakClosedDurationSeconds = totalDurationSeconds
+        capturedGasLeakClosedPhase1AvgBar = phase1Avg
+        capturedGasLeakClosedThresholdMbar = thresholdMbar
+        capturedGasLeakClosedLimitBar = effectiveLimitBar
+        capturedGasLeakClosedLimitSource = config.limitSource
+        capturedGasLeakClosedPhase3FirstBar = phase3First
+        capturedGasLeakClosedUserActionSeconds = userActionDuration > 0 ? userActionDuration : nil
+        capturedGasLeakClosedRefBar = referenceBar
 
-            var allSamples: [[String: Any]] = []
-            for s in phase1Samples {
-                let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(sampleToDetailDict(s, phase: 1, pressureBar: value))
-            }
-            for s in betweenSamples {
-                let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(sampleToDetailDict(s, phase: 2, pressureBar: value))
-            }
-            for s in phase2Samples {
-                let value = s.pressureOpen ?? s.pressureClosed ?? 0
-                allSamples.append(sampleToDetailDict(s, phase: 3, pressureBar: value))
-            }
-            capturedGasLeakOpenSamples = allSamples.isEmpty ? nil : allSamples
-        } else {
-            // 统一定义：Delta 始终为 referenceBar → Phase 3 最低值的压降（由 limitSource 决定参考值）
-            capturedGasLeakClosedDeltaMbar = dropFromRefMbar
-            capturedGasLeakClosedDurationSeconds = totalDurationSeconds
-            capturedGasLeakClosedPhase1AvgBar = phase1Avg
-            capturedGasLeakClosedThresholdMbar = thresholdMbar
-            capturedGasLeakClosedLimitBar = effectiveLimitBar
-            capturedGasLeakClosedLimitSource = config.limitSource
-            capturedGasLeakClosedPhase3FirstBar = phase3First
-            capturedGasLeakClosedUserActionSeconds = userActionDuration > 0 ? userActionDuration : nil
-            capturedGasLeakClosedRefBar = referenceBar
-
-            var allSamples: [[String: Any]] = []
-            for s in phase1Samples {
-                let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(sampleToDetailDict(s, phase: 1, pressureBar: value))
-            }
-            for s in betweenSamples {
-                let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(sampleToDetailDict(s, phase: 2, pressureBar: value))
-            }
-            for s in phase2Samples {
-                let value = s.pressureClosed ?? s.pressureOpen ?? 0
-                allSamples.append(sampleToDetailDict(s, phase: 3, pressureBar: value))
-            }
-            capturedGasLeakClosedSamples = allSamples.isEmpty ? nil : allSamples
+        var allSamples: [[String: Any]] = []
+        for s in phase1Samples {
+            let value = s.pressureClosed ?? s.pressureOpen ?? 0
+            allSamples.append(sampleToDetailDict(s, phase: 1, pressureBar: value))
         }
+        for s in betweenSamples {
+            let value = s.pressureClosed ?? s.pressureOpen ?? 0
+            allSamples.append(sampleToDetailDict(s, phase: 2, pressureBar: value))
+        }
+        for s in phase2Samples {
+            let value = s.pressureClosed ?? s.pressureOpen ?? 0
+            allSamples.append(sampleToDetailDict(s, phase: 3, pressureBar: value))
+        }
+        capturedGasLeakClosedSamples = allSamples.isEmpty ? nil : allSamples
 
         if phase2Min < effectiveLimitBar {
             // 区分失败原因：若有效判定线取的是「判定线下限」，则失败原因是 P2 低于下限；否则是压降超过阈值
@@ -2645,9 +2580,6 @@ struct ProductionTestView: View {
         /// 由 step_verify_firmware（确认固件版本）设置：FW 不匹配且「若 FW 不匹配则触发 OTA」开启时为 true；step_ota 据此决定是否执行 OTA
         var fwMismatchRequiresOTA = false
         
-        // 规则：若配置为“开阀压力通过则跳过关阀压力步骤”，且开阀步骤启用并通过，则在执行关阀步骤前跳过
-        let skipClosedWhenOpenPasses = rules.thresholds.skipClosedWhenOpenPasses
-        
         for step in enabledSteps {
                 guard isRunning else {
                     if !didFinishThisRun {
@@ -2910,7 +2842,7 @@ struct ProductionTestView: View {
                             }
                         } else {
                             self.log("✓ FW 版本验证通过: \(fwVersion)", level: .info)
-                            resultMessages.append("FW: \(fwVersion) ✓")
+                            resultMessages.append("FW: \(fwVersion)")
                         }
                     } else {
                         self.log("警告：无法读取 FW 版本", level: .warning)
@@ -2952,7 +2884,7 @@ struct ProductionTestView: View {
                     self.log("✓ 已读取 HW_REV: \(currentHwRaw)", level: .info)
                     stepStatuses[step.id] = .passed
                     recordStepOutcome(stepId: step.id, outcome: "passed")
-                    stepResults[step.id] = "HW: \(currentHwRaw) ✓"
+                    stepResults[step.id] = "HW: \(currentHwRaw)"
                     capturedHardwareRevision = currentHwRaw
 
                 case TestStep.hwRevShippingRegion.id: // 出货区域 HW_REV（美/欧）：按 destination 写入目标并回读确认
@@ -2988,7 +2920,7 @@ struct ProductionTestView: View {
                         self.log("✓ 出货区域 HW_REV 一致（\(destLabel)）: \(shipCurrentRaw)", level: .info)
                         stepStatuses[step.id] = .passed
                         recordStepOutcome(stepId: step.id, outcome: "passed")
-                        stepResults[step.id] = "\(destLabel) HW: \(shipCurrentRaw) ✓"
+                        stepResults[step.id] = "\(destLabel) HW: \(shipCurrentRaw)"
                         capturedHardwareRevision = shipCurrentRaw
                         break
                     }
@@ -3031,7 +2963,7 @@ struct ProductionTestView: View {
                             self.log("✓ 出货区域 HW_REV 回读确认通过: \(got)", level: .info)
                             stepStatuses[step.id] = .passed
                             recordStepOutcome(stepId: step.id, outcome: "passed")
-                            stepResults[step.id] = "\(destLabel) HW: \(got) ✓"
+                            stepResults[step.id] = "\(destLabel) HW: \(got)"
                             capturedHardwareRevision = got
                             break
                         }
@@ -3526,11 +3458,11 @@ struct ProductionTestView: View {
                         capturedGasSystemStatus = gasStatusStr.isEmpty || gasStatusStr == "--" ? nil : gasStatusStr
                     }
                     
-                case "step_gas_leak_open": // 气体泄漏检测（开阀压力）
-                    self.log("步骤: 气体泄漏检测（开阀压力）", level: .info)
-                    let configOpen: ProductionGasLeakConfig
+                case "step_gas_leak_closed": // 气体泄漏检测（关阀压力）
+                    self.log("步骤: 气体泄漏检测（关阀压力）", level: .info)
+                    let configClosed: ProductionGasLeakConfig
                     do {
-                        configOpen = try loadProductionGasLeakConfig(keyPrefix: "production_test_gas_leak_open")
+                        configClosed = try loadProductionGasLeakConfig()
                     } catch {
                         let msg = "规则错误：\(error.localizedDescription)"
                         self.log(msg, level: .error)
@@ -3540,41 +3472,11 @@ struct ProductionTestView: View {
                         if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
                         break
                     }
-                    let resultOpen = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_open_title"), config: configOpen)
-                    stepResults[step.id] = resultOpen.message
-                    stepStatuses[step.id] = resultOpen.passed ? .passed : .failed
+                    let resultClosed = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_closed_title"), config: configClosed)
+                    stepResults[step.id] = resultClosed.message
+                    stepStatuses[step.id] = resultClosed.passed ? .passed : .failed
+                    didRunGasLeakClosedStep = true
                     if stepStatuses[step.id] == .failed, await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
-                    
-                case "step_gas_leak_closed": // 气体泄漏检测（关阀压力）
-                    // 若启用了“开阀压力通过则跳过关阀压力步骤”，且开阀步骤启用并已通过，则跳过本步骤
-                    if skipClosedWhenOpenPasses,
-                       let openStep = currentTestSteps.first(where: { $0.id == TestStep.gasLeakOpen.id }),
-                       openStep.enabled,
-                       stepStatuses[TestStep.gasLeakOpen.id] == .passed {
-                        self.log("步骤: 气体泄漏检测（关阀压力）已根据规则跳过（开阀压力检测已通过）", level: .info)
-                        stepResults[step.id] = appLanguage.string("production_test.overlay_step_skipped_open_passed")
-                        stepStatuses[step.id] = .skipped
-                    recordStepOutcome(stepId: step.id, outcome: "skipped")
-                    } else {
-                        self.log("步骤: 气体泄漏检测（关阀压力）", level: .info)
-                        let configClosed: ProductionGasLeakConfig
-                        do {
-                            configClosed = try loadProductionGasLeakConfig(keyPrefix: "production_test_gas_leak_closed")
-                        } catch {
-                            let msg = "规则错误：\(error.localizedDescription)"
-                            self.log(msg, level: .error)
-                            stepResults[step.id] = msg
-                            stepStatuses[step.id] = .failed
-                            recordStepOutcome(stepId: step.id, outcome: "failed")
-                            if await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
-                            break
-                        }
-                        let resultClosed = await runProductionGasLeakStep(stepId: step.id, stepLabel: appLanguage.string("production_test_rules.step_gas_leak_closed_title"), config: configClosed)
-                        stepResults[step.id] = resultClosed.message
-                        stepStatuses[step.id] = resultClosed.passed ? .passed : .failed
-                        didRunGasLeakClosedStep = true
-                        if stepStatuses[step.id] == .failed, await handleStepFailureShouldExit(step: step, enabledSteps: enabledSteps, thresholds: rules.thresholds, stepFatalOnFailure: rules.stepFatalOnFailure) { return }
-                    }
                     
                 case "step_valve": // 确保电磁阀是开启的
                     self.log("步骤: 确保电磁阀是开启的", level: .info)
@@ -3818,11 +3720,6 @@ struct ProductionTestView: View {
                         break
                     }
                     
-                case "step5": // 待定
-                    self.log("步骤5: 待定步骤（跳过）", level: .info)
-                    stepStatuses[step.id] = .skipped
-                    recordStepOutcome(stepId: step.id, outcome: "skipped")
-                    
                 case "step_disconnect": // 安全断开连接（阀门状态已在「确保电磁阀是开启的」步骤中确认，此处仅执行断开）
                     self.log("最后步骤: 安全断开连接", level: .info)
                     if rules.thresholds.skipFactoryResetAndDisconnectOnFail && hasAnyEnabledStepFailed(stepStatuses: stepStatuses, enabledSteps: enabledSteps, excluding: [TestStep.factoryReset.id, TestStep.disconnectDevice.id]) {
@@ -3942,9 +3839,9 @@ struct ProductionTestView: View {
     private func finishProductionTestRunWithReportAndUpload(enabledSteps: [TestStep]) {
         if didFinishThisRun { return }
         didFinishThisRun = true
-        emitProductionTestReport(enabledSteps: enabledSteps)
+        emitProductionTestReport()
         lastTestEndTime = Date()
-        let body = buildProductionTestPayload(enabledSteps: enabledSteps)
+        let body = buildProductionTestPayload()
         if let tid = currentTestId {
             saveProductionTestRecordToLocalFile(testId: tid, summary: body, journal: journalEntries)
         }
@@ -3954,12 +3851,14 @@ struct ProductionTestView: View {
         showResultOverlay = true
     }
     
-    /// 产测结束时生成报表并写入日志区，按步骤结果使用不同 log 等级（通过=info、失败=error、跳过=warning）
-    private func emitProductionTestReport(enabledSteps: [TestStep]) {
+    /// 产测结束时生成报表并写入日志区，按步骤结果使用不同 log 等级（通过=info、失败=error、跳过=warning）。
+    /// 列出 **完整** SOP（`currentTestSteps`），含规则中关闭的步骤。
+    private func emitProductionTestReport() {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         formatter.locale = Locale(identifier: "en_POSIX")
         let timeStr = formatter.string(from: Date())
+        let disabledHint = appLanguage.string("production_test.step_disabled_in_rules")
         
         self.log("", level: .info)
         self.log("", level: .info)
@@ -3969,9 +3868,17 @@ struct ProductionTestView: View {
             self.log("需要重测（本次因当前固件不支持恢复出厂/重启而在 OTA 后发送了 reboot，请重测以执行后续步骤）", level: .warning)
         }
         self.log("步骤:", level: .info)
-        for (index, step) in enabledSteps.enumerated() {
-            let status = stepStatuses[step.id] ?? .pending
-            let result = stepResults[step.id] ?? ""
+        for (index, step) in currentTestSteps.enumerated() {
+            let status: StepTestStatus
+            if !step.enabled {
+                status = .skipped
+            } else {
+                status = stepStatuses[step.id] ?? .pending
+            }
+            var result = stepResults[step.id] ?? ""
+            if !step.enabled && result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                result = disabledHint
+            }
             let title = appLanguage.string("production_test_rules.\(step.key)_title")
             let statusStr: String
             let stepLevel: LogLevel

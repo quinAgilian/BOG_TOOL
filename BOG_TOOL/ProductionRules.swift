@@ -144,7 +144,6 @@ struct ProductionRules: Codable, Equatable {
             var phase4MonitorDurationSeconds: Int?
             var phase4DropWithinSeconds: Int?
             var phase4PressureBelowMbar: Double?
-            var skipClosedWhenOpenPasses: Bool?
 
             // step_valve
             var openTimeoutSeconds: Double?
@@ -211,7 +210,6 @@ struct ProductionRules: Codable, Equatable {
                 case phase4MonitorDurationSeconds = "phase4_monitor_duration_seconds"
                 case phase4DropWithinSeconds = "phase4_drop_within_seconds"
                 case phase4PressureBelowMbar = "phase4_pressure_below_mbar"
-                case skipClosedWhenOpenPasses = "skip_closed_when_open_passes"
 
                 case openTimeoutSeconds = "open_timeout_seconds"
             }

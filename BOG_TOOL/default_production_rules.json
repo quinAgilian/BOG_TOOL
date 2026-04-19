@@ -183,32 +183,10 @@
         "require_valve_closed_confirm": true,
         "start_pressure_min_mbar": 850
       },
-      "enabled": false,
-      "fatal_on_failure": true,
-      "id": "step_gas_leak_open",
-      "order": 10
-    },
-    {
-      "config": {
-        "drop_threshold_mbar": 15,
-        "interval_seconds": 0.5,
-        "limit_floor_bar": 0,
-        "limit_source": "phase1_avg",
-        "phase4_drop_within_seconds": 15,
-        "phase4_enabled": true,
-        "phase4_monitor_duration_seconds": 20,
-        "phase4_pressure_below_mbar": 100,
-        "post_close_duration_seconds": 15,
-        "pre_close_duration_seconds": 10,
-        "require_pipeline_ready_confirm": false,
-        "require_valve_closed_confirm": true,
-        "skip_closed_when_open_passes": false,
-        "start_pressure_min_mbar": 850
-      },
       "enabled": true,
       "fatal_on_failure": true,
       "id": "step_gas_leak_closed",
-      "order": 11
+      "order": 10
     },
     {
       "config": {
@@ -217,13 +195,7 @@
       "enabled": true,
       "fatal_on_failure": true,
       "id": "step_valve",
-      "order": 12
-    },
-    {
-      "config": {},
-      "enabled": false,
-      "id": "step5",
-      "order": 13
+      "order": 11
     },
     {
       "config": {
@@ -231,25 +203,25 @@
       },
       "enabled": true,
       "id": "step_ota",
-      "order": 14
+      "order": 12
     },
     {
       "config": {},
       "enabled": false,
       "id": "step_reset",
-      "order": 15
+      "order": 13
     },
     {
       "config": {},
       "enabled": true,
       "id": "step_factory_reset",
-      "order": 16
+      "order": 14
     },
     {
       "config": {},
       "enabled": true,
       "id": "step_disconnect",
-      "order": 17
+      "order": 15
     }
   ]
 }
