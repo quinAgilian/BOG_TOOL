@@ -1556,9 +1556,12 @@ struct ProductionTestView: View {
         let rulesMeta = productionRulesStore.rules
         body["productionRulesVersion"] = rulesMeta.rulesVersion
         body["productionRulesSchemaVersion"] = rulesMeta.schemaVersion
-        if let bv = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
-           !bv.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            body["bogToolVersion"] = bv.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shortVer = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let buildVer = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !shortVer.isEmpty {
+            body["bogToolVersion"] = buildVer.isEmpty ? shortVer : "\(shortVer) (\(buildVer))"
         }
         return body
     }
