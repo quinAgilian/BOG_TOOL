@@ -265,6 +265,7 @@
 "production_test.connect_first" = "请先连接设备";
 "production_test.required_rules_missing" = "错误：产测规则中的 %@ 不能为空，请先在规则面板中填写后再启动产测";
 "production_test.start" = "开始产测";
+"production_test.session_run_id" = "产测会话 ID:";
 "production_test.running" = "测试进行中...";
 "production_test.steps" = "步骤";
 "production_test.open_records_folder" = "打开记录目录";

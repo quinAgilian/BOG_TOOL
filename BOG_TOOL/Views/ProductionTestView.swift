@@ -1595,6 +1595,9 @@ struct ProductionTestView: View {
         if let bog = bogToolVersionPayloadString {
             body["bogToolVersion"] = bog
         }
+        if let runId = currentTestId {
+            body["clientRunId"] = runId
+        }
         return body
     }
     
@@ -2490,6 +2493,8 @@ struct ProductionTestView: View {
             return
         }
 
+        let sessionRunId = UUID().uuidString
+        currentTestId = sessionRunId
         lastTestStartTime = Date()
         lastTestEndTime = nil
 
@@ -2502,6 +2507,7 @@ struct ProductionTestView: View {
             testLog.removeAll()
             stepLogRanges.removeAll()
             stepIndex = 0
+            log("\(appLanguage.string("production_test.session_run_id")) \(sessionRunId)", level: .info)
             log("正在连接设备: \(device.name)...", level: .info)
             ble.connect(to: device)
             
@@ -2554,7 +2560,8 @@ struct ProductionTestView: View {
             stepIndex = 0
             stepResults.removeAll()
             initializeStepStatuses()
-            
+            log("\(appLanguage.string("production_test.session_run_id")) \(sessionRunId)", level: .info)
+
             Task { @MainActor in
                 await executeProductionTest()
             }
@@ -2580,8 +2587,10 @@ struct ProductionTestView: View {
         capturedValveState = nil
         resetCapturedGasLeakValues()
         initializeStepStatuses()
-        
-        currentTestId = String(UUID().uuidString.prefix(8))
+
+        if currentTestId == nil {
+            currentTestId = UUID().uuidString
+        }
         journalEntries = []
         
         // 使用当前的测试步骤列表（已从UserDefaults加载）

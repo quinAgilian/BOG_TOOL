@@ -265,6 +265,7 @@
 "production_test.connect_first" = "Please connect a device first";
 "production_test.required_rules_missing" = "Error: %@ in production test rules must not be empty. Fill it in before starting the test.";
 "production_test.start" = "Start test";
+"production_test.session_run_id" = "Production test run ID:";
 "production_test.running" = "Testing...";
 "production_test.steps" = "steps";
 "production_test.open_records_folder" = "Open records folder";
