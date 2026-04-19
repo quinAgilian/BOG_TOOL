@@ -71,6 +71,7 @@
 "device_list.production_test_rules" = "Production Test Rules";
 "device_list.gatt_protocol" = "GATT Protocol";
 "device_list.select_device_first" = "Please select a device first";
+"device_list.double_click_to_connect" = "Double-click a row to connect.";
 
 "device_info.title" = "Device info";
 "device_info.sn" = "SN";

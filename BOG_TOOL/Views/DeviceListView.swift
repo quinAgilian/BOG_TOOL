@@ -129,29 +129,149 @@ struct DeviceListView: View {
     }
 }
 
-/// 扫描结果表格：点击列标题按该列排序，列有 Name | RSSI | 标识
+/// 扫描结果列表：点击列标题按该列排序；单击选行，双击连接（与 Debug「连接」按钮相同策略）
 struct DeviceTableSection: View {
+    private enum ScanSortColumn: Hashable {
+        case name
+        case rssi
+        case shortId
+
+        func comparator(order: SortOrder) -> KeyPathComparator<BLEDevice> {
+            switch self {
+            case .name: return KeyPathComparator(\.name, order: order)
+            case .rssi: return KeyPathComparator(\.sortKeyForRssi, order: order)
+            case .shortId: return KeyPathComparator(\.shortId, order: order)
+            }
+        }
+    }
+
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var ble: BLEManager
     @Binding var selectedId: Set<UUID>  // 从父视图传入
-    var selectedMode: AppMode  // 当前模式
-    @State private var sortOrder: [KeyPathComparator<BLEDevice>] = [KeyPathComparator(\.name, order: .forward)]
+    /// 由父视图传入，便于按模式扩展扫描列表行为
+    var selectedMode: AppMode
+    @State private var sortColumn: ScanSortColumn = .name
+    @State private var listSortOrder: SortOrder = .forward
 
     private var sortedDevices: [BLEDevice] {
-        ble.discoveredDevices.sorted(using: sortOrder)
+        ble.discoveredDevices.sorted(using: [sortColumn.comparator(order: listSortOrder)])
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-            Table(sortedDevices, selection: $selectedId, sortOrder: $sortOrder) {
-                TableColumn(appLanguage.string("device_list.name_column"), value: \.name)
-                TableColumn(appLanguage.string("device_list.rssi_column"), value: \.sortKeyForRssi) { (device: BLEDevice) in
-                    Text(verbatim: String(device.rssi))
+        VStack(alignment: .leading, spacing: 0) {
+            sortableHeaderRow
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(sortedDevices) { device in
+                        deviceRow(device)
+                        Divider()
+                    }
                 }
-                TableColumn(appLanguage.string("device_list.id_column"), value: \.shortId)
             }
             .frame(height: 140)
         }
+    }
+
+    private var sortableHeaderRow: some View {
+        HStack(spacing: UIDesignSystem.Spacing.sm) {
+            Button {
+                toggleSort(.name)
+            } label: {
+                HStack(spacing: 4) {
+                    Text(appLanguage.string("device_list.name_column"))
+                        .font(UIDesignSystem.Typography.caption.weight(.semibold))
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    sortIndicator(for: .name)
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                toggleSort(.rssi)
+            } label: {
+                HStack(spacing: 4) {
+                    Text(appLanguage.string("device_list.rssi_column"))
+                        .font(UIDesignSystem.Typography.caption.weight(.semibold))
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    sortIndicator(for: .rssi)
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(width: 52, alignment: .trailing)
+
+            Button {
+                toggleSort(.shortId)
+            } label: {
+                HStack(spacing: 4) {
+                    Text(appLanguage.string("device_list.id_column"))
+                        .font(UIDesignSystem.Typography.caption.weight(.semibold))
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    sortIndicator(for: .shortId)
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(width: 80, alignment: .leading)
+        }
+        .padding(.horizontal, UIDesignSystem.Padding.sm)
+        .padding(.vertical, 6)
+        .background(UIDesignSystem.Background.light)
+    }
+
+    @ViewBuilder
+    private func sortIndicator(for column: ScanSortColumn) -> some View {
+        if sortColumn == column {
+            Image(systemName: listSortOrder == .forward ? "chevron.up" : "chevron.down")
+                .font(.caption2)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+        }
+    }
+
+    private func toggleSort(_ column: ScanSortColumn) {
+        if sortColumn == column {
+            listSortOrder = (listSortOrder == .forward) ? .reverse : .forward
+        } else {
+            sortColumn = column
+            listSortOrder = .forward
+        }
+    }
+
+    private func deviceRow(_ device: BLEDevice) -> some View {
+        let isSelected = selectedId.contains(device.id)
+        return HStack(spacing: UIDesignSystem.Spacing.sm) {
+            Text(device.name)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(verbatim: String(device.rssi))
+                .monospacedDigit()
+                .frame(width: 52, alignment: .trailing)
+            Text(verbatim: device.shortId)
+                .font(.system(.body, design: .monospaced))
+                .lineLimit(1)
+                .frame(width: 80, alignment: .leading)
+        }
+        .padding(.horizontal, UIDesignSystem.Padding.sm)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+        .contentShape(Rectangle())
+        .help(appLanguage.string("device_list.double_click_to_connect"))
+        .onTapGesture(count: 1) {
+            selectedId = [device.id]
+        }
+        .highPriorityGesture(
+            TapGesture(count: 2).onEnded {
+                selectedId = [device.id]
+                connectIfAllowed(to: device)
+            }
+        )
+    }
+
+    /// 与 Debug 区「连接」按钮一致：OTA 进行中不连接；否则由 `connect(to:)` 负责清错与停扫
+    private func connectIfAllowed(to device: BLEDevice) {
+        guard !ble.isOTAInProgress else { return }
+        ble.connect(to: device)
     }
 }
 

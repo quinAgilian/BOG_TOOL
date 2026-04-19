@@ -71,6 +71,7 @@
 "device_list.production_test_rules" = "产测规则";
 "device_list.gatt_protocol" = "GATT 协议";
 "device_list.select_device_first" = "请先选择设备";
+"device_list.double_click_to_connect" = "双击行可连接设备。";
 
 "device_info.title" = "设备基础信息";
 "device_info.sn" = "SN";
