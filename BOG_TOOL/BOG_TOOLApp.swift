@@ -24,6 +24,7 @@ struct BOG_TOOLApp: App {
     @StateObject private var appLanguage = AppLanguage()
     @StateObject private var serverSettings: ServerSettings
     @StateObject private var serverClient: ServerClient
+    @StateObject private var productionRulesStore = ProductionRulesStore()
 
     init() {
         let settings = ServerSettings()
@@ -45,6 +46,7 @@ struct BOG_TOOLApp: App {
                 .environmentObject(appLanguage)
                 .environmentObject(serverSettings)
                 .environmentObject(serverClient)
+                .environmentObject(productionRulesStore)
                 #if DEBUG
                 .modifier(InjectionObserver())
                 #endif

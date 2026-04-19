@@ -110,7 +110,7 @@ func add(url: URL) -> Bool {
 ### 4.2 产测 OTA（ProductionTestView）
 
 1. 产测规则中配置目标 FW 版本（如 `1.0.5`）
-2. step2 确认固件版本时，若 FW 不匹配且开启 OTA，检查 `firmwareManager.url(forVersion: rules.firmwareVersion)` 是否存在
+2. step_verify_firmware（确认固件版本）时，若 FW 不匹配且开启 OTA，检查 `firmwareManager.url(forVersion: rules.firmwareVersion)` 是否存在
 3. OTA 步骤执行时：`firmwareManager.url(forVersion: rules.firmwareVersion)` → `ble.startOTA(firmwareURL:)`
 
 ### 4.3 resolveURL 与安全作用域

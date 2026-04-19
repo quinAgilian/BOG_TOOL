@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>BOG Tool</key>
+	<array>
+		<dict>
+			<key>architectures</key>
+			<array>
+				<string>x86_64</string>
+				<string>arm64</string>
+			</array>
+			<key>buildNumber</key>
+			<string>82</string>
+			<key>certificate</key>
+			<dict>
+				<key>SHA1</key>
+				<string>1B5C64C1E71017C64DE02A65ED7A86B57893A8CD</string>
+				<key>dateExpires</key>
+				<string>2027/2/2</string>
+				<key>type</key>
+				<string>Cloud Managed Developer ID Application</string>
+			</dict>
+			<key>entitlements</key>
+			<dict>
+				<key>com.apple.security.app-sandbox</key>
+				<true/>
+				<key>com.apple.security.device.bluetooth</key>
+				<true/>
+				<key>com.apple.security.files.user-selected.read-write</key>
+				<true/>
+				<key>com.apple.security.network.client</key>
+				<true/>
+			</dict>
+			<key>name</key>
+			<string>BOG Tool.app</string>
+			<key>team</key>
+			<dict>
+				<key>id</key>
+				<string>38V6W364PW</string>
+				<key>name</key>
+				<string>Sofeast Limited</string>
+			</dict>
+			<key>versionNumber</key>
+			<string>1.0.5</string>
+		</dict>
+	</array>
+</dict>
+</plist>

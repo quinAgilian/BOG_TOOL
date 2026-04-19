@@ -69,6 +69,19 @@ final class BLEManager: NSObject, ObservableObject {
         return fw.isEmpty ? nil : fw
     }
     
+    /// 产品硬件版本：`P` + 两位十进制数字 + `V` + 两位 + `R` + 两位（即 `PXXVXXRXX`，共 9 个字符，例 P02V02R06）。
+    /// trim 后转大写；必须整串匹配（避免 `range(of:.regularExpression)` 在个别环境下只匹配到更长串的前缀）。
+    nonisolated static func normalizedProductHardwareRevision(_ raw: String) -> String? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !s.isEmpty else { return nil }
+        // P + XX + V + XX + R + XX → 固定长度 9（ASCII）
+        guard s.count == 9 else { return nil }
+        let pattern = "^P[0-9]{2}V[0-9]{2}R[0-9]{2}$"
+        guard let r = s.range(of: pattern, options: .regularExpression),
+              r.lowerBound == s.startIndex, r.upperBound == s.endIndex else { return nil }
+        return s
+    }
+    
     /// 静态版本：从版本字符串提取固件号（供 parseFirmwareVersion 等复用）；nonisolated 供 parseFirmwareVersion 调用
     private nonisolated static func extractFirmwareVersionsStatic(from versionString: String) -> (bootloader: String, firmware: String) {
         let nsString = versionString as NSString
@@ -129,6 +142,10 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var lastConnectFailureWasPairingRemoved: Bool = false
     /// 产测恢复出厂后重连时设为 true，使 didFailToConnect 收到 Peer removed pairing 时以 info 记录并跳过弹窗/打开设置
     var isExpectingPairingRemovedFromFactoryReset: Bool = false
+    /// 是否抑制 GATT 相关底层读写日志（wr:/rd:/[GATT]…）；在 OTA 与漏气测试期间置为 true，结束后恢复
+    @Published var suppressGattLogs: Bool = false
+    /// 是否抑制高层传感器详细日志（关阀/开阀压力、阀门状态、Gas system status 等），产测可在特定阶段关闭这些细节日志
+    @Published var suppressSensorDetailLogs: Bool = false
     /// OTA 流程内部标记：进入发送固件前置位，用于状态机校验
     private var otaMarkerSet: Bool = false
     /// OTA 成功完成时的耗时（秒），用于完成后在状态/标题显示
@@ -152,11 +169,19 @@ final class BLEManager: NSObject, ObservableObject {
         case warning
         case error
     }
-    /// 单条日志：等级 + 整行文案（含时间戳）
+    /// 单条日志：等级 + 整行文案（含时间戳）；可选 payloadPreviewId 表示该行可点击预览关联的 JSON payload
     struct LogEntry: Identifiable {
-        let id = UUID()
+        let id: UUID
         let level: LogLevel
         let line: String
+        /// 非 nil 时 UI 显示「预览」按钮，点击后展示 payloadPreviewStore 中该 id 对应的 JSON
+        let payloadPreviewId: UUID?
+        init(level: LogLevel, line: String, payloadPreviewId: UUID? = nil) {
+            self.id = UUID()
+            self.level = level
+            self.line = line
+            self.payloadPreviewId = payloadPreviewId
+        }
     }
     /// 日志后台缓冲（仅内部写入）；UI 通过 displayedLogEntries 节流更新
     private var logEntriesBacking: [LogEntry] = []
@@ -186,10 +211,12 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var scanFilterRSSIEnabled: Bool = false
     /// 最小 RSSI（仅显示 rssi >= 此值）
     @Published var scanFilterMinRSSI: Int = -100
-    /// 名称前缀规则使能（默认开启，按名称关键词过滤）
+    /// 名称前缀规则使能（默认开启，按名称关键词过滤，白名单）
     @Published var scanFilterNameEnabled: Bool = true
-    /// 设备名称关键词，逗号分隔，满足其一即可（默认 CO2,BOG）
+    /// 设备名称白名单关键词，逗号分隔，满足其一即可（默认 CO2,BOG）
     @Published var scanFilterNamePrefix: String = "CO2,BOG"
+    /// 设备名称黑名单关键词，逗号分隔，只要命中任一则排除（默认 mac,iphone）
+    @Published var scanFilterNameExcludeKeywords: String = "mac,iphone"
     /// 是否过滤无名设备（空名称 / 未知设备），默认勾选
     @Published var scanFilterExcludeUnnamed: Bool = true
     /// 连接后是否已发现并缓存了 GATT 特征（压力/RTC 等），为 true 后才应发起读/写，避免「未连接或特征不可用」和连接超时
@@ -321,6 +348,8 @@ final class BLEManager: NSObject, ObservableObject {
     private var valveStateAuthErrorLogged = false
     /// 先读再设：读完后若已是目标状态则仅警告，否则写入。nil = 无待处理
     private var pendingValveSetOpen: Bool?
+    /// Dev Access 写入 HW 后，待下一次 2A27 读回时与期望值比对；nil = 无待确认
+    private var pendingHardwareRevisionVerifyExpected: String?
     /// OTA 数据包确认（读到 image valid）后是否自动发送 reboot 命令；由 UI 复选框控制
     @Published var autoSendRebootAfterOTA: Bool = true
     
@@ -388,7 +417,7 @@ final class BLEManager: NSObject, ObservableObject {
         appendLog("停止扫描")
     }
     
-    /// 名称过滤关键词（逗号分隔，满足其一即可，如 "BOG,CO2"）
+    /// 名称过滤白名单关键词（逗号分隔，满足其一即可，如 "BOG,CO2"）
     private var nameFilterKeywords: [String] {
         scanFilterNamePrefix
             .split(separator: ",")
@@ -396,11 +425,27 @@ final class BLEManager: NSObject, ObservableObject {
             .filter { !$0.isEmpty }
     }
     
+    /// 名称过滤黑名单关键词（逗号分隔，命中其一即排除，如 "mac"）
+    private var nameExcludeKeywords: [String] {
+        scanFilterNameExcludeKeywords
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+    
     /// 设备名是否匹配名称过滤（含任一关键词即可）
     private func deviceMatchesNameFilter(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        
+        // 1. 黑名单优先：若命中任一黑名单关键词，直接排除
+        let excludes = nameExcludeKeywords
+        if !excludes.isEmpty, excludes.contains(where: { lower.contains($0.lowercased()) }) {
+            return false
+        }
+        
+        // 2. 白名单：若配置了白名单关键词，则名称需包含任一白名单关键词
         let keywords = nameFilterKeywords
         if keywords.isEmpty { return true }
-        let lower = name.lowercased()
         return keywords.contains { lower.contains($0.lowercased()) }
     }
     
@@ -541,6 +586,16 @@ final class BLEManager: NSObject, ObservableObject {
         if !silent { appendLog("请求读取开阀压力") }
     }
     
+    /// 产测步骤「读取压力」前清空上次结果，便于轮询等待本次读取回调（避免沿用旧值或误判超时）
+    func clearLastPressureValue() {
+        lastPressureValue = "--"
+    }
+    
+    /// 产测步骤「读取压力」前清空上次结果，便于轮询等待本次读取回调
+    func clearLastPressureOpenValue() {
+        lastPressureOpenValue = "--"
+    }
+    
     /// 读取 Gas system status（00000001-AEF1-...）；silent 为 true 时不打日志
     func readGasSystemStatus(silent: Bool = false) {
         readCharacteristic(gasSystemStatusCharacteristic)
@@ -551,6 +606,13 @@ final class BLEManager: NSObject, ObservableObject {
     func readPressureLimits(silent: Bool = false) {
         readCharacteristic(pressureLimitsCharacteristic)
         if !silent { appendLog("请求读取 CO2 Pressure Limits") }
+    }
+    
+    /// 向 co2PressureLimits 写入 12 个 0x00，用于屏蔽系统气体系统自检功能
+    func writeCo2PressureLimitsZeros() {
+        let data = Data(repeating: 0x00, count: 12)
+        writeToCharacteristic(pressureLimitsCharacteristic, data: data)
+        appendLog("已向 CO2 Pressure Limits 写入 12 个 0x00（屏蔽气体自检）")
     }
     
     /// RTC 测试：向 Schedule Time Write 写入十六进制触发，再从 OTA Testing 特征读取 RTC（7 字节）
@@ -689,6 +751,89 @@ final class BLEManager: NSObject, ObservableObject {
     /// - Returns: .sent 已发送且已确认设备断开；.timeout 已发送但未在约定时间内确认；.rejectedByVersion / .notReady 未发送
     func sendTestingFactoryResetCommand() async -> TestingCommandResult {
         await sendTestingCommand(0x0000_0002, label: "nvs erase")
+    }
+
+    /// Dev Access（00000003-D1D0-…）元数据写入结果：不期待设备立即断开（与 reboot / NVS 擦除不同）
+    enum DevAccessMetadataResult: Sendable {
+        case completed
+        case notReady
+        case rejectedByVersion
+        case emptyValue
+        case invalidFormat
+    }
+
+    /// Dev Access：修改硬件版本 opcode 0x00000003（4 字节小端），下一包为 UTF-8 目标字符串（与标准 2A27 字符串编码一致）。
+    /// 先写解锁 Magic，与 reboot / factory reset 相同版本门槛（>= 1.1.2 或 0.x > 0.4.1）。
+    func sendDevAccessChangeHardwareRevision(to newRevision: String) async -> DevAccessMetadataResult {
+        let trimmed = newRevision.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            appendLog("[Dev Access] 硬件版本字符串为空", level: .error)
+            return .emptyValue
+        }
+        guard let normalized = Self.normalizedProductHardwareRevision(newRevision) else {
+            appendLog("[Dev Access] 硬件版本格式无效，须为 PXXVXXRXX（X 为十进制数字，共 9 字符；例 P02V02R06）", level: .error)
+            return .invalidFormat
+        }
+        guard let payload = normalized.data(using: .utf8), !payload.isEmpty else {
+            appendLog("[Dev Access] 无法将硬件版本编码为 UTF-8", level: .error)
+            return .notReady
+        }
+        if payload.count > 64 {
+            appendLog("[Dev Access] 警告：UTF-8 长度 \(payload.count) 字节，超过 64 可能导致设备拒收", level: .warning)
+        }
+        guard isConnected, let char = testingCharacteristic else {
+            appendLog("[Dev Access] 未连接或 Dev Access 特征未就绪", level: .error)
+            return .notReady
+        }
+        let (allowed, errorMsg) = isTestingRebootCommandAllowed()
+        if !allowed, let msg = errorMsg {
+            appendLog("[Dev Access] 命令被拒绝 — \(msg)", level: .error)
+            return .rejectedByVersion
+        }
+        writeTestingUnlock()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        let opcode: UInt32 = 0x0000_0003
+        let opcodeData = withUnsafeBytes(of: opcode.littleEndian) { Data($0) }
+        writeToCharacteristic(char, data: opcodeData)
+        appendLog("[Dev Access] 已发送 change hw rev (0x00000003 LE)", level: .info)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        writeToCharacteristic(char, data: payload)
+        appendLog("[Dev Access] 已写入硬件版本 UTF-8（\(payload.count) 字节）", level: .info)
+        let expectedSnapshot = normalized
+        pendingHardwareRevisionVerifyExpected = expectedSnapshot
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        refreshDeviceInformationSerialAndHardware()
+        appendLog("[Dev Access] 已请求回读 SN/HW（2A25/2A27），用于确认硬件版本是否生效", level: .info)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard pendingHardwareRevisionVerifyExpected == expectedSnapshot else { return }
+            pendingHardwareRevisionVerifyExpected = nil
+            appendLog("[Dev Access] 约 4s 内未收到 2A27 回读，请手动点「刷新 SN/HW」或检查连接", level: .warning)
+        }
+        return .completed
+    }
+
+    /// 重新读取 Device Information 中的序列号（2A25）与硬件版本（2A27），用于 Debug 展示。
+    func refreshDeviceInformationSerialAndHardware() {
+        guard let p = connectedPeripheral else {
+            appendLog("[Device Info] 未连接，无法读取 SN / HW", level: .warning)
+            return
+        }
+        guard let svc = p.services?.first(where: { $0.uuid == BLEManagerConstants.deviceInfoServiceCBUUID }) else {
+            appendLog("[Device Info] 未发现 180A 服务，请等待连接完成", level: .warning)
+            return
+        }
+        let chars = svc.characteristics ?? []
+        var any = false
+        for c in chars where c.uuid == Self.charSerialUUID || c.uuid == Self.charHardwareUUID || Self.isHardwareRevisionCharacteristic(c.uuid) {
+            p.readValue(for: c)
+            any = true
+        }
+        if any {
+            appendLog("[Device Info] 已请求读取 SN(2A25) / HW(2A27)", level: .info)
+        } else {
+            appendLog("[Device Info] 180A 下暂无 2A25/2A27 特征", level: .warning)
+        }
     }
     
     /// 清除 RTC 读取状态（产测/调试在发起新一次读取前调用，避免误用旧值或误判超时）
@@ -1036,6 +1181,8 @@ final class BLEManager: NSObject, ObservableObject {
         connectionStartTime = Date()
         initialRttSamples.removeAll()
         otaValidationStartTime = nil
+        // OTA 期间抑制 GATT 底层读写日志，避免刷屏
+        suppressGattLogs = true
         // 先检查设备初始状态，确保为 0（OTA not started）才能开始
         otaFlowState = .checkingInitialState(chunks: chunks)
         
@@ -1129,6 +1276,7 @@ final class BLEManager: NSObject, ObservableObject {
             otaStartTime = nil
             otaFirmwareTotalBytes = nil
         }
+        suppressGattLogs = false
     }
     
     /// 取消 OTA：写 Status=0（abort）通知设备，并重置本地状态，可随时调用
@@ -1171,6 +1319,7 @@ final class BLEManager: NSObject, ObservableObject {
             isOTACompletedWaitingReboot = false
             isOTAInProgress = false
             otaValidationStartTime = nil
+            suppressGattLogs = false
             if otaStartTime != nil {
                 otaCompletedDuration = Date().timeIntervalSince(otaStartTime!)
             }
@@ -1398,18 +1547,27 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
     
-    /// 清空日志
+    /// 清空日志（同时清空 payload 预览缓存）
     func clearLog() {
         logEntriesBacking.removeAll()
         displayedLogEntries = []
         logDisplayFlushScheduled = false
         otaProgressLogLine = nil
+        payloadPreviewStore.removeAll()
+        payloadPreviewOrder.removeAll()
     }
     
     // MARK: - Private Helpers
     
     /// 向主日志区追加一条日志（含时间戳）。产测传入 [FQC]/[FQC][OTA]: 时原样保留；本模块日志加 [DBG]/[DBG][OTA]:，遵循日志等级过滤
-    func appendLog(_ msg: String, level: LogLevel = .info) {
+    /// - Parameters:
+    ///   - msg: 日志内容
+    ///   - level: 日志等级
+    ///   - category: 可选分类（如 \"GATT\" 表示底层 GATT 读写日志，可在 suppressGattLogs=true 时整体抑制）
+    func appendLog(_ msg: String, level: LogLevel = .info, category: String? = nil) {
+        if suppressGattLogs, let cat = category, cat == "GATT" {
+            return
+        }
         let line: String
         if msg.hasPrefix("[FQC]") {
             // 产测同步来的日志，已带 [FQC] 或 [FQC][OTA]:，只加时间戳
@@ -1433,6 +1591,51 @@ final class BLEManager: NSObject, ObservableObject {
         logEntriesBacking.append(LogEntry(level: level, line: line))
         trimLogEntriesIfNeeded()
         scheduleDisplayFlushIfNeeded()
+    }
+    
+    /// 产测 payload 预览缓存：按 UUID 存 JSON 字符串，FIFO 淘汰，最多保留 payloadPreviewMaxCount 条
+    private var payloadPreviewStore: [UUID: String] = [:]
+    private var payloadPreviewOrder: [UUID] = []
+    private static let payloadPreviewMaxCount = 20
+    
+    /// 追加一条带「点击预览」的日志：不把完整 payload 写入日志行，而是存到 payloadPreviewStore，行上显示短文案 + 预览入口
+    func appendLogWithPayloadPreview(_ msg: String, payloadJson: String, level: LogLevel = .info, category: String? = nil) {
+        if suppressGattLogs, let cat = category, cat == "GATT" {
+            return
+        }
+        let previewId = UUID()
+        payloadPreviewStore[previewId] = payloadJson
+        payloadPreviewOrder.append(previewId)
+        while payloadPreviewOrder.count > Self.payloadPreviewMaxCount, let old = payloadPreviewOrder.first {
+            payloadPreviewOrder.removeFirst()
+            payloadPreviewStore.removeValue(forKey: old)
+        }
+        let line: String
+        if msg.hasPrefix("[FQC]") {
+            line = "\(formattedTime()) \(msg)"
+        } else {
+            let tag: String
+            let body: String
+            if msg.hasPrefix("[OTA] ") {
+                tag = "[DBG][OTA]:"
+                body = String(msg.dropFirst(6))
+            } else if msg.hasPrefix("[OTA]") {
+                tag = "[DBG][OTA]:"
+                body = String(msg.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            } else {
+                tag = "[DBG]"
+                body = msg
+            }
+            line = "\(formattedTime()) \(tag) \(body)"
+        }
+        logEntriesBacking.append(LogEntry(level: level, line: line, payloadPreviewId: previewId))
+        trimLogEntriesIfNeeded()
+        scheduleDisplayFlushIfNeeded()
+    }
+    
+    /// 根据 id 取回预览用 JSON 字符串；若已淘汰则返回 nil
+    func getPayloadPreview(id: UUID) -> String? {
+        payloadPreviewStore[id]
     }
     
     /// 追加一条已格式化行（不加重算时间戳），用于保留 \r 式刷新的「最后一条」进度行到主日志
@@ -1509,7 +1712,7 @@ final class BLEManager: NSObject, ObservableObject {
     
     private func writeToCharacteristic(_ char: CBCharacteristic?, data: Data) {
         guard let peripheral = connectedPeripheral, let char = char else {
-            appendLog("[GATT] 未连接或特征不可用，跳过写入", level: .error)
+            appendLog("[GATT] 未连接或特征不可用，跳过写入", level: .error, category: "GATT")
             return
         }
         let isOtaDataWrite = (GattMapping.characteristicKey(for: char.uuid) == GattMapping.Key.otaData)
@@ -1519,7 +1722,7 @@ final class BLEManager: NSObject, ObservableObject {
             let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
             let alias = GattMapping.characteristicKey(for: char.uuid) ?? String(char.uuid.uuidString.suffix(8))
             let uuidTag = "0x" + char.uuid.uuidString.lowercased()
-            appendLog("wr:\(uuidTag): \(alias) : \(hex)", level: .debug)
+            appendLog("wr:\(uuidTag): \(alias) : \(hex)", level: .debug, category: "GATT")
         }
         // OTA 数据写入：始终使用 writeWithResponse 确保可靠性（等待设备确认后再继续）
         // 不使用 writeWithoutResponse，因为可能导致数据包丢失导致校验失败
@@ -1528,7 +1731,7 @@ final class BLEManager: NSObject, ObservableObject {
     
     private func readCharacteristic(_ char: CBCharacteristic?) {
         guard let peripheral = connectedPeripheral, let char = char else {
-            appendLog("[GATT] 未连接或特征不可用，跳过读取", level: .error)
+            appendLog("[GATT] 未连接或特征不可用，跳过读取", level: .error, category: "GATT")
             return
         }
         peripheral.readValue(for: char)
@@ -1557,11 +1760,11 @@ final class BLEManager: NSObject, ObservableObject {
     /// 调试用：向指定 UUID 特征写入 hex 字符串（空格可选）
     func writeToCharacteristic(uuidString: String, hex: String) {
         guard let data = dataFromHexString(hex), !data.isEmpty else {
-            appendLog("[GATT] 无效 hex，跳过写入", level: .error)
+            appendLog("[GATT] 无效 hex，跳过写入", level: .error, category: "GATT")
             return
         }
         guard let char = characteristic(for: uuidString) else {
-            appendLog("[GATT] 未找到特征 \(uuidString)，跳过写入", level: .error)
+            appendLog("[GATT] 未找到特征 \(uuidString)，跳过写入", level: .error, category: "GATT")
             return
         }
         writeToCharacteristic(char, data: data)
@@ -1570,7 +1773,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// 调试用：读取指定 UUID 特征；结果在 didUpdateValueFor 中写入 lastDebugRead* 供 UI 显示
     func readCharacteristic(uuidString: String) {
         guard let char = characteristic(for: uuidString) else {
-            appendLog("[GATT] 未找到特征 \(uuidString)，跳过读取", level: .error)
+            appendLog("[GATT] 未找到特征 \(uuidString)，跳过读取", level: .error, category: "GATT")
             return
         }
         pendingDebugReadUUID = uuidString
@@ -1754,6 +1957,7 @@ extension BLEManager: CBCentralManagerDelegate {
                 } else {
                     appendLog("已断开: \(err.localizedDescription)")
                     if BLEManager.isPairingRemovedError(err) {
+                        lastConnectFailureWasPairingRemoved = true
                         errorMessageKey = "error.pairing_removed_hint"
                         BLEManager.openBluetoothSettings()
                     }
@@ -1795,6 +1999,7 @@ extension BLEManager: CBCentralManagerDelegate {
             lastValveModeValue = "--"
             valveOperationWarning = nil
             pendingValveSetOpen = nil
+            pendingHardwareRevisionVerifyExpected = nil
             valveStateAuthErrorLogged = false
             currentFirmwareVersion = nil
             bootloaderVersion = nil
@@ -1993,24 +2198,26 @@ extension BLEManager: CBPeripheralDelegate {
                         valveStateAuthErrorLogged = true
                         appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)（阀门状态需加密/配对，仅首次打印）", level: .error)
                     }
-                    // 加密/认证不足：提醒用户必须同意系统弹窗，放弃当前操作，等待用户手动再次连接
+                    // 加密/认证不足：提醒用户必须同意系统弹窗，并自动打开系统蓝牙设置、启动 30 秒等待提示
                     if BLEManager.isEncryptionOrAuthInsufficientError(err) {
                         errorMessageKey = "error.encryption_insufficient_hint"
                         errorMessage = err.localizedDescription
                         appendLog(NSLocalizedString("error.encryption_insufficient_hint", value: "请在系统弹窗中点击「允许」完成配对，然后手动再次连接。", comment: ""), level: .error)
+                        showBlePermissionPromptAndSchedule30s()
+                        BLEManager.openBluetoothSettings()
                     }
                     // 成功读到 GATT 之前的任何错误均视为连接失败：释放该次连接（加密未建立）
                     if let peripheral = connectedPeripheral {
                         centralManager.cancelPeripheralConnection(peripheral)
                     }
-                } else {
-                    appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)", level: .error)
+                    } else {
+                    appendLog("rd:\(uuidTag): \(alias) error: \(err.localizedDescription)", level: .error, category: "GATT")
                 }
             }
             return
         }
         guard let data = characteristic.value else {
-            Task { @MainActor in appendLog("rd:\(uuidTag): \(alias) : value=nil", level: .error) }
+            Task { @MainActor in appendLog("rd:\(uuidTag): \(alias) : value=nil", level: .error, category: "GATT") }
             return
         }
         let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
@@ -2029,13 +2236,17 @@ extension BLEManager: CBPeripheralDelegate {
             // 除了 OTA 数据包之外，其他所有读写操作都打印日志
             // OTA Status 读取使用 info 级别，确保总是显示（即使 OTA 进行中）
             let logLevel: LogLevel = isOtaStatusRead ? .info : .debug
-            appendLog("rd:\(uuidTag): \(alias) : \(hex)", level: logLevel)
+            appendLog("rd:\(uuidTag): \(alias) : \(hex)", level: logLevel, category: "GATT")
             if let u = pressureReadCBUUID, characteristic.uuid == u {
                 lastPressureValue = formatPressureData(data)
-                appendLog("关阀压力: \(lastPressureValue)", level: .info)
+                if !suppressSensorDetailLogs {
+                    appendLog("关阀压力: \(lastPressureValue)", level: .info)
+                }
             } else if let u = pressureOpenCBUUID, characteristic.uuid == u {
                 lastPressureOpenValue = formatPressureData(data)
-                appendLog("开阀压力: \(lastPressureOpenValue)", level: .info)
+                if !suppressSensorDetailLogs {
+                    appendLog("开阀压力: \(lastPressureOpenValue)", level: .info)
+                }
             } else if let u = rtcCBUUID, characteristic.uuid == u {
                 lastRTCValue = formatRTCData(data)
                 updateRTCReadSnapshot(deviceTimeString: lastRTCValue)
@@ -2047,7 +2258,9 @@ extension BLEManager: CBPeripheralDelegate {
                 appendLog("RTC: \(lastRTCValue)")
             } else if let u = gasSystemStatusCBUUID, characteristic.uuid == u {
                 lastGasSystemStatusValue = formatGasStatusData(data)
-                appendLog("Gas system status: \(lastGasSystemStatusValue)")
+                if !suppressSensorDetailLogs {
+                    appendLog("Gas system status: \(lastGasSystemStatusValue)")
+                }
             } else if let u = co2PressureLimitsCBUUID, characteristic.uuid == u {
                 lastPressureLimitsValue = formatPressureLimitsData(data)
                 appendLog("CO2 Pressure Limits: \(lastPressureLimitsValue.replacingOccurrences(of: "\n", with: ", "))")
@@ -2064,7 +2277,9 @@ extension BLEManager: CBPeripheralDelegate {
                 appendLog("阀门模式: \(lastValveModeValue) (0x\(String(format: "%02X", b)))")
             } else if let u = valveStateCBUUID, characteristic.uuid == u, let b = data.first {
                 lastValveStateValue = formatValveStateData(b)
-                appendLog("阀门状态: \(lastValveStateValue) (0x\(String(format: "%02X", b)))", level: .info)
+                if !suppressSensorDetailLogs {
+                    appendLog("阀门状态: \(lastValveStateValue) (0x\(String(format: "%02X", b)))", level: .info)
+                }
                 if let wantOpen = pendingValveSetOpen {
                     if wantOpen && lastValveStateValue == "open" {
                         valveOperationWarning = "valve.warning_already_open"
@@ -2094,10 +2309,18 @@ extension BLEManager: CBPeripheralDelegate {
                         currentFirmwareVersion = versions.firmware
                     } else if characteristic.uuid == BLEManager.charHardwareUUID || BLEManager.isHardwareRevisionCharacteristic(characteristic.uuid) {
                         deviceHardwareRevision = str
+                        if let expected = pendingHardwareRevisionVerifyExpected {
+                            pendingHardwareRevisionVerifyExpected = nil
+                            if str == expected {
+                                appendLog("[Dev Access] 回读 2A27 与写入一致: \(str)", level: .info)
+                            } else {
+                                appendLog("[Dev Access] 回读 2A27 与写入不一致 — 期望: \(expected)，实际: \(str)", level: .warning)
+                            }
+                        }
                     }
                 }
             } else {
-                appendLog("[GATT] 未识别特征 \(alias)", level: .warning)
+                appendLog("[GATT] 未识别特征 \(alias)", level: .warning, category: "GATT")
             }
         }
     }
@@ -2108,7 +2331,7 @@ extension BLEManager: CBPeripheralDelegate {
         let isOtaData = (GattMapping.characteristicKey(for: characteristic.uuid) == GattMapping.Key.otaData)
         if let error = error {
             Task { @MainActor in
-                appendLog("wr:\(uuidTag): \(alias) 失败: \(error.localizedDescription)", level: .error)
+                appendLog("wr:\(uuidTag): \(alias) 失败: \(error.localizedDescription)", level: .error, category: "GATT")
                 if isOtaData, case .sendingChunks = otaFlowState {
                     abortOtaAndCleanup(reason: error.localizedDescription)
                 }
@@ -2132,27 +2355,22 @@ extension BLEManager: CBPeripheralDelegate {
                 } else {
                     // 除了 OTA 数据包之外，其他所有 GATT 操作都打印成功日志（包括 OTA Status）
                     if !isOtaData {
-                        appendLog("wr:\(uuidTag): \(alias) ok", level: .debug)
+                        appendLog("wr:\(uuidTag): \(alias) ok", level: .debug, category: "GATT")
                     }
                 }
             }
         }
     }
     
-    /// 解码压力：设备上报为 mbar（2 字节有符号或 4 字节无符号），转换为 bar 显示，保留 3 位小数
-    /// 1 bar = 1000 mbar，故 bar = mbar / 1000
+    /// 解码压力：当前固件实际使用 2 字节 Int16（mbar, little-endian）
+    /// 约定：<0 视为错误码，不作为物理压力参与判定，直接返回 Error 字符串。
     @MainActor private func formatPressureData(_ data: Data) -> String {
-        if data.count >= 2 {
-            let mbar = Double(data.withUnsafeBytes { $0.load(as: Int16.self) })
-            let bar = mbar / 1000.0
-            return String(format: "%.3f bar", bar)
-        }
-        if data.count >= 4 {
-            let mbar = Double(data.withUnsafeBytes { $0.load(as: UInt32.self) })
-            let bar = mbar / 1000.0
-            return String(format: "%.3f bar", bar)
-        }
-        return "Error: expected 2 or 4 bytes, got \(data.count)"
+        guard data.count == 2 else { return "Error: expected 2 bytes, got \(data.count)" }
+        let raw = data.withUnsafeBytes { $0.load(as: Int16.self) }
+        let mbar = Int16(littleEndian: raw)
+        // 负值视为错误/异常码，而非真实压力
+        guard mbar >= 0 else { return "Error: negative pressure code \(mbar)" }
+        return String(format: "%.0f mbar", Double(mbar))
     }
     
     /// RTC 读取成功时更新「读取时刻系统时间」与「时间差」
@@ -2228,7 +2446,7 @@ extension BLEManager: CBPeripheralDelegate {
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
-    /// CO2 Pressure Limits: 6 × UInt16 (mbar)，顺序 gas_empty_low, gas_empty_high, leak, press_change, press_rise, lglo_leak
+    /// CO2 Pressure Limits: 6 × int16_t (mbar, little-endian)，顺序 gas_empty_low, gas_empty_high, leak, press_change, press_rise, lglo_leak
     @MainActor private func formatPressureLimitsData(_ data: Data) -> String {
         let labels = ["gas_empty_low", "gas_empty_high", "leak", "press_change", "press_rise", "lglo_leak"]
         guard data.count >= 12 else {
@@ -2237,9 +2455,10 @@ extension BLEManager: CBPeripheralDelegate {
         var lines: [String] = []
         for i in 0..<6 {
             let offset = i * 2
-            let mbar = data.withUnsafeBytes { (p: UnsafeRawBufferPointer) -> UInt16 in
-                p.load(fromByteOffset: offset, as: UInt16.self)
+            let raw = data.withUnsafeBytes { (p: UnsafeRawBufferPointer) -> Int16 in
+                p.load(fromByteOffset: offset, as: Int16.self)
             }
+            let mbar = Int16(littleEndian: raw)
             lines.append("\(labels[i]): \(mbar) mbar")
         }
         return lines.joined(separator: "\n")

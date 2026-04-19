@@ -15,7 +15,8 @@ private enum ServerSettingsKeys {
 private enum ServerEnvironment: String, CaseIterable, Identifiable {
     case production
     case testing
-    case local
+    case local8000
+    case local8001
 
     var id: String { rawValue }
 
@@ -25,8 +26,10 @@ private enum ServerEnvironment: String, CaseIterable, Identifiable {
             return "Production (80)"
         case .testing:
             return "Testing (8081)"
-        case .local:
+        case .local8000:
             return "Local (localhost:8000)"
+        case .local8001:
+            return "Local (localhost:8001)"
         }
     }
 
@@ -36,8 +39,10 @@ private enum ServerEnvironment: String, CaseIterable, Identifiable {
             return "http://bog.generalquin.top"
         case .testing:
             return "http://bog.generalquin.top:8081"
-        case .local:
+        case .local8000:
             return "http://localhost:8000"
+        case .local8001:
+            return "http://localhost:8001"
         }
     }
 
@@ -98,7 +103,9 @@ final class ServerSettings: ObservableObject {
             } else if v.contains("8.129.99.18:8081") {
                 resolvedBaseURL = ServerEnvironment.testing.baseURL
             } else if v.contains("127.0.0.1:8000") {
-                resolvedBaseURL = ServerEnvironment.local.baseURL
+                resolvedBaseURL = ServerEnvironment.local8000.baseURL
+            } else if v.contains("127.0.0.1:8001") || v.contains("localhost:8001") {
+                resolvedBaseURL = ServerEnvironment.local8001.baseURL
             } else {
                 resolvedBaseURL = v.isEmpty ? ServerSettingsKeys.defaultBaseURL : v
             }
@@ -294,7 +301,7 @@ struct ServerSettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xxl) {
             HStack {
                 Text(appLanguage.string("server.settings_title"))
                     .font(.title2.weight(.semibold))
@@ -304,27 +311,31 @@ struct ServerSettingsView: View {
             }
 
             // 服务器环境（固定枚举，禁止手动输入）
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
                 Text(appLanguage.string("server.base_url_label"))
-                    .font(.subheadline.weight(.medium))
+                    .font(UIDesignSystem.Typography.subsectionTitle)
                 Picker("", selection: $selectedEnvironment) {
                     ForEach(ServerEnvironment.allCases) { env in
                         Text(env.displayName).tag(env)
                     }
                 }
                 .pickerStyle(.radioGroup)
+                .labelsHidden()
                 .onChange(of: selectedEnvironment) { newValue in
                     serverSettings.serverBaseURL = newValue.baseURL
                 }
                 Text(serverSettings.effectiveBaseURL)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .font(UIDesignSystem.Typography.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
             }
 
-            // 是否上传至服务器
+            // 是否上传至服务器（标签左 + 开关右，统一 Toggle 行）
             Toggle(isOn: $serverSettings.uploadToServerEnabled) {
                 Text(appLanguage.string("server.upload_enabled"))
+                    .font(UIDesignSystem.Typography.body)
             }
+            .toggleStyle(.switch)
 
             Divider()
 
@@ -332,8 +343,9 @@ struct ServerSettingsView: View {
                 serverSettings.openPreviewInBrowser()
             }
             .buttonStyle(.borderedProminent)
+            .frame(minWidth: UIDesignSystem.Component.actionButtonWidth)
         }
-        .padding(24)
+        .padding(UIDesignSystem.Padding.xxl)
         .frame(minWidth: 420, minHeight: 300)
     }
 }

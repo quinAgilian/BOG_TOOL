@@ -96,11 +96,16 @@ private struct WindowLevelSetter: NSViewRepresentable {
     }
 }
 
+final class ProductionTestState: ObservableObject {
+    @Published var isRunning: Bool = false
+}
+
 struct ContentView: View {
     @EnvironmentObject private var appSettings: AppSettings
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverSettings: ServerSettings
     @StateObject private var ble = BLEManager()
+    @StateObject private var productionState = ProductionTestState()
     @StateObject private var firmwareManager = FirmwareManager.shared
     @State private var selectedMode: AppMode = .productionTest
     /// 是否显示日志区域，默认开启
@@ -146,6 +151,7 @@ struct ContentView: View {
                 .padding(.vertical, UIDesignSystem.Padding.sm)
                 
                 DeviceListView(ble: ble, selectedMode: selectedMode, firmwareManager: firmwareManager)
+                    .environmentObject(productionState)
 
                 Divider()
 
@@ -169,12 +175,14 @@ struct ContentView: View {
                             switch selectedMode {
                             case .productionTest:
                                 ProductionTestView(ble: ble, firmwareManager: firmwareManager)
+                                    .environmentObject(productionState)
                             case .debug:
                                 DebugModeView(ble: ble, firmwareManager: firmwareManager)
                             }
                         }
                         .padding(UIDesignSystem.Padding.sm)
-                        .frame(minWidth: 320, minHeight: max(500, geo.size.height))
+                        // 与 ScrollView 可视区同高时，默认 frame 会垂直居中子视图，产测/Debug 内容会悬在中间、上方大块留白
+                        .frame(minWidth: 320, minHeight: max(500, geo.size.height), alignment: .topLeading)
                     }
                     .frame(minWidth: 320, maxHeight: .infinity)
                 }
@@ -219,7 +227,7 @@ struct ContentView: View {
                     
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LogContentTextView(entries: ble.displayedLogEntries, progressLine: ble.otaProgressLogLine)
+                            LogContentTextView(entries: ble.displayedLogEntries, progressLine: ble.otaProgressLogLine, ble: ble)
                                 .equatable()
                                 .padding(UIDesignSystem.Padding.sm)
                         }
@@ -275,6 +283,8 @@ struct ContentView: View {
             serverSettings.retryPendingUploads { msg in
                 DispatchQueue.main.async { ble.appendLog(msg, level: .info) }
             }
+            // 启动时拉取产测与 Debug 固件列表（usage_type=ota_app），并生成 log
+            fetchFirmwareListsAtStartup()
         }
         .onChange(of: ble.isOTACompletedWaitingReboot) { if $0 { uploadOtaResultToServer(success: true) } }
         .onChange(of: ble.isOTAFailed) { if $0 { uploadOtaResultToServer(success: false) } }
@@ -288,6 +298,40 @@ struct ContentView: View {
     private func applyWindowFloating(_ floating: Bool) {
         let level: NSWindow.Level = floating ? .floating : .normal
         (NSApp.keyWindow ?? NSApp.mainWindow)?.level = level
+    }
+
+    /// 启动时拉取产测与 Debug 固件列表（usage_type=ota_app），并写入 log
+    private func fetchFirmwareListsAtStartup() {
+        guard let client = serverSettings.serverClient else {
+            ble.appendLog("[固件] 启动拉取跳过：未配置服务器", level: .info)
+            return
+        }
+        let baseURL = serverSettings.effectiveBaseURL
+        ble.appendLog("[固件] 启动拉取固件列表 (usage_type=ota_app)…", level: .info)
+        Task {
+            // 产测固件 (channel=production)
+            await firmwareManager.fetchServerFirmware(serverClient: client, channel: "production")
+            await MainActor.run {
+                let count = firmwareManager.serverItemsForProduction.count
+                if let err = firmwareManager.serverItemsError {
+                    ble.appendLog("[固件] 产测固件拉取失败 channel=production: \(err)", level: .error)
+                } else {
+                    let versions = firmwareManager.serverItemsForProduction.map(\.version).joined(separator: ", ")
+                    ble.appendLog("[固件] 产测固件拉取成功 channel=production count=\(count) versions=[\(versions.isEmpty ? "—" : versions)] base=\(baseURL)", level: .info)
+                }
+            }
+            // Debug 固件 (channel=debugging)
+            await firmwareManager.fetchServerFirmware(serverClient: client, channel: "debugging")
+            await MainActor.run {
+                let count = firmwareManager.serverItemsForDebug.count
+                if let err = firmwareManager.serverItemsError {
+                    ble.appendLog("[固件] Debug固件拉取失败 channel=debugging: \(err)", level: .error)
+                } else {
+                    let versions = firmwareManager.serverItemsForDebug.map(\.version).joined(separator: ", ")
+                    ble.appendLog("[固件] Debug固件拉取成功 channel=debugging count=\(count) versions=[\(versions.isEmpty ? "—" : versions)] base=\(baseURL)", level: .info)
+                }
+            }
+        }
     }
 
     /// OTA 完成后上报固件升级记录到服务器（成功或失败）；仅当开启上传时执行
@@ -560,10 +604,11 @@ private struct DeviceInfoStrip: View {
     }
 }
 
-/// 日志正文：按行 ForEach 渲染，新日志只追加一行、不整块重算；Equatable 避免 BLE 其他 @Published 触发本 View 重算
+/// 日志正文：按行 ForEach 渲染，新日志只追加一行、不整块重算；带 payloadPreviewId 的行显示「预览」按钮，点击后 Sheet 展示 JSON
 private struct LogContentTextView: View, Equatable {
     let entries: [BLEManager.LogEntry]
     let progressLine: String?
+    let ble: BLEManager
 
     static func == (l: LogContentTextView, r: LogContentTextView) -> Bool {
         l.entries.map(\.id) == r.entries.map(\.id) && l.progressLine == r.progressLine
@@ -572,11 +617,28 @@ private struct LogContentTextView: View, Equatable {
     /// 最后一行用固定 id，便于 ScrollViewReader 滚到底部
     static let logBottomId = "logBottom"
 
+    @State private var previewPayloadId: UUID?
+    @EnvironmentObject private var appLanguage: AppLanguage
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(entries) { entry in
-                Text(entry.line)
-                    .foregroundStyle(LogLevelColor.color(entry.level))
+                if let pid = entry.payloadPreviewId {
+                    HStack(alignment: .top, spacing: UIDesignSystem.Spacing.sm) {
+                        Text(entry.line)
+                            .foregroundStyle(LogLevelColor.color(entry.level))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button(appLanguage.string("log.preview_payload")) {
+                            previewPayloadId = pid
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                } else {
+                    Text(entry.line)
+                        .foregroundStyle(LogLevelColor.color(entry.level))
+                }
             }
             if let progress = progressLine {
                 Text(progress)
@@ -588,6 +650,55 @@ private struct LogContentTextView: View, Equatable {
         .font(UIDesignSystem.Typography.monospacedCaption)
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
+        .sheet(isPresented: Binding(
+            get: { previewPayloadId != nil },
+            set: { if !$0 { previewPayloadId = nil } }
+        )) {
+            if let id = previewPayloadId {
+                PayloadPreviewSheetView(payloadId: id, ble: ble)
+                    .environmentObject(appLanguage)
+            }
+        }
+    }
+}
+
+/// 产测 payload 预览弹窗：只读 JSON + 复制、关闭
+private struct PayloadPreviewSheetView: View {
+    let payloadId: UUID
+    let ble: BLEManager
+    @EnvironmentObject private var appLanguage: AppLanguage
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+            Text(appLanguage.string("log.payload_preview_title"))
+                .font(UIDesignSystem.Typography.sectionTitle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let json = ble.getPayloadPreview(id: payloadId) {
+                TextEditor(text: .constant(json))
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .background(UIDesignSystem.Background.text)
+                    .frame(minWidth: 400, minHeight: 300)
+                    .textSelection(.enabled)
+                HStack(spacing: UIDesignSystem.Spacing.md) {
+                    Button(appLanguage.string("log.payload_preview_copy")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(json, forType: .string)
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                    Button(appLanguage.string("error.dismiss")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                }
+            } else {
+                Text(appLanguage.string("log.payload_preview_expired"))
+                    .foregroundStyle(.secondary)
+                Button(appLanguage.string("error.dismiss")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(UIDesignSystem.Padding.lg)
+        .frame(minWidth: 420, minHeight: 360)
     }
 }
 

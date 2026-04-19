@@ -162,10 +162,10 @@ BOG_TOOL/
 | `GATT_UUID_READWRITE_CHECK.md` | GATT UUID 读写检查 |
 | `UUID_COMPARISON_FIX.md` | UUID 比较修复说明 |
 | `DEVICE_INFO_DEBUG.md` | 设备信息调试 |
-| `为什么直接打开应用不行的说明.md` | 直接打开应用限制说明 |
-| `找不到Signing标签的解决方法.md` | Signing 设置 |
-| `如何找到Signing设置-详细步骤.md` | Signing 详细步骤 |
-| `快速设置指南-免费账号.md` | 免费账号快速设置 |
+| `docs/为什么直接打开应用不行的说明.md` | 直接打开应用限制说明 |
+| `docs/找不到Signing标签的解决方法.md` | Signing 设置 |
+| `docs/如何找到Signing设置-详细步骤.md` | Signing 详细步骤 |
+| `docs/快速设置指南-免费账号.md` | 免费账号快速设置 |
 | `BOG_TOOL/Config/OTA_Flow.md` | OTA 流程 |
 | `BOG_TOOL/Config/Distribution_Guide.md` | 分发指南 |
 

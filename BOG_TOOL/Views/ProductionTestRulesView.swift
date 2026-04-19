@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// 产测规则变化通知名称
 extension Notification.Name {
@@ -12,12 +13,21 @@ struct TestStep: Identifiable, Equatable {
     let isLocked: Bool  // 是否锁定（第一步连接设备）
     var enabled: Bool  // 是否启用此步骤
     
-    static let connectDevice = TestStep(id: "step1", key: "step1", isLocked: true, enabled: true)
-    static let verifyFirmware = TestStep(id: "step2", key: "step2", isLocked: false, enabled: true)
-    static let readRTC = TestStep(id: "step3", key: "step3", isLocked: false, enabled: true)
-    static let readPressure = TestStep(id: "step4", key: "step4", isLocked: false, enabled: true)
+    static let connectDevice = TestStep(id: "step_connect", key: "step1", isLocked: true, enabled: true)
+    /// 读取设备序列号（Device Information 2A25）；默认位于连接之后、确认固件版本之前
+    static let readSerialNumber = TestStep(id: "step_read_serial_number", key: "step_read_serial_number", isLocked: false, enabled: true)
+    static let verifyFirmware = TestStep(id: "step_verify_firmware", key: "step2", isLocked: false, enabled: true)
+    static let verifyHardwareRevision = TestStep(id: "step_verify_hw_rev", key: "step_verify_hw_rev", isLocked: false, enabled: true)
+    /// 出货区域（美/欧）：通过写入对应 HW_REV（2A27）实现；默认关闭，需在规则中填写 US/EU 字符串
+    static let hwRevShippingRegion = TestStep(id: "step_hw_rev_shipping_region", key: "step_hw_rev_shipping_region", isLocked: false, enabled: false)
+    static let readRTC = TestStep(id: "step_read_rtc", key: "step3", isLocked: false, enabled: true)
+    static let readPressure = TestStep(id: "step_read_pressure", key: "step4", isLocked: false, enabled: true)
+    /// 屏蔽系统气体自检：向 co2PressureLimits 写入 12 个 0x00（与 Debug 区「Disable diag」共用 BLEManager.writeCo2PressureLimitsZeros）
+    static let disableDiag = TestStep(id: "step_disable_diag", key: "step_disable_diag", isLocked: false, enabled: true)
     /// 读取 Gas system status（0 initially closed, 1 ok, 2 leak…；产测要求 1 ok）
     static let readGasSystemStatus = TestStep(id: "step_gas_system_status", key: "step_gas_system_status", isLocked: false, enabled: true)
+    /// 气体泄漏检测（关阀压力）
+    static let gasLeakClosed = TestStep(id: "step_gas_leak_closed", key: "step_gas_leak_closed", isLocked: false, enabled: true)
     static let tbd = TestStep(id: "step5", key: "step5", isLocked: false, enabled: false)
     /// 确保电磁阀是开启的（可调顺序、有使能开关）
     static let ensureValveOpen = TestStep(id: "step_valve", key: "step_valve", isLocked: false, enabled: true)
@@ -30,118 +40,223 @@ struct TestStep: Identifiable, Equatable {
     static let disconnectDevice = TestStep(id: "step_disconnect", key: "step_disconnect", isLocked: false, enabled: true)
 }
 
+/// 规则层：本步失败时是否终止整条产测（return）；不在集合内的步骤失败时仅 break，继续后续步骤。
+extension TestStep {
+    /// 失败时应终止产测（先执行恢复出厂若已启用再 return）的 step.id 集合；其余步骤失败时只 break。
+    static let stepIdsFatalOnFailure: Set<String> = [TestStep.verifyFirmware.id]
+
+    /// 旧版 step id（step1～step4）→ 语义化 id，用于 UserDefaults 加载时迁移。
+    static func migrateLegacyStepId(_ id: String) -> String {
+        let oldToNew = ["step1": "step_connect", "step2": "step_verify_firmware", "step3": "step_read_rtc", "step4": "step_read_pressure"]
+        return oldToNew[id] ?? id
+    }
+
+    /// 语义化 id → 旧版 id（供读取旧 UserDefaults 时兼容）。
+    static func legacyStepId(for newId: String) -> String? {
+        let newToOld = ["step_connect": "step1", "step_verify_firmware": "step2", "step_read_rtc": "step3", "step_read_pressure": "step4"]
+        return newToOld[newId]
+    }
+}
+
 /// 产测规则视图：定义产测SOP（标准操作程序）
 struct ProductionTestRulesView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverClient: ServerClient
-    @ObservedObject var ble: BLEManager
+    @EnvironmentObject private var productionState: ProductionTestState
+    @EnvironmentObject private var ble: BLEManager
+    @EnvironmentObject private var productionRulesStore: ProductionRulesStore
     @ObservedObject var firmwareManager: FirmwareManager
-    @State private var bootloaderVersion: String = {
-        UserDefaults.standard.string(forKey: "production_test_bootloader_version") ?? ""
-    }()
-    @State private var firmwareVersion: String = {
-        UserDefaults.standard.string(forKey: "production_test_firmware_version") ?? ""
-    }()
-    @State private var hardwareVersion: String = {
-        UserDefaults.standard.string(forKey: "production_test_hardware_version") ?? ""
-    }()
-    // 固件版本升级开关
-    @State private var firmwareUpgradeEnabled: Bool = {
-        UserDefaults.standard.object(forKey: "production_test_firmware_upgrade_enabled") as? Bool ?? true
-    }()
+    @State private var hasAppliedThisSession: Bool = false
+    @State private var hasUnsavedChanges: Bool = false
+    
+    private let hardwareVersionPresets = ["P02V02R01", "P02V02R00"]
+    @State private var bootloaderVersion: String = ""
+    @State private var firmwareVersion: String = ""
+    @State private var hardwareVersion: String = ""
+    @State private var hwRevReadTimeoutSeconds: Double = 3.0
+    @State private var hwRevReadPollIntervalMs: Int = 150
+    /// step_hw_rev_shipping_region：出货区域（us/eu）及各自 HW_REV，与通用 HW 校验分开存储
+    @State private var shippingDestinationUsEu: String = "us"
+    @State private var shippingHwRevUs: String = "P02V02R02"
+    @State private var shippingHwRevEu: String = "P02V02R01"
+    @State private var shippingHwRevAutoWriteWhenMismatch: Bool = true
+    @State private var shippingHwRevReadTimeoutSeconds: Double = 3.0
+    @State private var shippingHwRevWriteVerifyTimeoutSeconds: Double = 5.0
+    @State private var shippingHwRevWriteVerifyPollIntervalMs: Int = 150
+    // 固件版本升级开关（默认关闭，仅在用户显式开启时触发 OTA）
+    @State private var firmwareUpgradeEnabled: Bool = false
     @State private var isEditingOrder: Bool = false
     // 步骤展开状态（用于显示配置项）
     @State private var expandedSteps: Set<String> = []
+    /// 每步「失败时终止产测」覆盖配置（stepId -> 是否终止）；未在此字典中的步骤沿用 TestStep.stepIdsFatalOnFailure 默认
+    @State private var stepFatalOverrides: [String: Bool] = [:]
     
     // RTC时间差阈值配置（单位：秒）
-    @State private var rtcTimeDiffPassThreshold: Double = {
-        UserDefaults.standard.object(forKey: "production_test_rtc_pass_threshold") as? Double ?? 2.0
-    }()
-    @State private var rtcTimeDiffFailThreshold: Double = {
-        UserDefaults.standard.object(forKey: "production_test_rtc_fail_threshold") as? Double ?? 5.0
-    }()
+    @State private var rtcTimeDiffPassThreshold: Double = 2.0
+    @State private var rtcTimeDiffFailThreshold: Double = 5.0
     // RTC写入配置
-    @State private var rtcWriteEnabled: Bool = {
-        UserDefaults.standard.object(forKey: "production_test_rtc_write_enabled") as? Bool ?? true
-    }()
-    @State private var rtcWriteRetryCount: Int = {
-        UserDefaults.standard.object(forKey: "production_test_rtc_write_retry_count") as? Int ?? 3
-    }()
+    @State private var rtcWriteEnabled: Bool = true
+    @State private var rtcWriteRetryCount: Int = 3
     
     // 等待超时配置（单位：秒）
-    @State private var rtcReadTimeout: Double = {
-        UserDefaults.standard.object(forKey: "production_test_rtc_read_timeout") as? Double ?? 2.0
-    }()
-    @State private var deviceInfoReadTimeout: Double = {
-        UserDefaults.standard.object(forKey: "production_test_device_info_timeout") as? Double ?? 3.0
-    }()
-    @State private var otaStartWaitTimeout: Double = {
-        UserDefaults.standard.object(forKey: "production_test_ota_start_timeout") as? Double ?? 5.0
-    }()
-    @State private var deviceReconnectTimeout: Double = {
-        UserDefaults.standard.object(forKey: "production_test_reconnect_timeout") as? Double ?? 5.0
-    }()
-    @State private var valveOpenTimeout: Double = {
-        UserDefaults.standard.object(forKey: "production_test_valve_open_timeout") as? Double ?? 5.0
-    }()
+    @State private var rtcReadTimeout: Double = 2.0
+    @State private var deviceInfoReadTimeout: Double = 3.0
+    /// step_read_serial_number：读 2A25 序列号超时（秒）
+    @State private var serialReadTimeoutSeconds: Double = 3.0
+    @State private var otaStartWaitTimeout: Double = 5.0
+    @State private var deviceReconnectTimeout: Double = 5.0
+    @State private var valveOpenTimeout: Double = 5.0
+    /// Disable diag 发送完成后等待时间（秒），默认 2
+    @State private var disableDiagWaitSeconds: Double = 2.0
+    /// Disable diag 轮询 Gas status 时期望的值文本（支持多值，例如 "0,1"），默认 "1"
+    @State private var disableDiagExpectedGasStatusText: String = "1"
+    /// Disable diag 轮询 Gas status 时期望值的首个数字（兼容旧逻辑与导入导出），默认 1
+    @State private var disableDiagExpectedGasStatus: Int = 1
+    /// Disable diag 轮询 Gas status 超时（秒），默认 3
+    @State private var disableDiagPollTimeoutSeconds: Double = 3.0
+    /// Disable diag 是否轮询 Gas status 直至期望值，默认开启
+    @State private var disableDiagPollGasStatusEnabled: Bool = true
+    /// Disable diag 成功后是否执行阀门开/关检查并记录压力（仅观测）
+    @State private var disableDiagValveCheckEnabled: Bool = true
+    /// 阀门开/关命令后等待稳定的秒数（默认 0.5）
+    @State private var disableDiagValveCheckSettleSeconds: Double = 0.5
+    /// 触发读压后等待回读的秒数（默认 0.6）
+    @State private var disableDiagValveCheckPressureReadDelaySeconds: Double = 0.6
     /// 每个测试步骤之间的等待时间（SOP 定义，单位 ms）
-    @State private var stepIntervalMs: Int = {
-        UserDefaults.standard.object(forKey: "production_test_step_interval_ms") as? Int ?? 100
-    }()
+    @State private var stepIntervalMs: Int = 100
     /// 连接设备步骤完成后、下一步前等待秒数（供用户处理系统蓝牙权限/配对弹窗，0=不等待）
-    @State private var bluetoothPermissionWaitSeconds: Double = {
-        UserDefaults.standard.object(forKey: "production_test_bluetooth_permission_wait_seconds") as? Double ?? 0
-    }()
+    @State private var bluetoothPermissionWaitSeconds: Double = 0
+    /// 测试失败时是否跳过恢复出厂设置与安全断开连接（默认不使能）
+    @State private var skipFactoryResetAndDisconnectOnFail: Bool = false
     
     // 压力阈值配置（单位：mbar）
-    @State private var pressureClosedMin: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_closed_min") as? Double ?? 1100
-    }()
-    @State private var pressureClosedMax: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_closed_max") as? Double ?? 1350
-    }()
-    @State private var pressureOpenMin: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_open_min") as? Double ?? 1300
-    }()
-    @State private var pressureOpenMax: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_open_max") as? Double ?? 1500
-    }()
+    @State private var pressureClosedMin: Double = 1000
+    @State private var pressureClosedMax: Double = 1350
+    @State private var pressureOpenMin: Double = 1000
+    @State private var pressureOpenMax: Double = 1500
     // 压力差值检查配置
-    @State private var pressureDiffCheckEnabled: Bool = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_diff_check_enabled") as? Bool ?? true
-    }()
-    @State private var pressureDiffMin: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_diff_min") as? Double ?? 30
-    }()
-    @State private var pressureDiffMax: Double = {
-        UserDefaults.standard.object(forKey: "production_test_pressure_diff_max") as? Double ?? 400
-    }()
+    @State private var pressureDiffCheckEnabled: Bool = true
+    @State private var pressureDiffMin: Double = 0
+    @State private var pressureDiffMax: Double = 400
+    /// 压力读取失败时是否弹窗确认重新测试当前步骤（默认使能）
+    @State private var pressureFailRetryConfirmEnabled: Bool = true
+    
+    // 气体泄漏检测（关阀压力）步骤参数
+    @State private var gasLeakClosedPreCloseDurationSeconds: Int = 10
+    @State private var gasLeakClosedPostCloseDurationSeconds: Int = 15
+    @State private var gasLeakClosedIntervalSeconds: Double = 0.5
+    @State private var gasLeakClosedDropThresholdMbar: Double = 15
+    @State private var gasLeakClosedStartPressureMinMbar: Double = 1300
+    @State private var gasLeakClosedRequirePipelineReadyConfirm: Bool = true
+    @State private var gasLeakClosedRequireValveClosedConfirm: Bool = true
+    // 关阀压力 Phase 4（开阀泄压检测）：Phase 3 通过后开阀，连续监测，要求在规定时间内开阀压力低于设定值
+    @State private var gasLeakClosedPhase4MonitorDurationSeconds: Int = 15
+    @State private var gasLeakClosedPhase4DropWithinSeconds: Int = 5
+    @State private var gasLeakClosedPhase4PressureBelowMbar: Double = 100
+    @State private var gasLeakClosedPhase4Enabled: Bool = true
+    /// 漏气判定线基准（关阀）：Phase 1 平均(phase1_avg) 或 Phase 3 首个值(phase3_first)
+    @State private var gasLeakClosedLimitSource: String = kGasLeakLimitSourcePhase1Avg
+    /// 判定线下限（bar），不得低于 0；不论基准选哪个，有效 limit = max(计算值, 此值)
+    @State private var gasLeakClosedLimitFloorBar: Double = 0
+
+    // MARK: - 导入导出：当前规则快照
+    private struct RulesSnapshot: Codable {
+        struct StepState: Codable {
+            var id: String
+            var enabled: Bool
+            /// 本步失败时是否终止整条产测（true=return，false=break）；nil 表示沿用代码默认（导出时写入实际值便于导入还原）
+            var fatalOnFailure: Bool?
+        }
+        
+        var bootloaderVersion: String
+        var firmwareVersion: String
+        var hardwareVersion: String
+        var firmwareUpgradeEnabled: Bool
+        
+        var rtcTimeDiffPassThreshold: Double
+        var rtcTimeDiffFailThreshold: Double
+        var rtcWriteEnabled: Bool
+        var rtcWriteRetryCount: Int
+        var rtcReadTimeout: Double
+        var deviceInfoReadTimeout: Double
+        var serialReadTimeoutSeconds: Double?
+        var otaStartWaitTimeout: Double
+        var deviceReconnectTimeout: Double
+        var valveOpenTimeout: Double
+        var disableDiagWaitSeconds: Double?
+        var disableDiagExpectedGasStatus: Int?
+        var disableDiagPollTimeoutSeconds: Double?
+        var disableDiagPollGasStatusEnabled: Bool?
+        var disableDiagValveCheckEnabled: Bool?
+        var disableDiagValveCheckSettleSeconds: Double?
+        var disableDiagValveCheckPressureReadDelaySeconds: Double?
+        var stepIntervalMs: Int
+        var bluetoothPermissionWaitSeconds: Double
+        
+        var pressureClosedMin: Double
+        var pressureClosedMax: Double
+        var pressureOpenMin: Double
+        var pressureOpenMax: Double
+        var pressureDiffCheckEnabled: Bool
+        var pressureDiffMin: Double
+        var pressureDiffMax: Double
+        
+        var gasLeakClosedPreCloseDurationSeconds: Int
+        var gasLeakClosedPostCloseDurationSeconds: Int
+        var gasLeakClosedIntervalSeconds: Double
+        var gasLeakClosedDropThresholdMbar: Double
+        var gasLeakClosedStartPressureMinMbar: Double
+        var gasLeakClosedRequirePipelineReadyConfirm: Bool
+        var gasLeakClosedRequireValveClosedConfirm: Bool
+        var gasLeakClosedLimitSource: String?
+        var gasLeakClosedLimitFloorBar: Double?
+        /// Phase 4 参数（可选以兼容旧版导出）
+        var gasLeakClosedPhase4Enabled: Bool?
+        var gasLeakClosedPhase4MonitorDurationSeconds: Int?
+        var gasLeakClosedPhase4DropWithinSeconds: Int?
+        var gasLeakClosedPhase4PressureBelowMbar: Double?
+        
+        var shippingDestinationUsEu: String?
+        var shippingHwRevUs: String?
+        var shippingHwRevEu: String?
+        var shippingHwRevAutoWriteWhenMismatch: Bool?
+        var shippingHwRevReadTimeoutSeconds: Double?
+        var shippingHwRevWriteVerifyTimeoutSeconds: Double?
+        var shippingHwRevWriteVerifyPollIntervalMs: Int?
+        
+        var steps: [StepState]
+    }
     
     // 默认步骤顺序：第一步连接，断开前 OTA，最后一步断开连接；中间含「重启」「恢复出厂」等可调顺序步骤（须在第2步到倒数第二步之间）
     private static let defaultSteps: [TestStep] = [
         .connectDevice,
+        .readSerialNumber,
         .verifyFirmware,
+        .verifyHardwareRevision,
+        .hwRevShippingRegion,
         .readRTC,
         .readPressure,
+        .disableDiag,
         .readGasSystemStatus,
+        .gasLeakClosed,
         .ensureValveOpen,
         .reset,
         .factoryReset,
-        .tbd,
         .otaBeforeDisconnect,
         .disconnectDevice
     ]
     
     @State private var testSteps: [TestStep] = {
         // 从UserDefaults加载保存的顺序和启用状态，如果没有则使用默认值
-        let stepMap = [TestStep.connectDevice, .verifyFirmware, .readRTC, .readPressure, .readGasSystemStatus, .tbd, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+        let stepMap = [TestStep.connectDevice, .readSerialNumber, .verifyFirmware, .verifyHardwareRevision, .hwRevShippingRegion, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakClosed, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
             .reduce(into: [:]) { $0[$1.id] = $1 }
         
-        // 加载步骤顺序
+        // 加载步骤顺序（旧版 step1～step4 迁移为语义化 id）
         var steps: [TestStep] = []
         if let saved = UserDefaults.standard.array(forKey: "production_test_steps_order") as? [String] {
             for id in saved {
-                if let step = stepMap[id] {
+                let migratedId = TestStep.migrateLegacyStepId(id)
+                if let step = stepMap[migratedId] {
                     steps.append(step)
                 }
             }
@@ -154,6 +269,15 @@ struct ProductionTestRulesView: View {
             steps.removeAll { $0.id == TestStep.connectDevice.id }
             steps.insert(TestStep.connectDevice, at: 0)
         }
+        // 迁移：若无「读取序列号」步骤，插在「确认固件版本」之前（默认：连接 → 读 SN → 校验 FW）
+        if !steps.contains(where: { $0.id == TestStep.readSerialNumber.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }) {
+                steps.insert(TestStep.readSerialNumber, at: idx)
+            } else if steps.count > 1 {
+                steps.insert(TestStep.readSerialNumber, at: 1)
+            }
+        }
+        Self.ensureSerialBeforeFirmwareVerify(steps: &steps)
         if steps.last?.id != TestStep.disconnectDevice.id {
             steps.removeAll { $0.id == TestStep.disconnectDevice.id }
             steps.append(TestStep.disconnectDevice)
@@ -166,14 +290,46 @@ struct ProductionTestRulesView: View {
         if !steps.contains(where: { $0.id == TestStep.ensureValveOpen.id }) {
             steps.insert(TestStep.ensureValveOpen, at: steps.count - 1)
         }
+        // 迁移：若旧配置中无「屏蔽气体自检」步骤，则插入在读取压力之后
+        if !steps.contains(where: { $0.id == TestStep.disableDiag.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
+                steps.insert(TestStep.disableDiag, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+                steps.insert(TestStep.disableDiag, at: idx)
+            } else {
+                steps.insert(TestStep.disableDiag, at: steps.count - 1)
+            }
+        }
         // 迁移：若旧配置中无「读取 Gas system status」步骤，则插入在读取压力之后、确保电磁阀之前
         if !steps.contains(where: { $0.id == TestStep.readGasSystemStatus.id }) {
-            if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.disableDiag.id }) {
+                steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readPressure.id }) {
                 steps.insert(TestStep.readGasSystemStatus, at: idx + 1)
             } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
                 steps.insert(TestStep.readGasSystemStatus, at: idx)
             } else {
                 steps.insert(TestStep.readGasSystemStatus, at: steps.count - 1)
+            }
+        }
+        // 迁移：若旧配置中无「气体泄漏检测（关阀压力）」步骤，则插在读取 Gas system status 之后
+        if !steps.contains(where: { $0.id == TestStep.gasLeakClosed.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.readGasSystemStatus.id }) {
+                steps.insert(TestStep.gasLeakClosed, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.ensureValveOpen.id }) {
+                steps.insert(TestStep.gasLeakClosed, at: idx)
+            } else {
+                steps.insert(TestStep.gasLeakClosed, at: steps.count - 1)
+            }
+        }
+        // 迁移：若无「出货区域 HW_REV」步骤，插在通用 HW 校验之后
+        if !steps.contains(where: { $0.id == TestStep.hwRevShippingRegion.id }) {
+            if let idx = steps.firstIndex(where: { $0.id == TestStep.verifyHardwareRevision.id }) {
+                steps.insert(TestStep.hwRevShippingRegion, at: idx + 1)
+            } else if let idx = steps.firstIndex(where: { $0.id == TestStep.readRTC.id }) {
+                steps.insert(TestStep.hwRevShippingRegion, at: idx)
+            } else {
+                steps.insert(TestStep.hwRevShippingRegion, at: min(3, max(1, steps.count - 2)))
             }
         }
         // 迁移：若旧配置中无「重启」「恢复出厂」步骤，则插入在断开连接之前（第2步到倒数第二步之间）
@@ -191,20 +347,39 @@ struct ProductionTestRulesView: View {
                 steps.insert(TestStep.factoryReset, at: steps.count - 1)
             }
         }
-        // OTA 步骤必须在「确认固件版本」(step2) 之后
+        // 「读取序列号」须在「确认固件版本」之前
+        ProductionTestRulesView.ensureSerialBeforeFirmwareVerify(steps: &steps)
+        // OTA 步骤必须在「确认固件版本」(step_verify_firmware) 之后
         ProductionTestRulesView.ensureOtaAfterFirmwareVerify(steps: &steps)
         // 重启、恢复出厂只允许在倒数第三步或倒数第二步
         ProductionTestRulesView.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &steps)
+        // 移除已废弃占位步骤 step5（待定）；不再列入 SOP 与上报
+        if steps.contains(where: { $0.id == TestStep.tbd.id }) {
+            steps.removeAll { $0.id == TestStep.tbd.id }
+            UserDefaults.standard.set(steps.map { $0.id }, forKey: "production_test_steps_order")
+        }
+        // 移除已废弃步骤 step_gas_leak_open（开阀泄漏检测）
+        if steps.contains(where: { $0.id == "step_gas_leak_open" }) {
+            steps.removeAll { $0.id == "step_gas_leak_open" }
+            UserDefaults.standard.set(steps.map { $0.id }, forKey: "production_test_steps_order")
+        }
         
-        // 加载每个步骤的启用状态（step_ota 不许用户关闭，始终为 true；step_reset 产测中不许启用，始终为 false）
+        // 加载每个步骤的启用状态（step_ota 不许用户关闭，始终为 true；step_reset 产测中不许启用，始终为 false）；兼容旧版 step1～step4 的 key
         if let enabledDict = UserDefaults.standard.dictionary(forKey: "production_test_steps_enabled") as? [String: Bool] {
             for i in 0..<steps.count {
                 if steps[i].id == TestStep.otaBeforeDisconnect.id {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: true)
                 } else if steps[i].id == TestStep.reset.id {
                     steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: false)
-                } else if let enabled = enabledDict[steps[i].id] {
-                    steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
+                } else {
+                    let enabledValue = enabledDict[steps[i].id] ?? TestStep.legacyStepId(for: steps[i].id).flatMap { enabledDict[$0] }
+                    if let enabled = enabledValue {
+                        steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: enabled)
+                    } else if steps[i].id == TestStep.gasLeakClosed.id,
+                              let legacyEnabled = enabledDict["step_gas_leak"] {
+                        // 迁移：旧单步「气体泄漏检测」的启用状态应用到两个新步骤
+                        steps[i] = TestStep(id: steps[i].id, key: steps[i].key, isLocked: steps[i].isLocked, enabled: legacyEnabled)
+                    }
                 }
             }
         }
@@ -217,7 +392,7 @@ struct ProductionTestRulesView: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
                     // 产测流程说明
                     testProcedureSection
                     
@@ -226,54 +401,683 @@ struct ProductionTestRulesView: View {
                     
                     // 测试步骤详情（包含各步骤的配置）
                     testStepsSection
-                    
-                    // 注意事项
-                    notesSection
                 }
                 .padding()
             }
+            .disabled(isReadOnly)
         }
-        .frame(minWidth: 720, minHeight: 500)
+        .frame(minWidth: 960, idealWidth: 1100, minHeight: 540)
+        .onAppear {
+            // 每次打开时用当前已应用的 JSON 规则回填 UI，ESC 关闭视为丢弃未应用改动
+            applyProductionRules(productionRulesStore.rules)
+            hasAppliedThisSession = false
+            hasUnsavedChanges = false
+        }
     }
     
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            let rules = productionRulesStore.rules
+            let titleBase = appLanguage.string("production_test_rules.title")
+            let versionText = rules.rulesVersion
+            let fileName = "current_production_rules.json"
+            
             HStack {
-                Text(appLanguage.string("production_test_rules.title"))
+                Text(titleBase)
                     .font(.title2.weight(.semibold))
+                
                 Spacer()
+                
+                HStack(spacing: UIDesignSystem.Spacing.md) {
+                    Button {
+                        applyCurrentRules()
+                        hasAppliedThisSession = true
+                        hasUnsavedChanges = false
+                    } label: {
+                        Text(appLanguage.string("common.apply"))
+                            .font(UIDesignSystem.Typography.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isReadOnly || !hasUnsavedChanges)
+                    
+                    Button {
+                        exportCurrentRulesAsJSON()
+                    } label: {
+                        Text(appLanguage.string("production_test_rules.export_rules"))
+                            .font(UIDesignSystem.Typography.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReadOnly)
+                    
+                    Button {
+                        importRulesFromJSONFile()
+                    } label: {
+                        Text(appLanguage.string("production_test_rules.import_rules"))
+                            .font(UIDesignSystem.Typography.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReadOnly)
+                    
+                    Button {
+                        resetFromBundledDefaultRules()
+                    } label: {
+                        Text(appLanguage.string("common.reset_to_default"))
+                            .font(UIDesignSystem.Typography.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReadOnly)
+                }
             }
+            
+            // 当前规则文件 + 版本 + 脏标记
+            let baseLabel = String(format: appLanguage.string("production_test_rules.current_file_label"), fileName)
+            Text("\(baseLabel) · SOP=\(versionText)\(hasUnsavedChanges ? "*" : "")")
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
         }
         .padding()
     }
+
+    // MARK: - 新版规则导出 / 导入 / 恢复默认（基于 ProductionRules）
     
+    /// 将当前 UI 状态应用到全局规则存储，并持久化到 JSON，同时在日志区输出变更摘要
+    private func applyCurrentRules() {
+        guard !isReadOnly else { return }
+        let oldRules = productionRulesStore.rules
+        let rules = makeCurrentProductionRules()
+        productionRulesStore.apply(rules)
+        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+
+        // 构造变更摘要（按大区块粗粒度对比）
+        var changedSections: [String] = []
+        if oldRules.global != rules.global {
+            changedSections.append("Global")
+        }
+        if oldRules.environment != rules.environment {
+            changedSections.append("Environment/BLE")
+        }
+        if oldRules.steps != rules.steps {
+            changedSections.append("Steps & Per-step Config")
+        }
+
+        let summary: String
+        if changedSections.isEmpty {
+            summary = "[Rules] Applied production test rules and wrote to current_production_rules.json, but no effective changes compared to existing JSON."
+        } else {
+            summary = "[Rules] Applied production test rules and wrote to current_production_rules.json. Changed sections: " + changedSections.joined(separator: ", ")
+        }
+        ble.appendLog(summary, level: .info)
+    }
+    
+    /// 将当前 UI 状态构建为一份 ProductionRules，用于导出或上传
+    private func makeCurrentProductionRules() -> ProductionRules {
+        // Global
+        let failureOverrides = stepFatalOverrides
+        let fatalDefault = Array(TestStep.stepIdsFatalOnFailure)
+        let global = ProductionRules.Global(
+            stepIntervalMs: stepIntervalMs,
+            skipFactoryResetAndDisconnectOnFail: skipFactoryResetAndDisconnectOnFail,
+            failurePolicy: .init(fatalDefault: fatalDefault, overrides: failureOverrides)
+        )
+        
+        // Environment / BLE 扫描过滤
+        let bleScan = ProductionRules.Environment.BleScan(
+            rssiFilterEnabled: ble.scanFilterRSSIEnabled,
+            minRssiDbm: ble.scanFilterMinRSSI,
+            nameWhitelistEnabled: ble.scanFilterNameEnabled,
+            nameWhitelistKeywords: ble.scanFilterNamePrefix
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty },
+            nameBlacklistKeywords: ble.scanFilterNameExcludeKeywords
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        )
+        let environment = ProductionRules.Environment(bleScan: bleScan)
+        
+        // Steps
+        let steps: [ProductionRules.Step] = testSteps.enumerated().map { index, step in
+            var config = ProductionRules.Step.Config()
+            switch step.id {
+            case TestStep.connectDevice.id:
+                config.bluetoothPermissionWaitSeconds = bluetoothPermissionWaitSeconds
+                config.deviceReconnectTimeoutSeconds = deviceReconnectTimeout
+
+            case TestStep.readSerialNumber.id:
+                config.readTimeoutSeconds = serialReadTimeoutSeconds
+
+            case TestStep.verifyFirmware.id:
+                config.allowedBootloaderVersions = [bootloaderVersion]
+                config.allowedFirmwareVersions = firmwareVersion.isEmpty ? [] : [firmwareVersion]
+                config.allowedHardwareVersions = [hardwareVersion]
+                config.firmwareUpgradeEnabled = firmwareUpgradeEnabled
+                config.deviceInfoReadTimeoutSeconds = deviceInfoReadTimeout
+
+            case TestStep.verifyHardwareRevision.id:
+                config.readTimeoutSeconds = hwRevReadTimeoutSeconds
+                config.writeVerifyPollIntervalMs = hwRevReadPollIntervalMs
+
+            case TestStep.hwRevShippingRegion.id:
+                config.shippingDestination = shippingDestinationUsEu.lowercased()
+                config.shippingHwRevUs = shippingHwRevUs
+                config.shippingHwRevEu = shippingHwRevEu
+                config.autoWriteWhenMismatch = shippingHwRevAutoWriteWhenMismatch
+                config.readTimeoutSeconds = shippingHwRevReadTimeoutSeconds
+                config.writeVerifyTimeoutSeconds = shippingHwRevWriteVerifyTimeoutSeconds
+                config.writeVerifyPollIntervalMs = shippingHwRevWriteVerifyPollIntervalMs
+                
+            case TestStep.readRTC.id:
+                config.passThresholdSeconds = rtcTimeDiffPassThreshold
+                config.failThresholdSeconds = rtcTimeDiffFailThreshold
+                config.writeEnabled = rtcWriteEnabled
+                config.writeRetryCount = rtcWriteRetryCount
+                config.readTimeoutSeconds = rtcReadTimeout
+                
+            case TestStep.readPressure.id:
+                config.closedMinMbar = pressureClosedMin
+                config.closedMaxMbar = pressureClosedMax
+                config.openMinMbar = pressureOpenMin
+                config.openMaxMbar = pressureOpenMax
+                config.diffCheckEnabled = pressureDiffCheckEnabled
+                config.diffMinMbar = pressureDiffMin
+                config.diffMaxMbar = pressureDiffMax
+                config.failRetryConfirmEnabled = pressureFailRetryConfirmEnabled
+                config.pressureReadTimeoutSeconds = 2.5
+                config.pressureReadPollIntervalMs = 100
+                config.pressureRetryReadTimeoutSeconds = 0.3
+                config.pressureRetryReadPollIntervalMs = 50
+                
+            case TestStep.disableDiag.id:
+                config.waitSeconds = disableDiagWaitSeconds
+                let expectedValues = disableDiagExpectedGasStatusText
+                    .split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " })
+                    .compactMap { Int($0) }
+                config.expectedGasStatusValues = expectedValues.isEmpty ? [disableDiagExpectedGasStatus] : expectedValues
+                config.pollTimeoutSeconds = disableDiagPollTimeoutSeconds
+                config.pollEnabled = disableDiagPollGasStatusEnabled
+                config.pollIntervalMs = 150
+                config.valveCheckEnabled = disableDiagValveCheckEnabled
+                config.valveCheckSettleSeconds = disableDiagValveCheckSettleSeconds
+                config.valveCheckPressureReadDelaySeconds = disableDiagValveCheckPressureReadDelaySeconds
+
+            case TestStep.gasLeakClosed.id:
+                config.preCloseDurationSeconds = gasLeakClosedPreCloseDurationSeconds
+                config.postCloseDurationSeconds = gasLeakClosedPostCloseDurationSeconds
+                config.intervalSeconds = gasLeakClosedIntervalSeconds
+                config.dropThresholdMbar = gasLeakClosedDropThresholdMbar
+                config.startPressureMinMbar = gasLeakClosedStartPressureMinMbar
+                config.requirePipelineReadyConfirm = gasLeakClosedRequirePipelineReadyConfirm
+                config.requireValveClosedConfirm = gasLeakClosedRequireValveClosedConfirm
+                config.limitSource = gasLeakClosedLimitSource
+                config.limitFloorBar = gasLeakClosedLimitFloorBar
+                config.phase4Enabled = gasLeakClosedPhase4Enabled
+                config.phase4MonitorDurationSeconds = gasLeakClosedPhase4MonitorDurationSeconds
+                config.phase4DropWithinSeconds = gasLeakClosedPhase4DropWithinSeconds
+                config.phase4PressureBelowMbar = gasLeakClosedPhase4PressureBelowMbar
+                
+            case TestStep.ensureValveOpen.id:
+                config.openTimeoutSeconds = valveOpenTimeout
+
+            case TestStep.readGasSystemStatus.id:
+                if let arr = productionRulesStore.rules.steps.first(where: { $0.id == TestStep.readGasSystemStatus.id })?.config.expectedGasStatusValues, !arr.isEmpty {
+                    config.expectedGasStatusValues = arr
+                } else {
+                    config.expectedGasStatusValues = [disableDiagExpectedGasStatus]
+                }
+
+            case TestStep.otaBeforeDisconnect.id:
+                config.otaStartWaitTimeoutSeconds = otaStartWaitTimeout
+
+            default:
+                break
+            }
+            
+            let fatalOverride = failureOverrides[step.id]
+            return ProductionRules.Step(
+                id: step.id,
+                enabled: step.enabled,
+                order: index + 1,
+                fatalOnFailure: fatalOverride,
+                config: config
+            )
+        }
+        
+        // Meta 和版本：目前简单沿用默认模板中的版本号与空 meta
+        let meta = ProductionRules.Meta(
+            projectName: "BOG-P02",
+            author: "",
+            createdAt: "",
+            updatedAt: "",
+            notes: ""
+        )
+        
+        return ProductionRules(
+            schemaVersion: 1,
+            rulesVersion: "BOG-SOP-2026.03",
+            meta: meta,
+            global: global,
+            environment: environment,
+            steps: steps
+        )
+    }
+    
+    /// 导出当前规则为 JSON 文件
+    private func exportCurrentRulesAsJSON() {
+        let rules = makeCurrentProductionRules()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(rules) else { return }
+        
+        let panel = NSSavePanel()
+        panel.allowedFileTypes = ["json"]
+        panel.nameFieldStringValue = "production_rules.json"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try data.write(to: url)
+                ble.appendLog("[Rules] Exported current rules JSON to: \(url.lastPathComponent)", level: .info)
+            } catch {
+                ble.appendLog("[Rules] Failed to export rules JSON: \(error.localizedDescription)", level: .error)
+            }
+        }
+    }
+    
+    /// 从 JSON 文件导入规则并应用到当前 UI
+    private func importRulesFromJSONFile() {
+        guard !isReadOnly else { return }
+        let panel = NSOpenPanel()
+        panel.allowedFileTypes = ["json"]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try Data(contentsOf: url)
+                let decoder = JSONDecoder()
+                let rules = try decoder.decode(ProductionRules.self, from: data)
+                applyProductionRules(rules)
+                productionRulesStore.apply(rules)
+                hasUnsavedChanges = false
+                ble.appendLog("[Rules] Imported rules JSON from: \(url.lastPathComponent)", level: .info)
+            } catch {
+                ble.appendLog("[Rules] Failed to import rules JSON: \(error.localizedDescription)", level: .error)
+            }
+        }
+    }
+    
+    /// 使用内置默认规则覆盖当前配置
+    private func resetFromBundledDefaultRules() {
+        guard !isReadOnly else { return }
+        if let rules = try? ProductionRulesLoader.loadBundledDefaultRules() {
+            applyProductionRules(rules)
+            productionRulesStore.apply(rules)
+            hasUnsavedChanges = false
+            ble.appendLog("[Rules] Reset rules from bundled default_production_rules.json", level: .info)
+        } else {
+            ble.appendLog("[Rules] Failed to load bundled default_production_rules.json", level: .error)
+        }
+    }
+    
+    /// 将一份 ProductionRules 应用到当前视图状态
+    private func applyProductionRules(_ rules: ProductionRules) {
+        // Global
+        stepIntervalMs = rules.global.stepIntervalMs
+        skipFactoryResetAndDisconnectOnFail = rules.global.skipFactoryResetAndDisconnectOnFail
+        stepFatalOverrides = rules.global.failurePolicy.overrides
+        
+        // BLE 过滤（环境）
+        let bleScan = rules.environment.bleScan
+        ble.scanFilterRSSIEnabled = bleScan.rssiFilterEnabled
+        ble.scanFilterMinRSSI = bleScan.minRssiDbm
+        ble.scanFilterNameEnabled = bleScan.nameWhitelistEnabled
+        ble.scanFilterNamePrefix = bleScan.nameWhitelistKeywords.joined(separator: ",")
+        ble.scanFilterNameExcludeKeywords = bleScan.nameBlacklistKeywords.joined(separator: ",")
+        ble.reapplyScanFilter()
+        
+        // Steps 顺序与启用状态
+        let stepMap = [
+            TestStep.connectDevice,
+            .readSerialNumber,
+            .verifyFirmware,
+            .verifyHardwareRevision,
+            .hwRevShippingRegion,
+            .readRTC,
+            .readPressure,
+            .disableDiag,
+            .readGasSystemStatus,
+            .gasLeakClosed,
+            .ensureValveOpen,
+            .reset,
+            .factoryReset,
+            .otaBeforeDisconnect,
+            .disconnectDevice
+        ].reduce(into: [String: TestStep]()) { $0[$1.id] = $1 }
+        
+        var newTestSteps: [TestStep] = []
+        for step in rules.steps.sorted(by: { $0.order < $1.order }) {
+            guard var base = stepMap[step.id] else { continue }
+            base = TestStep(id: base.id, key: base.key, isLocked: base.isLocked, enabled: step.enabled)
+            newTestSteps.append(base)
+        }
+        if !newTestSteps.isEmpty {
+            testSteps = newTestSteps
+        }
+        
+        // Per-step config
+        for step in rules.steps {
+            let cfg = step.config
+            switch step.id {
+            case TestStep.readSerialNumber.id:
+                if let v = cfg.readTimeoutSeconds { serialReadTimeoutSeconds = v }
+            case TestStep.verifyFirmware.id:
+                if let versions = cfg.allowedBootloaderVersions, let first = versions.first {
+                    bootloaderVersion = first
+                }
+                if let versions = cfg.allowedFirmwareVersions, let first = versions.first {
+                    firmwareVersion = first
+                }
+                if let versions = cfg.allowedHardwareVersions, let first = versions.first {
+                    hardwareVersion = first
+                }
+                if let v = cfg.firmwareUpgradeEnabled {
+                    firmwareUpgradeEnabled = v
+                }
+                if let v = cfg.deviceInfoReadTimeoutSeconds { deviceInfoReadTimeout = v }
+            case TestStep.verifyHardwareRevision.id:
+                if let v = cfg.readTimeoutSeconds { hwRevReadTimeoutSeconds = v }
+                if let v = cfg.writeVerifyPollIntervalMs { hwRevReadPollIntervalMs = v }
+            case TestStep.hwRevShippingRegion.id:
+                if let v = cfg.shippingDestination, !v.isEmpty {
+                    shippingDestinationUsEu = v.lowercased() == "eu" ? "eu" : "us"
+                }
+                if let v = cfg.shippingHwRevUs, !v.isEmpty { shippingHwRevUs = v }
+                if let v = cfg.shippingHwRevEu, !v.isEmpty { shippingHwRevEu = v }
+                if let v = cfg.autoWriteWhenMismatch { shippingHwRevAutoWriteWhenMismatch = v }
+                if let v = cfg.readTimeoutSeconds { shippingHwRevReadTimeoutSeconds = v }
+                if let v = cfg.writeVerifyTimeoutSeconds { shippingHwRevWriteVerifyTimeoutSeconds = v }
+                if let v = cfg.writeVerifyPollIntervalMs { shippingHwRevWriteVerifyPollIntervalMs = v }
+            case TestStep.connectDevice.id:
+                if let v = cfg.deviceReconnectTimeoutSeconds { deviceReconnectTimeout = v }
+            case TestStep.readRTC.id:
+                if let v = cfg.passThresholdSeconds { rtcTimeDiffPassThreshold = v }
+                if let v = cfg.failThresholdSeconds { rtcTimeDiffFailThreshold = v }
+                if let v = cfg.writeEnabled { rtcWriteEnabled = v }
+                if let v = cfg.writeRetryCount { rtcWriteRetryCount = v }
+                if let v = cfg.readTimeoutSeconds { rtcReadTimeout = v }
+            case TestStep.readPressure.id:
+                if let v = cfg.closedMinMbar { pressureClosedMin = v }
+                if let v = cfg.closedMaxMbar { pressureClosedMax = v }
+                if let v = cfg.openMinMbar { pressureOpenMin = v }
+                if let v = cfg.openMaxMbar { pressureOpenMax = v }
+                if let v = cfg.diffCheckEnabled { pressureDiffCheckEnabled = v }
+                if let v = cfg.diffMinMbar { pressureDiffMin = v }
+                if let v = cfg.diffMaxMbar { pressureDiffMax = v }
+                if let v = cfg.failRetryConfirmEnabled { pressureFailRetryConfirmEnabled = v }
+            case TestStep.otaBeforeDisconnect.id:
+                if let v = cfg.otaStartWaitTimeoutSeconds { otaStartWaitTimeout = v }
+            case TestStep.disableDiag.id:
+                if let v = cfg.waitSeconds { disableDiagWaitSeconds = v }
+                if let arr = cfg.expectedGasStatusValues, !arr.isEmpty {
+                    disableDiagExpectedGasStatusText = arr.map(String.init).joined(separator: ",")
+                    disableDiagExpectedGasStatus = max(0, min(9, arr.first ?? 1))
+                }
+                if let v = cfg.pollTimeoutSeconds { disableDiagPollTimeoutSeconds = v }
+                if let v = cfg.pollEnabled { disableDiagPollGasStatusEnabled = v }
+                if let v = cfg.valveCheckEnabled { disableDiagValveCheckEnabled = v }
+                if let v = cfg.valveCheckSettleSeconds { disableDiagValveCheckSettleSeconds = v }
+                if let v = cfg.valveCheckPressureReadDelaySeconds { disableDiagValveCheckPressureReadDelaySeconds = v }
+            case TestStep.gasLeakClosed.id:
+                if let v = cfg.preCloseDurationSeconds { gasLeakClosedPreCloseDurationSeconds = v }
+                if let v = cfg.postCloseDurationSeconds { gasLeakClosedPostCloseDurationSeconds = v }
+                if let v = cfg.intervalSeconds { gasLeakClosedIntervalSeconds = v }
+                if let v = cfg.dropThresholdMbar { gasLeakClosedDropThresholdMbar = v }
+                if let v = cfg.startPressureMinMbar { gasLeakClosedStartPressureMinMbar = v }
+                if let v = cfg.requirePipelineReadyConfirm { gasLeakClosedRequirePipelineReadyConfirm = v }
+                if let v = cfg.requireValveClosedConfirm { gasLeakClosedRequireValveClosedConfirm = v }
+                if let v = cfg.limitSource { gasLeakClosedLimitSource = v }
+                if let v = cfg.limitFloorBar { gasLeakClosedLimitFloorBar = v }
+                if let v = cfg.phase4Enabled { gasLeakClosedPhase4Enabled = v }
+                if let v = cfg.phase4MonitorDurationSeconds { gasLeakClosedPhase4MonitorDurationSeconds = v }
+                if let v = cfg.phase4DropWithinSeconds { gasLeakClosedPhase4DropWithinSeconds = v }
+                if let v = cfg.phase4PressureBelowMbar { gasLeakClosedPhase4PressureBelowMbar = v }
+            case TestStep.ensureValveOpen.id:
+                if let v = cfg.openTimeoutSeconds { valveOpenTimeout = v }
+            default:
+                break
+            }
+        }
+        
+        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+    }
+
+    /// 将所有产测 SOP 规则恢复为默认值（基于内置 JSON）
+    private func resetToDefaultRules() {
+        guard !isReadOnly else { return }
+        if let rules = try? ProductionRulesLoader.loadBundledDefaultRules() {
+            applyProductionRules(rules)
+            productionRulesStore.apply(rules)
+        }
+        gasLeakClosedPreCloseDurationSeconds = 10
+        gasLeakClosedPostCloseDurationSeconds = 15
+        gasLeakClosedIntervalSeconds = 0.5
+        gasLeakClosedDropThresholdMbar = 15
+        gasLeakClosedRequirePipelineReadyConfirm = true
+        gasLeakClosedRequireValveClosedConfirm = true
+        gasLeakClosedLimitSource = "phase1_avg"
+        gasLeakClosedLimitFloorBar = 0
+        gasLeakClosedPhase4Enabled = true
+        gasLeakClosedPhase4MonitorDurationSeconds = 15
+        gasLeakClosedPhase4DropWithinSeconds = 5
+        gasLeakClosedPhase4PressureBelowMbar = 100
+        testSteps = Self.defaultSteps
+        expandedSteps = []
+        isEditingOrder = false
+
+        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+    }
+
+    // MARK: - 规则导出 / 导入
+    private func makeSnapshot() -> RulesSnapshot {
+        RulesSnapshot(
+            bootloaderVersion: bootloaderVersion,
+            firmwareVersion: firmwareVersion,
+            hardwareVersion: hardwareVersion,
+            firmwareUpgradeEnabled: firmwareUpgradeEnabled,
+            rtcTimeDiffPassThreshold: rtcTimeDiffPassThreshold,
+            rtcTimeDiffFailThreshold: rtcTimeDiffFailThreshold,
+            rtcWriteEnabled: rtcWriteEnabled,
+            rtcWriteRetryCount: rtcWriteRetryCount,
+            rtcReadTimeout: rtcReadTimeout,
+            deviceInfoReadTimeout: deviceInfoReadTimeout,
+            serialReadTimeoutSeconds: serialReadTimeoutSeconds,
+            otaStartWaitTimeout: otaStartWaitTimeout,
+            deviceReconnectTimeout: deviceReconnectTimeout,
+            valveOpenTimeout: valveOpenTimeout,
+            disableDiagWaitSeconds: disableDiagWaitSeconds,
+            disableDiagExpectedGasStatus: disableDiagExpectedGasStatus,
+            disableDiagPollTimeoutSeconds: disableDiagPollTimeoutSeconds,
+            disableDiagPollGasStatusEnabled: disableDiagPollGasStatusEnabled,
+            disableDiagValveCheckEnabled: disableDiagValveCheckEnabled,
+            disableDiagValveCheckSettleSeconds: disableDiagValveCheckSettleSeconds,
+            disableDiagValveCheckPressureReadDelaySeconds: disableDiagValveCheckPressureReadDelaySeconds,
+            stepIntervalMs: stepIntervalMs,
+            bluetoothPermissionWaitSeconds: bluetoothPermissionWaitSeconds,
+            pressureClosedMin: pressureClosedMin,
+            pressureClosedMax: pressureClosedMax,
+            pressureOpenMin: pressureOpenMin,
+            pressureOpenMax: pressureOpenMax,
+            pressureDiffCheckEnabled: pressureDiffCheckEnabled,
+            pressureDiffMin: pressureDiffMin,
+            pressureDiffMax: pressureDiffMax,
+            gasLeakClosedPreCloseDurationSeconds: gasLeakClosedPreCloseDurationSeconds,
+            gasLeakClosedPostCloseDurationSeconds: gasLeakClosedPostCloseDurationSeconds,
+            gasLeakClosedIntervalSeconds: gasLeakClosedIntervalSeconds,
+            gasLeakClosedDropThresholdMbar: gasLeakClosedDropThresholdMbar,
+            gasLeakClosedStartPressureMinMbar: gasLeakClosedStartPressureMinMbar,
+            gasLeakClosedRequirePipelineReadyConfirm: gasLeakClosedRequirePipelineReadyConfirm,
+            gasLeakClosedRequireValveClosedConfirm: gasLeakClosedRequireValveClosedConfirm,
+            gasLeakClosedLimitSource: gasLeakClosedLimitSource,
+            gasLeakClosedLimitFloorBar: gasLeakClosedLimitFloorBar,
+            gasLeakClosedPhase4Enabled: gasLeakClosedPhase4Enabled,
+            gasLeakClosedPhase4MonitorDurationSeconds: gasLeakClosedPhase4MonitorDurationSeconds,
+            gasLeakClosedPhase4DropWithinSeconds: gasLeakClosedPhase4DropWithinSeconds,
+            gasLeakClosedPhase4PressureBelowMbar: gasLeakClosedPhase4PressureBelowMbar,
+            shippingDestinationUsEu: shippingDestinationUsEu,
+            shippingHwRevUs: shippingHwRevUs,
+            shippingHwRevEu: shippingHwRevEu,
+            shippingHwRevAutoWriteWhenMismatch: shippingHwRevAutoWriteWhenMismatch,
+            shippingHwRevReadTimeoutSeconds: shippingHwRevReadTimeoutSeconds,
+            shippingHwRevWriteVerifyTimeoutSeconds: shippingHwRevWriteVerifyTimeoutSeconds,
+            shippingHwRevWriteVerifyPollIntervalMs: shippingHwRevWriteVerifyPollIntervalMs,
+            steps: testSteps.map { step in
+                let fatalVal = stepFatalOverrides[step.id] ?? TestStep.stepIdsFatalOnFailure.contains(step.id)
+                return RulesSnapshot.StepState(id: step.id, enabled: step.enabled, fatalOnFailure: fatalVal)
+            }
+        )
+    }
+
+    private func applySnapshot(_ snapshot: RulesSnapshot) {
+        guard !isReadOnly else { return }
+
+        bootloaderVersion = snapshot.bootloaderVersion
+        firmwareVersion = snapshot.firmwareVersion
+        hardwareVersion = snapshot.hardwareVersion
+        firmwareUpgradeEnabled = snapshot.firmwareUpgradeEnabled
+
+        rtcTimeDiffPassThreshold = snapshot.rtcTimeDiffPassThreshold
+        rtcTimeDiffFailThreshold = snapshot.rtcTimeDiffFailThreshold
+        rtcWriteEnabled = snapshot.rtcWriteEnabled
+        rtcWriteRetryCount = snapshot.rtcWriteRetryCount
+        rtcReadTimeout = snapshot.rtcReadTimeout
+        deviceInfoReadTimeout = snapshot.deviceInfoReadTimeout
+        serialReadTimeoutSeconds = snapshot.serialReadTimeoutSeconds ?? 3.0
+        otaStartWaitTimeout = snapshot.otaStartWaitTimeout
+        deviceReconnectTimeout = snapshot.deviceReconnectTimeout
+        valveOpenTimeout = snapshot.valveOpenTimeout
+        disableDiagWaitSeconds = snapshot.disableDiagWaitSeconds ?? 2.0
+        disableDiagExpectedGasStatus = max(0, min(9, snapshot.disableDiagExpectedGasStatus ?? 1))
+        disableDiagExpectedGasStatusText = String(disableDiagExpectedGasStatus)
+        disableDiagPollTimeoutSeconds = snapshot.disableDiagPollTimeoutSeconds ?? 3.0
+        disableDiagPollGasStatusEnabled = snapshot.disableDiagPollGasStatusEnabled ?? true
+        disableDiagValveCheckEnabled = snapshot.disableDiagValveCheckEnabled ?? true
+        disableDiagValveCheckSettleSeconds = snapshot.disableDiagValveCheckSettleSeconds ?? 0.5
+        disableDiagValveCheckPressureReadDelaySeconds = snapshot.disableDiagValveCheckPressureReadDelaySeconds ?? 0.6
+        stepIntervalMs = snapshot.stepIntervalMs
+        bluetoothPermissionWaitSeconds = snapshot.bluetoothPermissionWaitSeconds
+
+        pressureClosedMin = snapshot.pressureClosedMin
+        pressureClosedMax = snapshot.pressureClosedMax
+        pressureOpenMin = snapshot.pressureOpenMin
+        pressureOpenMax = snapshot.pressureOpenMax
+        pressureDiffCheckEnabled = snapshot.pressureDiffCheckEnabled
+        pressureDiffMin = snapshot.pressureDiffMin
+        pressureDiffMax = snapshot.pressureDiffMax
+
+        gasLeakClosedPreCloseDurationSeconds = snapshot.gasLeakClosedPreCloseDurationSeconds
+        gasLeakClosedPostCloseDurationSeconds = snapshot.gasLeakClosedPostCloseDurationSeconds
+        gasLeakClosedIntervalSeconds = snapshot.gasLeakClosedIntervalSeconds
+        gasLeakClosedDropThresholdMbar = snapshot.gasLeakClosedDropThresholdMbar
+        gasLeakClosedStartPressureMinMbar = snapshot.gasLeakClosedStartPressureMinMbar
+        gasLeakClosedRequirePipelineReadyConfirm = snapshot.gasLeakClosedRequirePipelineReadyConfirm
+        gasLeakClosedRequireValveClosedConfirm = snapshot.gasLeakClosedRequireValveClosedConfirm
+        gasLeakClosedLimitSource = snapshot.gasLeakClosedLimitSource ?? "phase1_avg"
+        gasLeakClosedLimitFloorBar = max(0, snapshot.gasLeakClosedLimitFloorBar ?? 0)
+        gasLeakClosedPhase4Enabled = snapshot.gasLeakClosedPhase4Enabled ?? true
+        gasLeakClosedPhase4MonitorDurationSeconds = snapshot.gasLeakClosedPhase4MonitorDurationSeconds ?? 15
+        gasLeakClosedPhase4DropWithinSeconds = snapshot.gasLeakClosedPhase4DropWithinSeconds ?? 5
+        gasLeakClosedPhase4PressureBelowMbar = snapshot.gasLeakClosedPhase4PressureBelowMbar ?? 100
+
+        shippingDestinationUsEu = snapshot.shippingDestinationUsEu ?? "us"
+        shippingHwRevUs = snapshot.shippingHwRevUs ?? "P02V02R02"
+        shippingHwRevEu = snapshot.shippingHwRevEu ?? "P02V02R01"
+        shippingHwRevAutoWriteWhenMismatch = snapshot.shippingHwRevAutoWriteWhenMismatch ?? true
+        shippingHwRevReadTimeoutSeconds = snapshot.shippingHwRevReadTimeoutSeconds ?? 3.0
+        shippingHwRevWriteVerifyTimeoutSeconds = snapshot.shippingHwRevWriteVerifyTimeoutSeconds ?? 5.0
+        shippingHwRevWriteVerifyPollIntervalMs = snapshot.shippingHwRevWriteVerifyPollIntervalMs ?? 150
+
+        // 更新本地状态数组
+        var newSteps: [TestStep] = []
+        let stepMap = [TestStep.connectDevice, .readSerialNumber, .verifyFirmware, .verifyHardwareRevision, .hwRevShippingRegion, .readRTC, .readPressure, .disableDiag, .readGasSystemStatus, .gasLeakClosed, .ensureValveOpen, .reset, .factoryReset, .otaBeforeDisconnect, .disconnectDevice]
+            .reduce(into: [:]) { $0[$1.id] = $1 }
+        for s in snapshot.steps {
+            if var base = stepMap[s.id] {
+                base.enabled = s.enabled
+                newSteps.append(base)
+            }
+        }
+        if newSteps.isEmpty {
+            newSteps = Self.defaultSteps
+        }
+        testSteps = newSteps
+
+        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+    }
+
+    private func saveRulesToFile() {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.allowedFileTypes = ["json"]
+        panel.nameFieldStringValue = "ProductionTestRules.json"
+
+        let snapshot = makeSnapshot()
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                try? data.write(to: url)
+            }
+        }
+    }
+
+    private func loadRulesFromFile() {
+        guard !isReadOnly else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["json"]
+
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                guard let data = try? Data(contentsOf: url) else { return }
+                let decoder = JSONDecoder()
+                if let snapshot = try? decoder.decode(RulesSnapshot.self, from: data) {
+                    applySnapshot(snapshot)
+                }
+            }
+        }
+    }
+    
+    
+    private var isReadOnly: Bool {
+        productionState.isRunning
+    }
     
     private var testProcedureSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.procedure_title"))
-                .font(.headline)
+                .font(UIDesignSystem.Typography.sectionTitle)
                 .foregroundStyle(.primary)
             
             Text(appLanguage.string("production_test_rules.procedure_description"))
-                .font(.body)
+                .font(UIDesignSystem.Typography.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(12)
+        .padding(UIDesignSystem.Padding.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(UIDesignSystem.Background.card)
+        .clipShape(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.md, style: .continuous))
     }
     
     /// 全局延时设定：步骤间延时（适用于所有步骤之间，非步骤2专属）
     private var globalStepDelaySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
             Text(appLanguage.string("production_test_rules.global_step_delay_section"))
-                .font(.headline)
+                .font(UIDesignSystem.Typography.sectionTitle)
                 .foregroundStyle(.primary)
 
             // 步骤间延时（ms）与蓝牙权限等待（s）放在同一行，提升布局利用率
-            HStack(alignment: .center, spacing: 24) {
+            HStack(alignment: .center, spacing: UIDesignSystem.Spacing.md) {
                 thresholdIntRow(
                     label: appLanguage.string("production_test_rules.step_interval_ms"),
                     value: $stepIntervalMs,
@@ -287,52 +1091,94 @@ struct ProductionTestRulesView: View {
                     unit: appLanguage.string("production_test_rules.unit_seconds"),
                     key: "production_test_bluetooth_permission_wait_seconds"
                 )
-                .frame(maxWidth: 260, alignment: .leading)
+                .frame(maxWidth: 360, alignment: .leading)
             }
+            .controlSize(.small)
+            Toggle(isOn: $skipFactoryResetAndDisconnectOnFail) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                    Text(appLanguage.string("production_test_rules.skip_factory_reset_and_disconnect_on_fail_title"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(.primary)
+                    Text(appLanguage.string("production_test_rules.skip_factory_reset_and_disconnect_on_fail_desc"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .onChange(of: skipFactoryResetAndDisconnectOnFail) { _ in
+                hasUnsavedChanges = true
+            }
+            .toggleStyle(.switch)
         }
-        .padding(12)
+        .padding(UIDesignSystem.Padding.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(UIDesignSystem.Background.card)
+        .clipShape(RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.md, style: .continuous))
     }
     
-    
+    /// 通用数值阈值输入（保留 1 位小数）
     private func thresholdRow(label: String, value: Binding<Double>, unit: String, key: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
             Text(label)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .frame(width: 140, alignment: .leading)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
             
             TextField("", value: value, format: .number.precision(.fractionLength(1)))
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 80)
-                .onChange(of: value.wrappedValue) { newValue in
-                    UserDefaults.standard.set(newValue, forKey: key)
-                    NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
+                .onChange(of: value.wrappedValue) { _ in
+                    hasUnsavedChanges = true
                 }
             
             Text(unit)
-                .font(.body)
-                .foregroundStyle(.secondary)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            
+            Spacer()
+        }
+    }
+    
+    /// 时间/间隔类阈值输入（保留 2 位小数），当前仅用于 gas leak 的 interval_seconds
+    private func timeThresholdRow(label: String, value: Binding<Double>, unit: String, key: String) -> some View {
+        HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+            Text(label)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+            
+            TextField("", value: value, format: .number.precision(.fractionLength(2)))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
+                .onChange(of: value.wrappedValue) { _ in
+                    hasUnsavedChanges = true
+                }
+            
+            Text(unit)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
             
             Spacer()
         }
     }
     
     private func thresholdIntRow(label: String, value: Binding<Int>, key: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
             Text(label)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .frame(width: 140, alignment: .leading)
+                .font(UIDesignSystem.Typography.body)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
             
             TextField("", value: value, format: .number)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 80)
-                .onChange(of: value.wrappedValue) { newValue in
-                    UserDefaults.standard.set(newValue, forKey: key)
-                    NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
+                .onChange(of: value.wrappedValue) { _ in
+                    hasUnsavedChanges = true
                 }
             
             Spacer()
@@ -356,34 +1202,34 @@ struct ProductionTestRulesView: View {
     }
     
     private var testStepsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             HStack {
                 Text(appLanguage.string("production_test_rules.steps_title"))
-                    .font(.headline)
+                    .font(UIDesignSystem.Typography.sectionTitle)
                     .foregroundStyle(.primary)
                 Spacer()
                 Button {
                     isEditingOrder.toggle()
                 } label: {
                     Text(isEditingOrder ? appLanguage.string("production_test_rules.done_editing") : appLanguage.string("production_test_rules.edit_order"))
-                        .font(.caption)
+                        .font(UIDesignSystem.Typography.caption)
                 }
                 .buttonStyle(.bordered)
                 Text(appLanguage.string("production_test_rules.drag_hint"))
-                    .font(.caption)
+                    .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(.secondary)
             }
             
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
                 ForEach(Array(testSteps.enumerated()), id: \.element.id) { index, step in
                     let isPositionLocked = (index == 0 && step.id == TestStep.connectDevice.id) ||
                                            (index == testSteps.count - 1 && step.id == TestStep.disconnectDevice.id)
                     let isEnableLocked = isPositionLocked || step.id == TestStep.otaBeforeDisconnect.id || step.id == TestStep.reset.id // step_ota 不许关闭；step_reset 产测中不许启用，仅隐藏开关
-                    HStack(spacing: 8) {
+                    HStack(spacing: UIDesignSystem.Spacing.md) {
                         // 拖拽手柄（编辑模式下显示）
                         if isEditingOrder && !isPositionLocked {
                             Image(systemName: "line.3.horizontal")
-                                .font(.caption)
+                                .font(UIDesignSystem.Typography.caption)
                                 .foregroundStyle(.secondary)
                                 .frame(width: 20)
                         } else {
@@ -393,17 +1239,18 @@ struct ProductionTestRulesView: View {
                         
                         // 上下移动按钮（位置锁定步骤不显示）
                         if !isPositionLocked {
-                            VStack(spacing: 4) {
+                            VStack(spacing: UIDesignSystem.Spacing.xs) {
                                 Button {
                                     moveStepUp(at: index)
                                 } label: {
                                     Image(systemName: "chevron.up")
-                                        .font(.caption)
+                                        .font(UIDesignSystem.Typography.caption)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(
                                     index <= 1
                                     || (step.id == TestStep.otaBeforeDisconnect.id && index > 0 && testSteps[index - 1].id == TestStep.verifyFirmware.id)
+                                    || (step.id == TestStep.verifyFirmware.id && index > 0 && testSteps[index - 1].id == TestStep.readSerialNumber.id)
                                     || ((step.id == TestStep.reset.id || step.id == TestStep.factoryReset.id) && index < testSteps.count - 2) // 重启/恢复出厂只能在上移后仍在倒数第二或倒数第三
                                     || (index == testSteps.count - 4 && (testSteps[index - 1].id == TestStep.reset.id || testSteps[index - 1].id == TestStep.factoryReset.id)) // 不能把倒数第三步的重启/恢复出厂顶到更前
                                 )
@@ -412,12 +1259,13 @@ struct ProductionTestRulesView: View {
                                     moveStepDown(at: index)
                                 } label: {
                                     Image(systemName: "chevron.down")
-                                        .font(.caption)
+                                        .font(UIDesignSystem.Typography.caption)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(
                                     index >= testSteps.count - 2
                                     || (step.id == TestStep.verifyFirmware.id && index + 1 < testSteps.count && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id)
+                                    || (step.id == TestStep.readSerialNumber.id && index + 1 < testSteps.count && testSteps[index + 1].id == TestStep.verifyFirmware.id)
                                     || ((step.id == TestStep.reset.id || step.id == TestStep.factoryReset.id) && index < testSteps.count - 3) // 重启/恢复出厂只能在下移后仍在倒数第二或倒数第三
                                     || (index == testSteps.count - 4 && (testSteps[index + 1].id == TestStep.reset.id || testSteps[index + 1].id == TestStep.factoryReset.id)) // 不能把倒数第三步的重启/恢复出厂挤到更前
                                 )
@@ -509,13 +1357,24 @@ struct ProductionTestRulesView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(UIDesignSystem.Padding.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(UIDesignSystem.Background.card)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
     
-    /// OTA 步骤必须在「确认固件版本」(step2) 之后；若违反则把 step_ota 移到 step2 之后
+    /// 「读取序列号」须在「确认固件版本」之前；若违反则移到 step_verify_firmware 之前
+    private static func ensureSerialBeforeFirmwareVerify(steps: inout [TestStep]) {
+        guard let fwIndex = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }),
+              let serialIndex = steps.firstIndex(where: { $0.id == TestStep.readSerialNumber.id }) else { return }
+        if serialIndex > fwIndex {
+            let serial = steps.remove(at: serialIndex)
+            let insertAt = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }) ?? 1
+            steps.insert(serial, at: insertAt)
+        }
+    }
+
+    /// OTA 步骤必须在「确认固件版本」(step_verify_firmware) 之后；若违反则把 step_ota 移到 step_verify_firmware 之后
     private static func ensureOtaAfterFirmwareVerify(steps: inout [TestStep]) {
         guard let fwIndex = steps.firstIndex(where: { $0.id == TestStep.verifyFirmware.id }),
               let otaIndex = steps.firstIndex(where: { $0.id == TestStep.otaBeforeDisconnect.id }) else { return }
@@ -590,6 +1449,7 @@ struct ProductionTestRulesView: View {
             updatedSteps.removeAll { $0.id == TestStep.disconnectDevice.id }
             updatedSteps.append(TestStep.disconnectDevice)
         }
+        Self.ensureSerialBeforeFirmwareVerify(steps: &updatedSteps)
         Self.ensureOtaAfterFirmwareVerify(steps: &updatedSteps)
         Self.ensureResetAndFactoryResetBetweenSecondAndSecondToLast(steps: &updatedSteps)
         
@@ -604,12 +1464,15 @@ struct ProductionTestRulesView: View {
         guard index > 1 else { return }
         // OTA 步骤不能在「确认固件版本」之前
         if testSteps[index].id == TestStep.otaBeforeDisconnect.id && testSteps[index - 1].id == TestStep.verifyFirmware.id { return }
+        // 「确认固件版本」不能移到「读取序列号」之前
+        if testSteps[index].id == TestStep.verifyFirmware.id && testSteps[index - 1].id == TestStep.readSerialNumber.id { return }
         // 重启/恢复出厂只能处于倒数第二或倒数第三步，上移后仍须在此两格
         if (testSteps[index].id == TestStep.reset.id || testSteps[index].id == TestStep.factoryReset.id) && index < testSteps.count - 2 { return }
         // 不能把倒数第三步的重启/恢复出厂顶到更前
         if index == testSteps.count - 4 && (testSteps[index - 1].id == TestStep.reset.id || testSteps[index - 1].id == TestStep.factoryReset.id) { return }
         
         testSteps.swapAt(index, index - 1)
+        Self.ensureSerialBeforeFirmwareVerify(steps: &testSteps)
         saveStepsOrder()
     }
     
@@ -620,12 +1483,15 @@ struct ProductionTestRulesView: View {
         guard index < testSteps.count - 2 else { return }
         // 「确认固件版本」不能在 OTA 步骤之后
         if testSteps[index].id == TestStep.verifyFirmware.id && testSteps[index + 1].id == TestStep.otaBeforeDisconnect.id { return }
+        // 「读取序列号」不能移到「确认固件版本」之后
+        if testSteps[index].id == TestStep.readSerialNumber.id && testSteps[index + 1].id == TestStep.verifyFirmware.id { return }
         // 重启/恢复出厂只能处于倒数第二或倒数第三步，下移后仍须在此两格
         if (testSteps[index].id == TestStep.reset.id || testSteps[index].id == TestStep.factoryReset.id) && index < testSteps.count - 3 { return }
         // 不能把倒数第三步的重启/恢复出厂挤到更前（与下方交换会把它换到 count-4）
         if index == testSteps.count - 4 && (testSteps[index + 1].id == TestStep.reset.id || testSteps[index + 1].id == TestStep.factoryReset.id) { return }
         
         testSteps.swapAt(index, index + 1)
+        Self.ensureSerialBeforeFirmwareVerify(steps: &testSteps)
         saveStepsOrder()
     }
     
@@ -646,7 +1512,7 @@ struct ProductionTestRulesView: View {
     }
     
     private func stepItem(number: Int, step: TestStep, isLocked: Bool, isExpanded: Bool) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: UIDesignSystem.Spacing.lg) {
             // 步骤编号
             ZStack {
                 Text("\(number)")
@@ -669,10 +1535,10 @@ struct ProductionTestRulesView: View {
                 }
             }
             
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
                 HStack {
                     Text(appLanguage.string("production_test_rules.\(step.key)_title"))
-                        .font(.subheadline.weight(.medium))
+                        .font(UIDesignSystem.Typography.subsectionTitle)
                         .foregroundStyle(step.enabled ? .primary : .secondary)
                     if isLocked {
                         Image(systemName: "lock.fill")
@@ -691,7 +1557,7 @@ struct ProductionTestRulesView: View {
                     }
                 }
                 Text(appLanguage.string("production_test_rules.\(step.key)_desc"))
-                    .font(.caption)
+                    .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(step.enabled ? 1.0 : 0.6)
@@ -699,7 +1565,7 @@ struct ProductionTestRulesView: View {
                 let criteriaKey = "production_test_rules.\(step.key)_criteria"
                 let criteria = appLanguage.string(criteriaKey)
                 if !criteria.isEmpty && criteria != criteriaKey && step.enabled { // 检查是否真的存在本地化字符串
-                    HStack(alignment: .top, spacing: 6) {
+                    HStack(alignment: .top, spacing: UIDesignSystem.Spacing.sm) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.caption2)
                             .foregroundStyle(.green)
@@ -721,17 +1587,47 @@ struct ProductionTestRulesView: View {
     
     /// 步骤配置视图（展开时显示）
     private func stepConfigurationView(step: TestStep) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Divider()
                 .padding(.vertical, 4)
             
+            // 每步可单独设置：失败后终止产测 或 仅本步失败继续后续步骤
+            if !isEditingOrder {
+                HStack(spacing: UIDesignSystem.Spacing.md) {
+                    Toggle(isOn: Binding(
+                        get: { stepFatalOverrides[step.id] ?? TestStep.stepIdsFatalOnFailure.contains(step.id) },
+                        set: { newVal in
+                            stepFatalOverrides[step.id] = newVal
+                            UserDefaults.standard.set(stepFatalOverrides, forKey: "production_test_steps_fatal_on_failure")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                    )) {
+                        Text(appLanguage.string("production_test_rules.step_fatal_on_failure_title"))
+                            .font(UIDesignSystem.Typography.subsectionTitle)
+                            .foregroundStyle(.primary)
+                    }
+                    .toggleStyle(.switch)
+                }
+                .padding(.vertical, 4)
+            }
+            
             switch step.id {
-            case "step2": // 确认固件版本
+            case TestStep.readSerialNumber.id:
+                serialReadConfigurationView
+            case "step_verify_firmware": // 确认固件版本
                 versionConfigurationView
-            case "step3": // 检查RTC
+            case "step_verify_hw_rev": // 读取 HW_REV（写入与回读确认在出货区域步骤）
+                verifyHwRevConfigurationView
+            case TestStep.hwRevShippingRegion.id:
+                shippingHwRevRegionConfigurationView
+            case "step_read_rtc": // 检查RTC
                 rtcConfigurationView
-            case "step4": // 读取压力值
+            case "step_read_pressure": // 读取压力值
                 pressureConfigurationView
+            case "step_disable_diag": // 屏蔽气体自检（Disable diag）
+                disableDiagConfigurationView
+            case "step_gas_leak_closed": // 气体泄漏检测（关阀压力）
+                gasLeakClosedConfigurationView
             default:
                 EmptyView()
             }
@@ -741,20 +1637,36 @@ struct ProductionTestRulesView: View {
         .padding(.vertical, 4)
     }
     
+    private var serialReadConfigurationView: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test_rules.serial_read_timeout_section"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.serial_read_timeout_label"),
+                value: $serialReadTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_serial_read_timeout"
+            )
+            .onChange(of: serialReadTimeoutSeconds) { _ in hasUnsavedChanges = true }
+        }
+        .padding(UIDesignSystem.Padding.md)
+    }
+
     /// 版本配置视图（步骤2）
     private var versionConfigurationView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.firmware_version_title"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                 // Bootloader 版本
-                HStack(spacing: 12) {
+                HStack(spacing: UIDesignSystem.Spacing.lg) {
                     Text(appLanguage.string("production_test_rules.bootloader_version_label"))
-                        .font(.body)
+                        .font(UIDesignSystem.Typography.body)
                         .foregroundStyle(.secondary)
-                        .frame(width: 100, alignment: .leading)
+                        .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
                     
                     TextField(
                         appLanguage.string("production_test_rules.bootloader_version_placeholder"),
@@ -762,19 +1674,18 @@ struct ProductionTestRulesView: View {
                     )
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
-                    .onChange(of: bootloaderVersion) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "production_test_bootloader_version")
-                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    .onChange(of: bootloaderVersion) { _ in
+                        hasUnsavedChanges = true
                     }
                 }
                 
                 // FW 版本：从服务器可用固件列表下拉选择，产测 OTA 步骤直接使用此版本；当恢复出厂/重启启用时仅允许选择支持该命令的版本（>=1.1.2 或 0.x>0.4.1）
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                    HStack(spacing: UIDesignSystem.Spacing.lg) {
                         Text(appLanguage.string("production_test_rules.firmware_version_label"))
-                            .font(.body)
+                            .font(UIDesignSystem.Typography.body)
                             .foregroundStyle(.secondary)
-                            .frame(width: 100, alignment: .leading)
+                            .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
                         
                         Picker("", selection: $firmwareVersion) {
                             Text(appLanguage.string("ota.not_selected")).tag("")
@@ -784,13 +1695,32 @@ struct ProductionTestRulesView: View {
                             }
                         }
                         .pickerStyle(.menu)
-                        .frame(minWidth: 200, alignment: .leading)
-                        .onChange(of: firmwareVersion) { newValue in
-                            UserDefaults.standard.set(newValue, forKey: "production_test_firmware_version")
-                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        .labelsHidden()
+                        .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, alignment: .leading)
+                        .onChange(of: firmwareVersion) { _ in
+                            hasUnsavedChanges = true
                         }
-                        
-                        Spacer()
+
+                        Button {
+                            ble.appendLog("[固件] 产测 SOP 手动刷新 usage_type=ota_app channel=production", level: .info)
+                            Task {
+                                await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: "production")
+                                await MainActor.run {
+                                    let count = firmwareManager.serverItemsForProduction.count
+                                    if let err = firmwareManager.serverItemsError {
+                                        ble.appendLog("[固件] 产测 channel=production 拉取失败: \(err)", level: .error)
+                                    } else {
+                                        let versions = firmwareManager.serverItemsForProduction.map(\.version).joined(separator: ", ")
+                                        ble.appendLog("[固件] 产测 channel=production 拉取成功 共\(count)条 [\(versions.isEmpty ? "无" : versions)]", level: .info)
+                                    }
+                                }
+                            }
+                        } label: {
+                            Text(appLanguage.string("ota.refresh_firmware_list"))
+                                .font(UIDesignSystem.Typography.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(firmwareManager.serverItemsLoading)
                     }
                     
                     if productionTestRequiresFirmwareSupportForRebootSteps && !productionTestAllowedFirmwareEntries.isEmpty {
@@ -805,7 +1735,7 @@ struct ProductionTestRulesView: View {
                         .padding(.leading, 112)
                     
                     if firmwareManager.serverItemsForProduction.isEmpty {
-                        HStack(spacing: 4) {
+                        HStack(spacing: UIDesignSystem.Spacing.xs) {
                             Image(systemName: "info.circle.fill")
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
@@ -820,9 +1750,9 @@ struct ProductionTestRulesView: View {
                         .padding(.vertical, 4)
                     
                     // 固件版本升级开关（靠右对齐）
-                    HStack(spacing: 12) {
+                    HStack(spacing: UIDesignSystem.Spacing.lg) {
                         Text(appLanguage.string("production_test_rules.firmware_upgrade_enabled"))
-                            .font(.body)
+                            .font(UIDesignSystem.Typography.body)
                             .foregroundStyle(.primary)
                         
                         Spacer()
@@ -858,31 +1788,59 @@ struct ProductionTestRulesView: View {
                     }
                     // 若产线可见固件列表尚为空，则触发一次拉取（channel=production）
                     if firmwareManager.serverItemsForProduction.isEmpty && !firmwareManager.serverItemsLoading {
-                        Task { await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: "production") }
+                        ble.appendLog("[固件] 产测 SOP 拉取 usage_type=ota_app channel=production", level: .info)
+                        Task {
+                            await firmwareManager.fetchServerFirmware(serverClient: serverClient, channel: "production")
+                            await MainActor.run {
+                                let count = firmwareManager.serverItemsForProduction.count
+                                if let err = firmwareManager.serverItemsError {
+                                    ble.appendLog("[固件] 产测 channel=production 拉取失败: \(err)", level: .error)
+                                } else {
+                                    let versions = firmwareManager.serverItemsForProduction.map(\.version).joined(separator: ", ")
+                                    ble.appendLog("[固件] 产测 channel=production 拉取成功 共\(count)条 [\(versions.isEmpty ? "无" : versions)]", level: .info)
+                                }
+                            }
+                        }
                     }
                 }
                 
-                // HW 版本
-                HStack(spacing: 12) {
+                // HW 版本（可输入 + 下拉预设）
+                HStack(spacing: UIDesignSystem.Spacing.lg) {
                     Text(appLanguage.string("production_test_rules.hardware_version_label"))
-                        .font(.body)
+                        .font(UIDesignSystem.Typography.body)
                         .foregroundStyle(.secondary)
-                        .frame(width: 100, alignment: .leading)
+                        .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
                     
-                    TextField(
-                        appLanguage.string("production_test_rules.hardware_version_placeholder"),
-                        text: $hardwareVersion
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                    .onChange(of: hardwareVersion) { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "production_test_hardware_version")
-                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    HStack(spacing: UIDesignSystem.Spacing.md) {
+                        TextField(
+                            appLanguage.string("production_test_rules.hardware_version_placeholder"),
+                            text: $hardwareVersion
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .onChange(of: hardwareVersion) { _ in
+                            hasUnsavedChanges = true
+                        }
+                        
+                        if !hardwareVersionPresets.isEmpty {
+                            Menu {
+                                ForEach(hardwareVersionPresets, id: \.self) { preset in
+                                    Button(preset) {
+                                        hardwareVersion = preset
+                                        hasUnsavedChanges = true
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: "chevron.down.circle")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .menuStyle(.borderlessButton)
+                        }
                     }
                 }
                 
                 // SN 验证提示（另起一行，小字体）
-                HStack(spacing: 6) {
+                HStack(spacing: UIDesignSystem.Spacing.sm) {
                     Image(systemName: "info.circle.fill")
                         .font(.caption2)
                         .foregroundStyle(.blue)
@@ -901,8 +1859,8 @@ struct ProductionTestRulesView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
                 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .center, spacing: 24) {
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+                    HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
                         thresholdRow(
                             label: appLanguage.string("production_test_rules.device_info_timeout"),
                             value: $deviceInfoReadTimeout,
@@ -918,7 +1876,7 @@ struct ProductionTestRulesView: View {
                         )
                     }
                     
-                    HStack(alignment: .center, spacing: 24) {
+                    HStack(alignment: .center, spacing: UIDesignSystem.Spacing.xs) {
                         thresholdRow(
                             label: appLanguage.string("production_test_rules.reconnect_timeout"),
                             value: $deviceReconnectTimeout,
@@ -930,17 +1888,135 @@ struct ProductionTestRulesView: View {
                 }
             }
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
     }
     
+
+    /// HW_REV 步骤配置：仅读取 2A27（超时与读轮询）
+    private var verifyHwRevConfigurationView: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test_rules.verify_hw_rev_title"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.hw_rev_read_timeout"),
+                value: $hwRevReadTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_hw_rev_read_timeout"
+            )
+            thresholdIntRow(
+                label: appLanguage.string("production_test_rules.hw_rev_read_poll_interval"),
+                value: $hwRevReadPollIntervalMs,
+                key: "production_test_hw_rev_read_poll_interval"
+            )
+        }
+        .padding(UIDesignSystem.Padding.md)
+    }
+
+    /// 出货区域 HW_REV（美/欧两套字符串 + 本产线 destination）
+    private var shippingHwRevRegionConfigurationView: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test_rules.shipping_hw_rev_section_title"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Text(appLanguage.string("production_test_rules.shipping_hw_rev_hint"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.shipping_destination_label"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
+                Picker("", selection: $shippingDestinationUsEu) {
+                    Text(appLanguage.string("production_test_rules.shipping_destination_us")).tag("us")
+                    Text(appLanguage.string("production_test_rules.shipping_destination_eu")).tag("eu")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 280)
+                .onChange(of: shippingDestinationUsEu) { _ in hasUnsavedChanges = true }
+            }
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.shipping_hw_rev_us_label"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
+                TextField(appLanguage.string("production_test_rules.hardware_version_placeholder"), text: $shippingHwRevUs)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .onChange(of: shippingHwRevUs) { _ in hasUnsavedChanges = true }
+            }
+            if !shippingHwRevUs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               BLEManager.normalizedProductHardwareRevision(shippingHwRevUs) == nil {
+                Text(appLanguage.string("production_test_rules.shipping_hw_rev_format_invalid"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.shipping_hw_rev_eu_label"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: UIDesignSystem.FormRow.labelWidthShort, alignment: .leading)
+                TextField(appLanguage.string("production_test_rules.hardware_version_placeholder"), text: $shippingHwRevEu)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                    .font(UIDesignSystem.Typography.monospacedCaption)
+                    .onChange(of: shippingHwRevEu) { _ in hasUnsavedChanges = true }
+            }
+            if !shippingHwRevEu.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               BLEManager.normalizedProductHardwareRevision(shippingHwRevEu) == nil {
+                Text(appLanguage.string("production_test_rules.shipping_hw_rev_format_invalid"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack(spacing: UIDesignSystem.Spacing.lg) {
+                Text(appLanguage.string("production_test_rules.hw_rev_auto_write_when_mismatch"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Toggle("", isOn: $shippingHwRevAutoWriteWhenMismatch)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .onChange(of: shippingHwRevAutoWriteWhenMismatch) { _ in hasUnsavedChanges = true }
+            }
+
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.hw_rev_read_timeout"),
+                value: $shippingHwRevReadTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_shipping_hw_rev_read_timeout"
+            )
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.hw_rev_verify_timeout"),
+                value: $shippingHwRevWriteVerifyTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_shipping_hw_rev_verify_timeout"
+            )
+            thresholdIntRow(
+                label: appLanguage.string("production_test_rules.hw_rev_verify_poll_interval"),
+                value: $shippingHwRevWriteVerifyPollIntervalMs,
+                key: "production_test_shipping_hw_rev_verify_poll_interval"
+            )
+        }
+        .padding(UIDesignSystem.Padding.md)
+    }
+
     /// RTC配置视图（步骤3）
     private var rtcConfigurationView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.rtc_time_diff"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                 thresholdRow(
                     label: appLanguage.string("production_test_rules.rtc_pass_threshold"),
                     value: $rtcTimeDiffPassThreshold,
@@ -958,9 +2034,9 @@ struct ProductionTestRulesView: View {
                     .padding(.vertical, 4)
                 
                 // RTC写入开关（靠右对齐）
-                HStack(spacing: 12) {
+                HStack(spacing: UIDesignSystem.Spacing.lg) {
                     Text(appLanguage.string("production_test_rules.rtc_write_enabled"))
-                        .font(.body)
+                        .font(UIDesignSystem.Typography.body)
                         .foregroundStyle(.primary)
                     
                     Spacer()
@@ -991,17 +2067,17 @@ struct ProductionTestRulesView: View {
                 )
             }
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
     }
     
     /// 压力配置视图（步骤4）
     private var pressureConfigurationView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
             Text(appLanguage.string("production_test_rules.pressure_thresholds"))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
                 thresholdRow(
                     label: appLanguage.string("production_test_rules.pressure_closed_min"),
                     value: $pressureClosedMin,
@@ -1030,21 +2106,19 @@ struct ProductionTestRulesView: View {
                 Divider()
                     .padding(.vertical, 4)
                 
-                // 压力差值检查
-                HStack(spacing: 12) {
+                // 压力差值检查（标签左 + 开关右）
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.pressure_diff_check"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     Toggle("", isOn: $pressureDiffCheckEnabled)
-                        .toggleStyle(.switch)
                         .labelsHidden()
+                        .toggleStyle(.switch)
                         .onChange(of: pressureDiffCheckEnabled) { newValue in
                             UserDefaults.standard.set(newValue, forKey: "production_test_pressure_diff_check_enabled")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
                         }
-                    
-                    Text(appLanguage.string("production_test_rules.pressure_diff_check"))
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                    
-                    Spacer()
                 }
                 
                 if pressureDiffCheckEnabled {
@@ -1074,46 +2148,261 @@ struct ProductionTestRulesView: View {
                     unit: appLanguage.string("production_test_rules.unit_seconds"),
                     key: "production_test_valve_open_timeout"
                 )
+                
+                Divider()
+                    .padding(.vertical, 4)
+                
+                Toggle(isOn: $pressureFailRetryConfirmEnabled) {
+                    Text(appLanguage.string("production_test_rules.pressure_fail_retry_confirm_title"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(.primary)
+                }
+                .toggleStyle(.switch)
+                .onChange(of: pressureFailRetryConfirmEnabled) { newValue in
+                    UserDefaults.standard.set(newValue, forKey: "production_test_pressure_fail_retry_confirm_enabled")
+                    NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                }
             }
         }
-        .padding(8)
+        .padding(UIDesignSystem.Padding.md)
     }
     
+    /// 屏蔽气体自检（Disable diag）步骤配置：发送后等待、是否轮询 Gas status、期望值与超时
+    private var disableDiagConfigurationView: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test_rules.disable_diag_config_title"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                Text(appLanguage.string("production_test_rules.disable_diag_poll_gas_status_enabled"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(UIDesignSystem.Foreground.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Toggle("", isOn: $disableDiagPollGasStatusEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .onChange(of: disableDiagPollGasStatusEnabled) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "production_test_disable_diag_poll_gas_status_enabled")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+            }
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.disable_diag_wait_seconds"),
+                value: $disableDiagWaitSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_disable_diag_wait_seconds"
+            )
+            
+            Divider()
+                .padding(.vertical, 4)
+            HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                Text(appLanguage.string("production_test_rules.disable_diag_expected_gas_status"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+
+                TextField("", text: $disableDiagExpectedGasStatusText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: UIDesignSystem.FormRow.numericFieldWidth)
+                    .onChange(of: disableDiagExpectedGasStatusText) { newValue in
+                        // 产测期望集合以 Apply 后的 ProductionRules 为准；此处仅同步首个数字供本地状态/导出
+                        if let first = newValue.split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " }).first,
+                           let intVal = Int(first) {
+                            disableDiagExpectedGasStatus = max(0, min(9, intVal))
+                        } else {
+                            disableDiagExpectedGasStatus = 1
+                        }
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+
+                Spacer()
+            }
+            thresholdRow(
+                label: appLanguage.string("production_test_rules.disable_diag_poll_timeout_seconds"),
+                value: $disableDiagPollTimeoutSeconds,
+                unit: appLanguage.string("production_test_rules.unit_seconds"),
+                key: "production_test_disable_diag_poll_timeout_seconds"
+            )
+            
+            Divider()
+                .padding(.vertical, 4)
+            
+            // Disable diag 后阀门检查（可开关，时间可调）：放在 wait & poll 完成之后，符合实际执行顺序
+            HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                Text(appLanguage.string("production_test_rules.disable_diag_valve_check_enabled"))
+                    .font(UIDesignSystem.Typography.body)
+                    .foregroundStyle(UIDesignSystem.Foreground.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Toggle("", isOn: $disableDiagValveCheckEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .onChange(of: disableDiagValveCheckEnabled) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "production_test_disable_diag_valve_check_enabled")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+            }
+            if disableDiagValveCheckEnabled {
+                timeThresholdRow(
+                    label: appLanguage.string("production_test_rules.disable_diag_valve_check_settle_seconds"),
+                    value: $disableDiagValveCheckSettleSeconds,
+                    unit: appLanguage.string("production_test_rules.unit_seconds"),
+                    key: "production_test_disable_diag_valve_check_settle_seconds"
+                )
+                .padding(.leading, 32)
+                timeThresholdRow(
+                    label: appLanguage.string("production_test_rules.disable_diag_valve_check_pressure_read_delay_seconds"),
+                    value: $disableDiagValveCheckPressureReadDelaySeconds,
+                    unit: appLanguage.string("production_test_rules.unit_seconds"),
+                    key: "production_test_disable_diag_valve_check_pressure_read_delay_seconds"
+                )
+                .padding(.leading, 32)
+            }
+        }
+        .padding(UIDesignSystem.Padding.md)
+    }
     
-    private var notesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(appLanguage.string("production_test_rules.notes_title"))
-                .font(.headline)
+    /// 气体泄漏检测（关阀压力）步骤配置视图（气路/关阀确认 → Phase 1/3 参数 → Phase 4）
+    private var gasLeakClosedConfigurationView: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            // Phase 1 前确认、Phase 2 前确认、Phase 1/3 时长与判定参数（gasLeakConfigView 内已按执行顺序）
+            gasLeakConfigView(
+                preCloseDuration: $gasLeakClosedPreCloseDurationSeconds,
+                postCloseDuration: $gasLeakClosedPostCloseDurationSeconds,
+                intervalSeconds: $gasLeakClosedIntervalSeconds,
+                dropThresholdMbar: $gasLeakClosedDropThresholdMbar,
+                startPressureMinMbar: $gasLeakClosedStartPressureMinMbar,
+                limitSource: $gasLeakClosedLimitSource,
+                limitFloorBar: Binding(
+                    get: { gasLeakClosedLimitFloorBar * 1000 },
+                    set: { mbar in
+                        let bar = max(0, mbar / 1000)
+                        gasLeakClosedLimitFloorBar = bar
+                        UserDefaults.standard.set(bar, forKey: "production_test_gas_leak_closed_limit_floor_bar")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+                ),
+                requirePipelineReadyConfirm: $gasLeakClosedRequirePipelineReadyConfirm,
+                requireValveClosedConfirm: $gasLeakClosedRequireValveClosedConfirm,
+                keyPrefix: "production_test_gas_leak_closed"
+            )
+            Divider()
+                .padding(.vertical, 4)
+            // Phase 4（Phase 3 通过后开阀泄压检测）
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.gas_leak_closed_phase4_enabled"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Toggle("", isOn: $gasLeakClosedPhase4Enabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: gasLeakClosedPhase4Enabled) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "production_test_gas_leak_closed_phase4_enabled")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                }
+                Text(appLanguage.string("production_test_rules.gas_leak_closed_phase4_title"))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+                    thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_monitor_duration"), value: $gasLeakClosedPhase4MonitorDurationSeconds, key: "production_test_gas_leak_closed_phase4_monitor_duration_seconds")
+                    thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_drop_within"), value: $gasLeakClosedPhase4DropWithinSeconds, key: "production_test_gas_leak_closed_phase4_drop_within_seconds")
+                    thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_closed_phase4_pressure_below"), value: $gasLeakClosedPhase4PressureBelowMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "production_test_gas_leak_closed_phase4_pressure_below_mbar")
+                }
+                .padding(UIDesignSystem.Padding.md)
+            }
+        }
+    }
+    
+    /// 气体泄漏检测通用配置视图（供开阀/关阀两个步骤复用）
+    private func gasLeakConfigView(
+        preCloseDuration: Binding<Int>,
+        postCloseDuration: Binding<Int>,
+        intervalSeconds: Binding<Double>,
+        dropThresholdMbar: Binding<Double>,
+        startPressureMinMbar: Binding<Double>,
+        limitSource: Binding<String>,
+        limitFloorBar: Binding<Double>,
+        requirePipelineReadyConfirm: Binding<Bool>,
+        requireValveClosedConfirm: Binding<Bool>,
+        keyPrefix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            Text(appLanguage.string("production_test_rules.gas_leak_params_title"))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
             
-            VStack(alignment: .leading, spacing: 8) {
-                noteItem(appLanguage.string("production_test_rules.note1"))
-                noteItem(appLanguage.string("production_test_rules.note2"))
-                noteItem(appLanguage.string("production_test_rules.note3"))
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+                // 按执行顺序：Phase 1 前确认 → Phase 2 前确认 → Phase 1/3 时长与判定参数
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.gas_leak_require_pipeline_ready_confirm"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Toggle("", isOn: requirePipelineReadyConfirm)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: requirePipelineReadyConfirm.wrappedValue) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_pipeline_ready_confirm")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                }
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.gas_leak_require_valve_closed_confirm"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Toggle("", isOn: requireValveClosedConfirm)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: requireValveClosedConfirm.wrappedValue) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_valve_closed_confirm")
+                            NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                        }
+                }
+                Divider().padding(.vertical, 4)
+                thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_pre_close_duration"), value: preCloseDuration, key: "\(keyPrefix)_pre_close_duration_seconds")
+                thresholdIntRow(label: appLanguage.string("production_test_rules.gas_leak_post_close_duration"), value: postCloseDuration, key: "\(keyPrefix)_post_close_duration_seconds")
+                // 采样间隔允许两位小数（例如 0.75）
+                timeThresholdRow(label: appLanguage.string("production_test_rules.gas_leak_interval"), value: intervalSeconds, unit: appLanguage.string("production_test_rules.unit_seconds"), key: "\(keyPrefix)_interval_seconds")
+                thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_drop_threshold_mbar"), value: dropThresholdMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_drop_threshold_mbar")
+                thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_start_pressure_min"), value: startPressureMinMbar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_start_pressure_min_mbar")
+                HStack(spacing: UIDesignSystem.FormRow.rowSpacing) {
+                    Text(appLanguage.string("production_test_rules.gas_leak_limit_source_title"))
+                        .font(UIDesignSystem.Typography.body)
+                        .foregroundStyle(UIDesignSystem.Foreground.primary)
+                        .frame(width: UIDesignSystem.FormRow.labelWidth, alignment: .leading)
+                    Picker("", selection: limitSource) {
+                        Text(appLanguage.string("production_test_rules.gas_leak_limit_source_phase1_avg")).tag("phase1_avg")
+                        Text(appLanguage.string("production_test_rules.gas_leak_limit_source_phase3_first")).tag("phase3_first")
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(minWidth: UIDesignSystem.FormRow.pickerMinWidth, alignment: .leading)
+                    .onChange(of: limitSource.wrappedValue) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_limit_source")
+                        NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
+                    }
+                }
+                VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+                    thresholdRow(label: appLanguage.string("production_test_rules.gas_leak_limit_floor_bar"), value: limitFloorBar, unit: appLanguage.string("production_test_rules.unit_mbar"), key: "\(keyPrefix)_limit_floor_bar")
+                    Text(appLanguage.string("production_test_rules.gas_leak_limit_floor_bar_hint"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(UIDesignSystem.Padding.md)
     }
     
-    private func noteItem(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .padding(.top, 2)
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
 }
 
 #Preview {
-    ProductionTestRulesView(ble: BLEManager(), firmwareManager: FirmwareManager.shared)
+    ProductionTestRulesView(firmwareManager: FirmwareManager.shared)
         .environmentObject(AppLanguage())
+        .environmentObject(BLEManager())
         .frame(width: 720, height: 500)
 }

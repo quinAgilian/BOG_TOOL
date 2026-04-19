@@ -1,0 +1,223 @@
+{
+  "environment" : {
+    "ble_scan" : {
+      "min_rssi_dbm" : -60,
+      "name_blacklist_keywords" : [
+        "mac",
+        "iphone"
+      ],
+      "name_whitelist_enabled" : true,
+      "name_whitelist_keywords" : [
+        "CO2",
+        "BOG"
+      ],
+      "rssi_filter_enabled" : false
+    }
+  },
+  "global" : {
+    "failure_policy" : {
+      "fatal_default" : [
+        "step_verify_firmware"
+      ],
+      "overrides" : {
+        "step_disable_diag" : true,
+        "step_gas_leak_closed" : true,
+        "step_gas_system_status" : true,
+        "step_hw_rev_shipping_region" : true,
+        "step_read_pressure" : true,
+        "step_read_rtc" : true,
+        "step_valve" : true
+      }
+    },
+    "skip_factory_reset_and_disconnect_on_fail" : true,
+    "step_interval_ms" : 50
+  },
+  "meta" : {
+    "author" : "",
+    "created_at" : "",
+    "notes" : "",
+    "project_name" : "BOG-P02",
+    "updated_at" : ""
+  },
+  "rules_version" : "BOG-SOP-2026.03",
+  "schema_version" : 1,
+  "steps" : [
+    {
+      "config" : {
+        "bluetooth_permission_wait_seconds" : 0,
+        "device_reconnect_timeout_seconds" : 5
+      },
+      "enabled" : true,
+      "id" : "step_connect",
+      "order" : 1
+    },
+    {
+      "config" : {
+        "allowed_bootloader_versions" : [
+          "2"
+        ],
+        "allowed_firmware_versions" : [
+          "1.1.3"
+        ],
+        "allowed_hardware_versions" : [
+          "P02V02R01"
+        ],
+        "device_info_read_timeout_seconds" : 3,
+        "firmware_upgrade_enabled" : false
+      },
+      "enabled" : true,
+      "id" : "step_verify_firmware",
+      "order" : 2
+    },
+    {
+      "config" : {
+        "read_timeout_seconds" : 3,
+        "write_verify_poll_interval_ms" : 150
+      },
+      "enabled" : true,
+      "id" : "step_verify_hw_rev",
+      "order" : 3
+    },
+    {
+      "config" : {
+        "auto_write_when_mismatch" : true,
+        "read_timeout_seconds" : 3,
+        "shipping_destination" : "us",
+        "shipping_hw_rev_eu" : "P02V02R01",
+        "shipping_hw_rev_us" : "P02V02R02",
+        "write_verify_poll_interval_ms" : 150,
+        "write_verify_timeout_seconds" : 5
+      },
+      "enabled" : true,
+      "fatal_on_failure" : true,
+      "id" : "step_hw_rev_shipping_region",
+      "order" : 4
+    },
+    {
+      "config" : {
+        "fail_threshold_seconds" : 5,
+        "pass_threshold_seconds" : 2,
+        "read_timeout_seconds" : 2,
+        "write_enabled" : true,
+        "write_retry_count" : 3
+      },
+      "enabled" : true,
+      "fatal_on_failure" : true,
+      "id" : "step_read_rtc",
+      "order" : 5
+    },
+    {
+      "config" : {
+        "expected_gas_status_values" : [
+          0,
+          1
+        ],
+        "poll_enabled" : true,
+        "poll_interval_ms" : 150,
+        "poll_timeout_seconds" : 3,
+        "valve_check_enabled" : true,
+        "valve_check_pressure_read_delay_seconds" : 0.6,
+        "valve_check_settle_seconds" : 0.5,
+        "wait_seconds" : 2
+      },
+      "enabled" : true,
+      "fatal_on_failure" : true,
+      "id" : "step_disable_diag",
+      "order" : 6
+    },
+    {
+      "config" : {
+        "closed_max_mbar" : 1350,
+        "closed_min_mbar" : 850,
+        "diff_check_enabled" : true,
+        "diff_max_mbar" : 400,
+        "diff_min_mbar" : 0,
+        "fail_retry_confirm_enabled" : true,
+        "open_max_mbar" : 1500,
+        "open_min_mbar" : 850,
+        "pressure_read_poll_interval_ms" : 100,
+        "pressure_read_timeout_seconds" : 2.5,
+        "pressure_retry_read_poll_interval_ms" : 50,
+        "pressure_retry_read_timeout_seconds" : 0.3
+      },
+      "enabled" : true,
+      "fatal_on_failure" : true,
+      "id" : "step_read_pressure",
+      "order" : 7
+    },
+    {
+      "config" : {
+        "expected_gas_status_values" : [
+          0,
+          1
+        ]
+      },
+      "enabled" : true,
+      "fatal_on_failure" : true,
+      "id" : "step_gas_system_status",
+      "order" : 8
+    },
+    {
+      "config" : {
+        "drop_threshold_mbar" : 15,
+        "interval_seconds" : 0.5,
+        "limit_floor_bar" : 0,
+        "limit_source" : "phase3_first",
+        "phase4_drop_within_seconds" : 15,
+        "phase4_enabled" : true,
+        "phase4_monitor_duration_seconds" : 5,
+        "phase4_pressure_below_mbar" : 0,
+        "post_close_duration_seconds" : 4,
+        "pre_close_duration_seconds" : 3,
+        "require_pipeline_ready_confirm" : false,
+        "require_valve_closed_confirm" : true,
+        "start_pressure_min_mbar" : 0
+      },
+      "enabled" : true,
+      "fatal_on_failure" : true,
+      "id" : "step_gas_leak_closed",
+      "order" : 9
+    },
+    {
+      "config" : {
+        "open_timeout_seconds" : 5
+      },
+      "enabled" : true,
+      "fatal_on_failure" : true,
+      "id" : "step_valve",
+      "order" : 10
+    },
+    {
+      "config" : {
+        "ota_start_wait_timeout_seconds" : 5
+      },
+      "enabled" : true,
+      "id" : "step_ota",
+      "order" : 11
+    },
+    {
+      "config" : {
+
+      },
+      "enabled" : false,
+      "id" : "step_reset",
+      "order" : 12
+    },
+    {
+      "config" : {
+
+      },
+      "enabled" : true,
+      "id" : "step_factory_reset",
+      "order" : 13
+    },
+    {
+      "config" : {
+
+      },
+      "enabled" : true,
+      "id" : "step_disconnect",
+      "order" : 14
+    }
+  ]
+}
