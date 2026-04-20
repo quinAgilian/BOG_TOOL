@@ -24,7 +24,7 @@ struct TestStep: Identifiable, Equatable {
     static let readPressure = TestStep(id: "step_read_pressure", key: "step4", isLocked: false, enabled: true)
     /// 屏蔽系统气体自检：向 co2PressureLimits 写入 12 个 0x00（与 Debug 区「Disable diag」共用 BLEManager.writeCo2PressureLimitsZeros）
     static let disableDiag = TestStep(id: "step_disable_diag", key: "step_disable_diag", isLocked: false, enabled: true)
-    /// 读取 Gas system status（0 initially closed, 1 ok, 2 leak…；产测要求 1 ok）
+    /// 读取 Gas system status（0 initially closed, 1 ok, 2 leak…；按规则允许集合判定，运行时会与 Disable diag 期望集合做并集）
     static let readGasSystemStatus = TestStep(id: "step_gas_system_status", key: "step_gas_system_status", isLocked: false, enabled: true)
     /// 气体泄漏检测（关阀压力）
     static let gasLeakClosed = TestStep(id: "step_gas_leak_closed", key: "step_gas_leak_closed", isLocked: false, enabled: true)

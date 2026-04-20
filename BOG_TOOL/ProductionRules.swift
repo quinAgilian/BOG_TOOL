@@ -108,7 +108,7 @@ struct ProductionRules: Codable, Equatable {
             var pressureRetryReadTimeoutSeconds: Double?
             var pressureRetryReadPollIntervalMs: Int?
 
-            // step_disable_diag、step_gas_system_status 均可用 expected_gas_status_values（后者未配置时产测默认仅允许 1）
+            // step_disable_diag、step_gas_system_status 均可用 expected_gas_status_values；加载产测阈值时「读 Gas status」步的允许集合会与 disable_diag 的期望做并集，避免两步配置不一致
             var waitSeconds: Double?
             var expectedGasStatusValues: [Int]?
             var pollTimeoutSeconds: Double?
