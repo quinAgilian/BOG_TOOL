@@ -30,7 +30,6 @@
 		A1000021 /* ProductionTestRulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000021 /* ProductionTestRulesView.swift */; };
 		A1000022 /* UIDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000022 /* UIDesignSystem.swift */; };
 		A1000023 /* FirmwareManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000023 /* FirmwareManager.swift */; };
-		A1000024 /* FirmwareManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024 /* FirmwareManagerView.swift */; };
 		A1000025 /* ServerSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025 /* ServerSettings.swift */; };
 		A1000026 /* ServerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* ServerModels.swift */; };
 		A1000027 /* ServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* ServerClient.swift */; };
@@ -63,7 +62,6 @@
 		A2000021 /* ProductionTestRulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionTestRulesView.swift; sourceTree = "<group>"; };
 		A2000022 /* UIDesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIDesignSystem.swift; sourceTree = "<group>"; };
 		A2000023 /* FirmwareManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareManager.swift; sourceTree = "<group>"; };
-		A2000024 /* FirmwareManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareManagerView.swift; sourceTree = "<group>"; };
 		A2000025 /* ServerSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettings.swift; sourceTree = "<group>"; };
 		A2000026 /* ServerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerModels.swift; sourceTree = "<group>"; };
 		A2000027 /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
@@ -121,7 +119,6 @@
 				A2000018 /* GattProtocolView.swift */,
 				A2000019 /* OTASectionView.swift */,
 				A2000020 /* UUIDDebugView.swift */,
-				A2000024 /* FirmwareManagerView.swift */,
 				A2000005 /* ProductionTestView.swift */,
 				A2000021 /* ProductionTestRulesView.swift */,
 			);
@@ -281,7 +278,6 @@
 				A1000016 /* AppLanguage.swift in Sources */,
 				A1000022 /* UIDesignSystem.swift in Sources */,
 				A1000023 /* FirmwareManager.swift in Sources */,
-				A1000024 /* FirmwareManagerView.swift in Sources */,
 				A1000025 /* ServerSettings.swift in Sources */,
 				546474FA2F685E990015B05B /* ProductionRulesStore.swift in Sources */,
 				A1000026 /* ServerModels.swift in Sources */,

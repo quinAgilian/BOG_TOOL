@@ -608,12 +608,9 @@
 
 /* 固件管理 */
 "firmware_manager.title" = "固件管理";
-"firmware_manager.add" = "新增固件";
 "firmware_manager.close" = "关闭";
-"firmware_manager.empty" = "暂无固件，请点击「新增固件」添加。";
 "firmware_manager.version" = "版本";
 "firmware_manager.path" = "路径";
-"firmware_manager.select_file" = "选择固件文件";
 "firmware_manager.debug_target" = "目标固件（Debug OTA）";
 "firmware_manager.sop_version" = "产测按 SOP 期望版本自动选择";
 

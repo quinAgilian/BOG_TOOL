@@ -595,12 +595,9 @@
 
 /* 固件管理 */
 "firmware_manager.title" = "Firmware Manager";
-"firmware_manager.add" = "Add Firmware";
 "firmware_manager.close" = "Close";
-"firmware_manager.empty" = "No firmware yet. Click \"Add Firmware\" to add.";
 "firmware_manager.version" = "Version";
 "firmware_manager.path" = "Path";
-"firmware_manager.select_file" = "Select firmware file";
 "firmware_manager.debug_target" = "Target firmware (Debug OTA)";
 "firmware_manager.sop_version" = "Production test selects by SOP expected version";
 
