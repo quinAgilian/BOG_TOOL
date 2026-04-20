@@ -87,6 +87,7 @@ private let actionButtonWidth: CGFloat = UIDesignSystem.Component.actionButtonWi
 /// Debug 模式：RTC / 阀门 / 压力 区域 + 原有电磁阀与设备 RTC
 struct DebugModeView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
+    @EnvironmentObject private var serverSettings: ServerSettings
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     /// 手动模式复选框状态（false=auto, true=manual）
@@ -364,6 +365,69 @@ struct DebugModeView: View {
 
     // MARK: - 设备标识（SN / HW_REV，Dev Access 写 HW）
 
+    private var bogToolVersionPayloadStringForReport: String? {
+        let shortVer = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let buildVer = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !shortVer.isEmpty else { return nil }
+        return buildVer.isEmpty ? shortVer : "\(shortVer) (\(buildVer))"
+    }
+
+    private func reportHardwareRevisionChangeDebug(
+        previousHardwareRevision: String?,
+        newHardwareRevision: String,
+        changeSuccess: Bool,
+        failureReason: String?
+    ) {
+        guard serverSettings.uploadToServerEnabled, let client = serverSettings.serverClient else { return }
+        let sn = ble.deviceSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !sn.isEmpty else { return }
+
+        let newTrim = newHardwareRevision.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newTrim.isEmpty else { return }
+        let newNorm = BLEManager.normalizedProductHardwareRevision(newTrim) ?? newTrim
+
+        let prevNorm: String? = {
+            guard let p = previousHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty else { return nil }
+            return BLEManager.normalizedProductHardwareRevision(p) ?? p
+        }()
+
+        if changeSuccess, prevNorm == newNorm { return }
+
+        var body: [String: Any] = [
+            "deviceSerialNumber": sn,
+            "newHardwareRevision": newNorm,
+            "changeSuccess": changeSuccess,
+            "source": "debug",
+        ]
+        if let pv = prevNorm { body["previousHardwareRevision"] = pv }
+        if let fr = failureReason?.trimmingCharacters(in: .whitespacesAndNewlines), !fr.isEmpty {
+            body["failureReason"] = fr
+        }
+        if let bog = bogToolVersionPayloadStringForReport {
+            body["bogToolVersion"] = bog
+        }
+
+        Task {
+            do {
+                try await client.uploadHardwareRevisionChangeRecord(body: body)
+            } catch {
+                serverSettings.savePendingHardwareRevisionChange(body: body)
+            }
+        }
+    }
+
+    private func devAccessFailureReason(_ result: BLEManager.DevAccessMetadataResult) -> String {
+        switch result {
+        case .completed: return ""
+        case .emptyValue: return "empty_value"
+        case .invalidFormat: return "invalid_format"
+        case .notReady: return "not_ready"
+        case .rejectedByVersion: return "rejected_by_version"
+        }
+    }
+
     /// 手动输入的硬件版本：合法时为大写 `P##V##R##`，否则 nil（空输入亦为 nil）
     private var normalizedHardwareRevisionDraft: String? {
         BLEManager.normalizedProductHardwareRevision(hardwareRevisionDraft)
@@ -441,7 +505,60 @@ struct DebugModeView: View {
                         guard let toApply = normalizedHardwareRevisionDraft else { return }
                         isApplyingHardwareRevision = true
                         Task {
-                            _ = await ble.sendDevAccessChangeHardwareRevision(to: toApply)
+                            let prevNorm: String? = {
+                                let raw = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard let r = raw, !r.isEmpty else { return nil }
+                                return BLEManager.normalizedProductHardwareRevision(r) ?? r
+                            }()
+
+                            let writeResult = await ble.sendDevAccessChangeHardwareRevision(to: toApply)
+                            switch writeResult {
+                            case .completed:
+                                break
+                            default:
+                                reportHardwareRevisionChangeDebug(
+                                    previousHardwareRevision: prevNorm,
+                                    newHardwareRevision: toApply,
+                                    changeSuccess: false,
+                                    failureReason: devAccessFailureReason(writeResult)
+                                )
+                                await MainActor.run { isApplyingHardwareRevision = false }
+                                return
+                            }
+
+                            let pollNs: UInt64 = 200_000_000
+                            let timeoutSeconds: Double = 5.0
+                            var elapsed: Double = 0
+                            var readbackOk = false
+                            while elapsed < timeoutSeconds {
+                                let gotNorm = ble.deviceHardwareRevision
+                                    .flatMap { BLEManager.normalizedProductHardwareRevision($0) }
+                                let gotRaw = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let got = gotNorm ?? gotRaw
+                                if got == toApply {
+                                    readbackOk = true
+                                    break
+                                }
+                                ble.refreshDeviceInformationSerialAndHardware()
+                                try? await Task.sleep(nanoseconds: pollNs)
+                                elapsed += 0.2
+                            }
+
+                            if readbackOk {
+                                reportHardwareRevisionChangeDebug(
+                                    previousHardwareRevision: prevNorm,
+                                    newHardwareRevision: toApply,
+                                    changeSuccess: true,
+                                    failureReason: nil
+                                )
+                            } else {
+                                reportHardwareRevisionChangeDebug(
+                                    previousHardwareRevision: prevNorm,
+                                    newHardwareRevision: toApply,
+                                    changeSuccess: false,
+                                    failureReason: "readback_timeout"
+                                )
+                            }
                             await MainActor.run { isApplyingHardwareRevision = false }
                         }
                     } label: {

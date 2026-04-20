@@ -147,7 +147,7 @@ final class ServerSettings: ObservableObject {
         return dir.appendingPathComponent(Self.pendingUploadsFileName)
     }
 
-    /// 从磁盘读取待重传列表；每项为 ["recordType": "production_test"|"firmware_upgrade", "body": ...]，旧格式无 recordType 则视为 production_test
+    /// 从磁盘读取待重传列表；每项为 ["recordType": "production_test"|"firmware_upgrade"|"hardware_revision_change", "body": ...]，旧格式无 recordType 则视为 production_test
     private func loadPendingFromFile() -> [[String: Any]] {
         guard let url = pendingUploadsFileURL,
               FileManager.default.fileExists(atPath: url.path),
@@ -173,6 +173,11 @@ final class ServerSettings: ObservableObject {
     /// 失败落盘：将 OTA 固件升级记录追加到待重传列表
     func savePendingFirmwareUpgrade(body: [String: Any]) {
         savePendingItem(recordType: "firmware_upgrade", body: body)
+    }
+
+    /// 失败落盘：HW_REV 变更记录待重传
+    func savePendingHardwareRevisionChange(body: [String: Any]) {
+        savePendingItem(recordType: "hardware_revision_change", body: body)
     }
 
     private func savePendingItem(recordType: String, body: [String: Any]) {
@@ -219,6 +224,8 @@ final class ServerSettings: ObservableObject {
                 do {
                     if recordType == "firmware_upgrade" {
                         try await client.uploadFirmwareUpgradeRecord(body: body)
+                    } else if recordType == "hardware_revision_change" {
+                        try await client.uploadHardwareRevisionChangeRecord(body: body)
                     } else {
                         try await client.uploadProductionTest(body: body)
                     }

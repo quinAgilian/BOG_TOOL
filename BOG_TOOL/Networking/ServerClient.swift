@@ -5,6 +5,7 @@ import Foundation
 protocol ServerClientProtocol: AnyObject {
     func uploadProductionTest(body: [String: Any]) async throws
     func uploadFirmwareUpgradeRecord(body: [String: Any]) async throws
+    func uploadHardwareRevisionChangeRecord(body: [String: Any]) async throws
     func performHealthCheck() async -> (reachable: Bool, latencyMs: Double?)
     func listFirmware(usageType: String?, channel: String?) async throws -> [ServerFirmwareItem]
     func downloadFirmware(id: String) async throws -> Data
@@ -29,6 +30,12 @@ final class ServerClient: ObservableObject, ServerClientProtocol {
         guard let settings = serverSettings else { return nil }
         let base = settings.effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return URL(string: base + ServerAPI.firmwareUpgradeRecord)
+    }
+
+    private var hardwareRevisionRecordURL: URL? {
+        guard let settings = serverSettings else { return nil }
+        let base = settings.effectiveBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return URL(string: base + ServerAPI.hardwareRevisionRecord)
     }
 
     private func firmwareListURL(usageType: String?, channel: String?) -> URL? {
@@ -93,7 +100,16 @@ final class ServerClient: ObservableObject, ServerClientProtocol {
     }
 
     func uploadFirmwareUpgradeRecord(body: [String: Any]) async throws {
-        guard let url = firmwareUpgradeURL else {
+        try await postJSON(body: body, url: firmwareUpgradeURL)
+    }
+
+    func uploadHardwareRevisionChangeRecord(body: [String: Any]) async throws {
+        try await postJSON(body: body, url: hardwareRevisionRecordURL)
+    }
+
+    /// 与产测上报、OTA / HW 上报共用：POST JSON，带重试。
+    private func postJSON(body: [String: Any], url: URL?) async throws {
+        guard let url = url else {
             throw ServerClientError.missingConfiguration
         }
         guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
@@ -121,6 +137,8 @@ final class ServerClient: ObservableObject, ServerClientProtocol {
                 } else {
                     throw ServerClientError.serverError(statusCode: code, retriable: true)
                 }
+            } catch let err as ServerClientError {
+                throw err
             } catch {
                 let retriable = Self.isRetriableNetworkError(error)
                 if retriable && attempt < maxAttempts {
