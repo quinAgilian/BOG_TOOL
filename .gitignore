@@ -146,4 +146,5 @@ entities.json
 /release/
 # Xcode 导出 / 本地分发拷贝（勿提交）
 /deploy/
+/BOG_TOOL 20*/
 gas_leak_20260306_154906.csv
