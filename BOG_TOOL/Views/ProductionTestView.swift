@@ -1278,6 +1278,15 @@ struct ProductionTestView: View {
         guard let _ = requireStepConfig(rulesById, TestStep.gasLeakClosed.id, &issues) else { throw StrictRulesError.missingItems(issues) }
         let skipFactoryResetAndDisconnectOnFail = rules.global.skipFactoryResetAndDisconnectOnFail
 
+        let gasStatusClamped = gasStatusExpectedValues.map { max(0, min(9, $0)) }
+        let disableDiagGasClamped = disableDiagExpectedGasStatuses.map { max(0, min(9, $0)) }
+        let gasSystemStatusMerged = Array(Set(gasStatusClamped + disableDiagGasClamped)).sorted()
+        let gasSystemStatusGasOnlySet = Set(gasStatusClamped)
+        let gasSystemStatusMergedSet = Set(gasSystemStatusMerged)
+        if gasSystemStatusMergedSet.isStrictSuperset(of: gasSystemStatusGasOnlySet) {
+            ble.appendLog("[Rules] step_gas_system_status 允许集合已与 step_disable_diag.expected_gas_status_values 合并为 [\(gasSystemStatusMerged.map(String.init).joined(separator: ","))]", level: .debug)
+        }
+
         let thresholds = TestThresholds(
             stepIntervalMs: rules.global.stepIntervalMs,
             bluetoothPermissionWaitSeconds: bluetoothPermissionWaitSeconds,
@@ -1323,7 +1332,7 @@ struct ProductionTestView: View {
             pressureReadPollIntervalMs: pressureReadPollIntervalMs,
             pressureRetryReadTimeoutSeconds: pressureRetryReadTimeoutSeconds,
             pressureRetryReadPollIntervalMs: pressureRetryReadPollIntervalMs,
-            gasSystemStatusExpectedValues: gasStatusExpectedValues.map { max(0, min(9, $0)) }
+            gasSystemStatusExpectedValues: gasSystemStatusMerged
         )
 
         // 4. 每步「失败时是否终止产测」：优先 step.fatalOnFailure，否则沿用 global.failurePolicy

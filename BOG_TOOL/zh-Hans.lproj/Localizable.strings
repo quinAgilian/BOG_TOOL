@@ -354,7 +354,7 @@
 "production_test_rules.disable_diag_config_title" = "Disable diag（发送后等待与轮询）";
 "production_test_rules.disable_diag_wait_seconds" = "发送后等待时间";
 "production_test_rules.disable_diag_poll_gas_status_enabled" = "轮询 Gas 状态直至期望值";
-"production_test_rules.disable_diag_expected_gas_status" = "期望 Gas 状态值（0–9，1=ok）";
+"production_test_rules.disable_diag_expected_gas_status" = "期望 Gas 状态集合（0–9，1=ok）";
 "production_test_rules.disable_diag_poll_timeout_seconds" = "轮询 Gas 状态超时（秒）";
 "production_test_rules.disable_diag_valve_check_enabled" = "禁用自检后阀门检查";
 "production_test_rules.disable_diag_valve_check_settle_seconds" = "阀门稳定等待（秒）";
@@ -362,9 +362,9 @@
 "production_test_rules.step_gas_system_status_title" = "读取 Gas system status";
 "production_test_rules.gas_status_read_timeout" = "Gas system status: 读取超时或无效";
 "production_test_rules.gas_status_pass" = "Gas system status: %@";
-"production_test_rules.gas_status_fail_expected" = "Gas system status: %@，期望 1 (ok)";
-"production_test_rules.step_gas_system_status_desc" = "读取气体系统状态并解码，须为 1 (ok) 才通过。";
-"production_test_rules.step_gas_system_status_criteria" = "✓ 通过：Gas system status = 1 (ok)。✗ 失败：非 1（如 0 initially closed、2 leak 等）。";
+"production_test_rules.gas_status_fail_expected" = "Gas system status: %@，不在允许集合内";
+"production_test_rules.step_gas_system_status_desc" = "读取气体系统状态并按 SOP 的允许码集合判定；运行时会与 Disable diag 的期望集合并集后校验。";
+"production_test_rules.step_gas_system_status_criteria" = "✓ 通过：Gas system status 码在允许集合内。✗ 失败：不在允许集合内。";
 "production_test_rules.step_gas_leak_title" = "气体泄漏检测";
 "production_test_rules.step_gas_leak_desc" = "引入 Debug 模式方法：关阀前/关阀后连续采样，按压降阈值判定是否泄漏。";
 "production_test_rules.step_gas_leak_criteria" = "✓ 通过：Phase 1 平均压力 − Phase 3 最低压力 ≤ 压降阈值。✗ 失败：压降超过阈值判定为泄漏。";
