@@ -1,6 +1,6 @@
 # UUID 读写区域 · 服务/特征对照检查
 
-基于 **GattServices 2026-03-26_111538.xlsx**（Overview 表）与 **BOG_TOOL/Config/GattServices.json** 对照。
+基于 **`BOG_TOOL/Config/GattServicesSources/GattServices 2026-03-26_111538.xlsx`**（Overview 表）与 **`BOG_TOOL/Config/GattServices.json`** 对照。
 
 ---
 

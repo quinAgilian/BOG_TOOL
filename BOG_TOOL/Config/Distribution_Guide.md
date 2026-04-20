@@ -10,7 +10,7 @@
 
 ```bash
 cd /path/to/BOG_TOOL
-./deploy_to_other_mac.sh
+./scripts/deploy_to_other_mac.sh
 ```
 
 脚本会：Archive（Release、通用架构）→ 签名（有 Developer ID 则用，无则 ad-hoc）→ 输出到 **`Deploy/BOG Tool.app`**。把该 app 拷到另一台 Mac（U 盘 / AirDrop / 网盘）即可。
@@ -21,7 +21,7 @@ cd /path/to/BOG_TOOL
 若另一台 Mac 已通过 USB-C 目标磁盘模式挂载到本机，可直接拷贝到其「应用程序」：
 
 ```bash
-./deploy_to_other_mac.sh /Volumes/另一台Mac的卷名
+./scripts/deploy_to_other_mac.sh /Volumes/另一台Mac的卷名
 ```
 
 ---

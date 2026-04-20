@@ -2,20 +2,21 @@
 # 使用 Xcode Archive + Developer ID 签名（可选公证），输出到 Deploy，对方 Mac 可直接双击打开。
 # 若另一台 Mac 通过 USB-C 目标磁盘模式挂载，可传入其卷路径直接拷贝过去。
 #
-# 用法：
-#   ./deploy_to_other_mac.sh                    # 仅打包并签名，输出到 Deploy
-#   NOTARIZE=1 ./deploy_to_other_mac.sh         # 同上，并提交公证（需先配置 notarytool）
-#   ./deploy_to_other_mac.sh /Volumes/MacBook   # 拷贝到另一台 Mac 的卷
+# 用法（在仓库根目录执行）：
+#   ./scripts/deploy_to_other_mac.sh                    # 仅打包并签名，输出到 Deploy
+#   NOTARIZE=1 ./scripts/deploy_to_other_mac.sh         # 同上，并提交公证（需先配置 notarytool）
+#   ./scripts/deploy_to_other_mac.sh /Volumes/MacBook   # 拷贝到另一台 Mac 的卷
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 SCHEME="BOG_TOOL"
-ARCHIVE_DIR="$SCRIPT_DIR/build"
+ARCHIVE_DIR="$REPO_ROOT/build"
 ARCHIVE_PATH="$ARCHIVE_DIR/BOG_TOOL.xcarchive"
 APP_NAME="BOG Tool.app"
-DEPLOY_DIR="$SCRIPT_DIR/Deploy"
-ENTITLEMENTS="$SCRIPT_DIR/BOG_TOOL/BOG_TOOL.entitlements"
+DEPLOY_DIR="$REPO_ROOT/Deploy"
+ENTITLEMENTS="$REPO_ROOT/BOG_TOOL/BOG_TOOL.entitlements"
 DEST_VOLUME="$1"
 
 # 自动检测 Developer ID Application 证书（可设置环境变量 DEVELOPER_ID_IDENTITY 指定）
@@ -76,7 +77,7 @@ if [[ "$NOTARIZE" == "1" && "$USE_DEV_ID" == "1" ]]; then
   else
     echo "公证未执行或失败。若未配置 notarytool，请先运行："
     echo "  xcrun notarytool store --apple-id 你的AppleID --team-id 你的TeamID --password 应用专用密码 --profile AC_PASSWORD"
-    echo "然后重新执行： NOTARIZE=1 ./deploy_to_other_mac.sh"
+    echo "然后重新执行： NOTARIZE=1 ./scripts/deploy_to_other_mac.sh"
   fi
   rm -f "$ZIP_PATH"
 fi
@@ -114,7 +115,7 @@ else
   echo ""
   echo "拷贝方式：AirDrop / USB-C 目标磁盘 等。"
   if [[ "$USE_DEV_ID" == "1" ]]; then
-    echo "对方收到后可直接双击打开。若希望完全无提示可公证： NOTARIZE=1 ./deploy_to_other_mac.sh"
+    echo "对方收到后可直接双击打开。若希望完全无提示可公证： NOTARIZE=1 ./scripts/deploy_to_other_mac.sh"
   else
     echo "对方 Mac 首次打开前：终端执行 xattr -cr \"/Applications/BOG Tool.app\"，再右键 BOG Tool.app →「打开」。"
   fi

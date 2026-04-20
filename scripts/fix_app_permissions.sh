@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 修复应用权限的脚本
-# 使用方法: ./fix_app_permissions.sh "/path/to/BOG Tool.app"
+# 使用方法（在仓库根目录）: ./scripts/fix_app_permissions.sh "/path/to/BOG Tool.app"
 
 APP_PATH="$1"
 

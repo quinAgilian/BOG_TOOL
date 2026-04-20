@@ -155,7 +155,8 @@ def main() -> None:
     ap.add_argument(
         "--xlsx",
         type=Path,
-        default=repo_root / "GattServices 2026-03-26_111538.xlsx",
+        default=repo_root
+        / "BOG_TOOL/Config/GattServicesSources/GattServices 2026-03-26_111538.xlsx",
         help="GattServices Excel path",
     )
     ap.add_argument(

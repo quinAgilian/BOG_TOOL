@@ -72,7 +72,7 @@ open BOG_TOOL.xcodeproj
 
 BLE 协议由 **`BOG_TOOL/Config/GattServices.json`** 定义，运行时由 **`GattMapping.swift`** 加载，代码中不硬编码 UUID。
 
-- **`GattServices.json`**：从《GattServices 2025-04-11.xlsx》导出，包含所有 Service/Characteristic 的 UUID、描述、属性；其中 `appServiceUuids`、`appCharacteristicKeys` 指定本 App 使用的服务与特征 key。
+- **`GattServices.json`**：从 `BOG_TOOL/Config/GattServicesSources/` 下的 GattServices Excel（如 `GattServices 2026-03-26_111538.xlsx`）维护导出，包含所有 Service/Characteristic 的 UUID、描述、属性；其中 `appServiceUuids`、`appCharacteristicKeys` 指定本 App 使用的服务与特征 key。
 - **`GattMapping.swift`**：从 Bundle 读取上述 JSON，提供 `deviceNamePrefix`、`appServiceCBUUIDs`、`characteristicUUID(forKey:)` 等，供 `BLEManager` 使用。
 - 协议变更时只需更新 **`GattServices.json`**（或重新从 Excel 生成），无需改 Swift 代码。  
 - 可选：**`UUIDConfig.swift`** 保留作后备或兼容旧固件时可参考。
@@ -81,6 +81,8 @@ BLE 协议由 **`BOG_TOOL/Config/GattServices.json`** 定义，运行时由 **`G
 
 本仓库主要包含 **macOS SwiftUI APP（BOG_TOOL/）**。  
 产测数据服务 `bog-test-server` 已拆分为独立仓库（例如 `bog-test-server`，请在 GitHub 上按实际仓库名访问）。
+
+更完整的目录与文档索引见 **`docs/PROJECT_INDEX.md`**。
 
 **服务端与 APP 隔离**：APP 仅通过 HTTP API 与服务器通信；服务器可部署到远程（如阿里云），APP 在「服务器设置」中配置 base URL（当前默认 `http://8.129.99.18:8000`，测试环境可用 `http://8.129.99.18:8001`，备案完成后亦可改为域名如 `http://bog.generalquin.top`）。
 

@@ -26,15 +26,17 @@ BOG_TOOL/
 ├── docs/                        # 文档
 │   ├── PROJECT_INDEX.md         # 本索引
 │   ├── FIRMWARE_LOADING_LOGIC.md # 固件加载与 FirmwareManager 逻辑
-│   └── FIRMWARE_FROM_SERVER.md   # 固件从服务器拉取改造方案（feature/firmware-from-server）
+│   ├── FIRMWARE_FROM_SERVER.md   # 固件从服务器拉取说明
+│   ├── release-notes/           # 各版本 RELEASE_NOTES
+│   ├── dev/                     # 工程笔记（GATT/OTA/调试等）
+│   ├── ota/                     # OTA 相关杂项（如 OTA说明.ini）
+│   └── samples/production/      # 产测规则 JSON 样例（非 App 打包资源）
 ├── BOG_TOOL.xcodeproj/          # Xcode 工程
 ├── BOG_TOOL/                    # macOS SwiftUI 应用源码
+│   └── Config/GattServicesSources/  # GattServices 源表（xlsx，供同步脚本）
 ├── server/                      # 产测数据服务（Git 子模块）
-├── scripts/                     # 脚本
-├── apk_extract/                 # 第三方提取内容（与主功能无关）
-├── *.md                         # 根目录零散文档（见下文「文档索引」）
-├── *.sh                         # 部署/权限脚本
-└── *.bin, OTA说明.ini           # 固件/配置样本
+├── scripts/                     # 构建、部署、版本号等脚本
+└── tools/apk_extract/           # APK 解压参考（与主功能无关）
 ```
 
 ---
@@ -61,7 +63,6 @@ BOG_TOOL/
 | `ProductionTestRulesView.swift` | 产测规则与目标 FW 版本选择 |
 | `RTCTestView.swift` | RTC 测试 |
 | `OTASectionView.swift` | Debug 模式下的 OTA 区（固件选择/浏览） |
-| `FirmwareManagerView.swift` | 固件管理 UI（新增/删除固件） |
 | `GattProtocolView.swift` | GATT 协议展示 |
 | `UUIDDebugView.swift` | UUID 调试 |
 
@@ -79,7 +80,7 @@ BOG_TOOL/
 | `GattServices.json` | GATT 协议定义（从 Excel 维护）；含 appServiceUuids、appCharacteristicKeys |
 | `GattMapping.swift` | 从 Bundle 加载 JSON，提供 deviceNamePrefix、characteristicUUID(forKey:) 等 |
 | `UUIDConfig.swift` | 可选后备 UUID 配置 |
-| `FirmwareManager.swift` | 固件条目增删查、UserDefaults 持久化、安全作用域书签 |
+| `FirmwareManager.swift` | 服务器固件列表、下载缓存、OTA 本地 URL 解析 |
 | `OTA_Flow.md` | OTA 流程说明 |
 | `Distribution_Guide.md` | 分发指南 |
 
@@ -159,11 +160,14 @@ BOG_TOOL/
 | `server/API_SPEC.md` | 服务端 API 规范 |
 | `server/docs/API_SPEC_AUDIT.md` | 服务端文档与代码一致性审计（非规范正文） |
 | `server/README.md` | 服务端使用与部署 |
-| `VERSION_AND_RELEASE.md` | 版本与发布说明 |
-| `OTA_SPEED_ANALYSIS.md` | OTA 速度分析 |
-| `GATT_UUID_READWRITE_CHECK.md` | GATT UUID 读写检查 |
-| `UUID_COMPARISON_FIX.md` | UUID 比较修复说明 |
-| `DEVICE_INFO_DEBUG.md` | 设备信息调试 |
+| `docs/dev/VERSION_AND_RELEASE.md` | 版本与发布说明 |
+| `docs/dev/OTA_SPEED_ANALYSIS.md` | OTA 速度分析 |
+| `docs/dev/GATT_UUID_READWRITE_CHECK.md` | GATT UUID 读写检查 |
+| `docs/dev/UUID_COMPARISON_FIX.md` | UUID 比较修复说明 |
+| `docs/dev/DEVICE_INFO_DEBUG.md` | 设备信息调试 |
+| `docs/release-notes/RELEASE_NOTES_v*.md` | 各版本发布说明 |
+| `docs/ota/OTA说明.ini` | OTA 杂项说明 |
+| `docs/samples/production/*.json` | 产测规则样例（开发参考） |
 | `docs/为什么直接打开应用不行的说明.md` | 直接打开应用限制说明 |
 | `docs/找不到Signing标签的解决方法.md` | Signing 设置 |
 | `docs/如何找到Signing设置-详细步骤.md` | Signing 详细步骤 |
@@ -178,8 +182,8 @@ BOG_TOOL/
 | 文件 | 说明 |
 |------|------|
 | `scripts/update_version.sh` | 版本号更新 |
-| `deploy_to_other_mac.sh` | 部署到其他 Mac |
-| `fix_app_permissions.sh` | 修复应用权限 |
+| `scripts/deploy_to_other_mac.sh` | 部署到其他 Mac |
+| `scripts/fix_app_permissions.sh` | 修复应用权限 |
 
 ---
 
