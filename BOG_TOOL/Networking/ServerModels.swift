@@ -6,6 +6,7 @@ enum ServerAPI {
     static let productionTest = "/api/production-test"
     static let summary = "/api/summary"
     static let firmwareUpgradeRecord = "/api/firmware-upgrade-record"
+    static let hardwareRevisionRecord = "/api/hardware-revision-record"
     /// 只读固件列表（无需 admin）
     static let firmwareList = "/api/firmware"
     /// 固件下载路径，需拼接 id：/api/firmware/{id}/download

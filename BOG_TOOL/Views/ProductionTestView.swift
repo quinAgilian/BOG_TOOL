@@ -1510,6 +1510,50 @@ struct ProductionTestView: View {
         return buildVer.isEmpty ? shortVer : "\(shortVer) (\(buildVer))"
     }
 
+    /// 出货区写入 HW_REV 后上报变更（需已读到 SN）；失败落盘待重传。
+    private func reportHardwareRevisionChangeToServer(
+        previousHardwareRevision: String?,
+        newHardwareRevision: String,
+        changeSuccess: Bool,
+        failureReason: String?
+    ) {
+        guard serverSettings.uploadToServerEnabled, let client = serverSettings.serverClient else { return }
+        let sn = (capturedDeviceSN ?? ble.deviceSerialNumber)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !sn.isEmpty else { return }
+
+        let newTrim = newHardwareRevision.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newTrim.isEmpty else { return }
+        let newNorm = BLEManager.normalizedProductHardwareRevision(newTrim) ?? newTrim
+        let prevNorm: String? = {
+            guard let p = previousHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty else { return nil }
+            return BLEManager.normalizedProductHardwareRevision(p) ?? p
+        }()
+
+        if changeSuccess, prevNorm == newNorm { return }
+
+        var body: [String: Any] = [
+            "deviceSerialNumber": sn,
+            "newHardwareRevision": newNorm,
+            "changeSuccess": changeSuccess,
+            "source": "fqc",
+        ]
+        if let pv = prevNorm { body["previousHardwareRevision"] = pv }
+        if let fr = failureReason?.trimmingCharacters(in: .whitespacesAndNewlines), !fr.isEmpty {
+            body["failureReason"] = fr
+        }
+        if let bog = bogToolVersionPayloadString {
+            body["bogToolVersion"] = bog
+        }
+
+        Task {
+            do {
+                try await client.uploadHardwareRevisionChangeRecord(body: body)
+            } catch {
+                serverSettings.savePendingHardwareRevisionChange(body: body)
+            }
+        }
+    }
+
     /// 日志/弹窗中与 payload `productionRulesVersion` 对齐的展示字符串。
     private var displayableSOPVersion: String {
         let v = productionRulesStore.rules.rulesVersion.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2997,12 +3041,23 @@ struct ProductionTestView: View {
                     }
 
                     self.log("尝试写入出货区域 HW_REV -> \(targetHw)（\(destLabel)）", level: .info)
+                    let hwRevBeforeWriteNorm: String? = {
+                        let n = BLEManager.normalizedProductHardwareRevision(shipCurrentRaw)
+                            ?? shipCurrentRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return n.isEmpty ? nil : n
+                    }()
                     let shipWriteResult = await ble.sendDevAccessChangeHardwareRevision(to: targetHw)
                     switch shipWriteResult {
                     case .completed:
                         self.log("出货区域 HW_REV 写入命令已发送，等待回读确认", level: .info)
                     case .invalidFormat:
                         self.log("错误：目标 HW_REV 格式不合法（需 PXXVXXRXX）", level: .error)
+                        reportHardwareRevisionChangeToServer(
+                            previousHardwareRevision: hwRevBeforeWriteNorm,
+                            newHardwareRevision: targetHw,
+                            changeSuccess: false,
+                            failureReason: "invalid_format"
+                        )
                         stepStatuses[step.id] = .failed
                         recordStepOutcome(stepId: step.id, outcome: "failed")
                         stepResults[step.id] = appLanguage.string("production_test.hardware_version_invalid_format")
@@ -3010,6 +3065,12 @@ struct ProductionTestView: View {
                         break
                     case .emptyValue, .notReady, .rejectedByVersion:
                         self.log("错误：HW_REV 写入失败（\(String(describing: shipWriteResult))）", level: .error)
+                        reportHardwareRevisionChangeToServer(
+                            previousHardwareRevision: hwRevBeforeWriteNorm,
+                            newHardwareRevision: targetHw,
+                            changeSuccess: false,
+                            failureReason: "device_write_failed"
+                        )
                         stepStatuses[step.id] = .failed
                         recordStepOutcome(stepId: step.id, outcome: "failed")
                         stepResults[step.id] = appLanguage.string("production_test.hardware_version_write_failed")
@@ -3023,6 +3084,12 @@ struct ProductionTestView: View {
                         let got = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                         if got == targetHw {
                             self.log("✓ 出货区域 HW_REV 回读确认通过: \(got)", level: .info)
+                            reportHardwareRevisionChangeToServer(
+                                previousHardwareRevision: hwRevBeforeWriteNorm,
+                                newHardwareRevision: targetHw,
+                                changeSuccess: true,
+                                failureReason: nil
+                            )
                             stepStatuses[step.id] = .passed
                             recordStepOutcome(stepId: step.id, outcome: "passed")
                             stepResults[step.id] = "\(destLabel) HW: \(got)"
@@ -3036,6 +3103,12 @@ struct ProductionTestView: View {
                     if stepStatuses[step.id] != .passed {
                         let shipActual = ble.deviceHardwareRevision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "--"
                         self.log("错误：出货区域 HW_REV 回读确认失败（期望: \(targetHw), 实际: \(shipActual)）", level: .error)
+                        reportHardwareRevisionChangeToServer(
+                            previousHardwareRevision: hwRevBeforeWriteNorm,
+                            newHardwareRevision: targetHw,
+                            changeSuccess: false,
+                            failureReason: "readback_mismatch"
+                        )
                         stepStatuses[step.id] = .failed
                         recordStepOutcome(stepId: step.id, outcome: "failed")
                         stepResults[step.id] = appLanguage.string("production_test.hardware_version_verify_failed")
