@@ -590,7 +590,10 @@
 "menu.floating" = "置顶";
 "menu.firmware" = "固件";
 "menu.firmware_manage" = "固件管理...";
-"menu.server" = "Server";
+"menu.server" = "服务器";
+
+"common.yes" = "是";
+"common.no" = "否";
 
 /* 服务器 */
 "server.settings_title" = "服务器设置";
@@ -599,18 +602,21 @@
 "server.base_url_hint" = "产测结果上报与预览页的 base URL，默认生产环境 8.129.99.18:8000（测试环境可改为 8001）";
 "server.upload_enabled" = "是否上传至服务器";
 "server.open_preview" = "打开预览";
-"server.footer_upload_on" = "上传开";
-"server.footer_upload_off" = "上传关";
+"server.footer_label" = "服";
+"server.footer_nick.production" = "产线";
+"server.footer_nick.testing" = "测试";
+"server.footer_nick.local8000" = "本地";
+"server.footer_nick.local8001" = "本81";
+"server.footer_upload_off" = "−";
 "server.footer_pending" = "待重传 %d 条";
+"server.footer_pending_short" = "P%d";
 "server.footer_hint" = "点击打开服务器设置";
-"server.footer_latency" = "服务器延迟 %d ms";
-"server.footer_offline" = "离线";
+"server.footer_offline" = "!";
 
 /* WiFi 气阀 */
-"aux_valve.footer_label" = "气阀";
-"aux_valve.footer_disabled" = "关";
-"aux_valve.footer_latency" = "%d ms";
-"aux_valve.footer_offline" = "不可达";
+"aux_valve.footer_label" = "阀";
+"aux_valve.footer_disabled" = "−";
+"aux_valve.footer_offline" = "!";
 "aux_valve.footer_hint" = "点击打开 WiFi 气阀设置";
 "aux_valve.settings_title" = "WiFi 气阀设置";
 "aux_valve.enabled_toggle" = "使用 WiFi 自动气阀";
@@ -643,13 +649,16 @@
 "aux_valve.status_footer_title" = "当前状态";
 "aux_valve.status_valve" = "阀：%@ · moving：%@";
 "aux_valve.status_latency" = "延迟 %d ms";
-"aux_valve.error not_configured" = "未配置设备 ID";
-"aux_valve.error discovery_timeout" = "mDNS 浏览超时";
-"aux_valve.error device_not_found" = "未发现目标设备";
-"aux_valve.error wrong_device" = "device_id 不匹配";
-"aux_valve.error unauthorized" = "鉴权失败 (401)";
-"aux_valve.error decode_failed" = "响应解析失败";
-"aux_valve.error budget_exceeded" = "操作超时（总预算）";
+"aux_valve.error.not_configured" = "未配置设备 ID";
+"aux_valve.error.discovery_timeout" = "mDNS 浏览超时";
+"aux_valve.error.device_not_found" = "未发现目标设备";
+"aux_valve.error.wrong_device" = "device_id 不匹配";
+"aux_valve.error.unauthorized" = "鉴权失败 (401)";
+"aux_valve.error.decode_failed" = "响应解析失败";
+"aux_valve.error.budget_exceeded" = "操作超时（总预算）";
+"aux_valve.error.unreachable" = "不可达：%@";
+"aux_valve.error.http" = "HTTP %d %@";
+"aux_valve.error.unknown" = "WiFi 气阀错误";
 "aux_valve.alert_failure_title" = "WiFi 气阀不可用";
 "aux_valve.alert_failure_message" = "%@\n已耗时：%.1f 秒";
 "aux_valve.alert_use_manual" = "本台改用手动阀";

@@ -130,6 +130,12 @@ struct ContentView: View {
     }
     
     /// 产测 SOP 版本：与 `ProductionRulesStore` 一致（导入/应用规则后立即更新）
+    private var footerDot: some View {
+        Text("·")
+            .font(UIDesignSystem.Typography.monospacedCaption)
+            .foregroundStyle(UIDesignSystem.Foreground.secondary)
+    }
+
     private var sopVersionString: String {
         let v = productionRulesStore.rules.rulesVersion.trimmingCharacters(in: .whitespacesAndNewlines)
         return v.isEmpty ? "N.A" : v
@@ -191,25 +197,25 @@ struct ContentView: View {
                 .frame(maxHeight: .infinity)
                 
                 // App 版本、SOP 版本、服务器状态（左下角，不抢眼）
-                HStack(spacing: UIDesignSystem.Spacing.md) {
-                    Text("\(appLanguage.string("version.app_label")) v\(appVersionString)")
+                HStack(spacing: 6) {
+                    Text("App v\(appVersionString)")
                         .font(UIDesignSystem.Typography.monospacedCaption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    Text("·")
-                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    Text("\(appLanguage.string("version.sop_label")) \(sopVersionString)")
+                    footerDot
+                    Text("SOP \(sopVersionString)")
                         .font(UIDesignSystem.Typography.monospacedCaption)
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                    Text("·")
-                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    footerDot
                     ServerStatusFooter(serverSettings: serverSettings)
                         .environmentObject(appLanguage)
-                    Text("·")
-                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    footerDot
                     AuxValveStatusFooter(auxValveSettings: auxValveSettings)
                         .environmentObject(appLanguage)
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
+                .lineLimit(1)
                 .padding(.horizontal, UIDesignSystem.Padding.lg)
                 .padding(.vertical, UIDesignSystem.Padding.xs)
             }
@@ -443,92 +449,65 @@ private struct ServerStatusFooter: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @ObservedObject var serverSettings: ServerSettings
 
-    private var hostDescription: String {
-        guard let url = URL(string: serverSettings.effectiveBaseURL),
-              let host = url.host, !host.isEmpty else { return "" }
-        if let port = url.port, port != 80 && port != 443 {
-            return "\(host):\(port)"
+    private var serverStatusColor: Color {
+        guard serverSettings.uploadToServerEnabled else {
+            return Color.secondary
         }
-        return host
+        if let latency = serverSettings.lastPingLatencyMs, serverSettings.isServerReachable {
+            return latency < 500 ? Color.green : Color.yellow
+        }
+        if !serverSettings.isServerReachable {
+            return Color.red
+        }
+        return Color.secondary
+    }
+
+    /// 底栏单行：服 · ↑ host · P3 · 2/5 · 45ms（无待传时不显示 0/0）
+    private var statusLine: String {
+        guard serverSettings.uploadToServerEnabled else {
+            return appLanguage.string("server.footer_upload_off")
+        }
+        guard serverSettings.isServerReachable else {
+            return appLanguage.string("server.footer_offline")
+        }
+        var parts: [String] = [serverSettings.footerNickname(using: appLanguage)]
+        if serverSettings.pendingUploadsCount > 0 {
+            parts.append(String(format: appLanguage.string("server.footer_pending_short"), serverSettings.pendingUploadsCount))
+        }
+        let progressTotal: Int = serverSettings.isRetryingPendingUploads && serverSettings.retryTotalCount > 0
+            ? serverSettings.retryTotalCount
+            : serverSettings.pendingUploadsCount
+        let progressCurrent: Int = serverSettings.isRetryingPendingUploads && serverSettings.retryTotalCount > 0
+            ? serverSettings.retryUploadedCount
+            : 0
+        if progressTotal > 0 {
+            parts.append("\(progressCurrent)/\(progressTotal)")
+        }
+        if let latency = serverSettings.lastPingLatencyMs {
+            parts.append("\(Int(latency.rounded()))ms")
+        }
+        return parts.joined(separator: " ")
     }
 
     var body: some View {
-        // 服务器状态颜色：<500ms 绿色，>=500ms 黄色；超时/离线为红色；未开启上传则灰色
-        let serverStatusColor: Color = {
-            guard serverSettings.uploadToServerEnabled else {
-                return Color.secondary
-            }
-            if let latency = serverSettings.lastPingLatencyMs, serverSettings.isServerReachable {
-                return latency < 500 ? Color.green : Color.yellow
-            } else if !serverSettings.isServerReachable {
-                return Color.red
-            } else {
-                return Color.secondary
-            }
-        }()
-
         HStack(spacing: 4) {
-            Text(appLanguage.string("menu.server"))
+            Text(appLanguage.string("server.footer_label"))
                 .font(UIDesignSystem.Typography.monospacedCaption)
                 .foregroundStyle(UIDesignSystem.Foreground.secondary)
             Circle()
                 .fill(serverSettings.uploadToServerEnabled ? serverStatusColor : Color.secondary.opacity(0.5))
                 .frame(width: 6, height: 6)
-            Text(appLanguage.string(serverSettings.uploadToServerEnabled ? "server.footer_upload_on" : "server.footer_upload_off"))
+            Text(statusLine)
                 .font(UIDesignSystem.Typography.monospacedCaption)
                 .foregroundStyle(serverStatusColor)
-            if !hostDescription.isEmpty {
-                Text("(\(hostDescription))")
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(serverStatusColor.opacity(0.8))
-            }
-            if serverSettings.pendingUploadsCount > 0 {
-                Text("·")
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                Text(String(format: appLanguage.string("server.footer_pending"), serverSettings.pendingUploadsCount))
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(.orange)
-            }
-
-            // 显示当前待上传/重传进度：x/y。无待上传时显示 0/0。
-            let progressTotal: Int = {
-                if serverSettings.isRetryingPendingUploads, serverSettings.retryTotalCount > 0 {
-                    return serverSettings.retryTotalCount
-                } else {
-                    return serverSettings.pendingUploadsCount
-                }
-            }()
-            let progressCurrent: Int = {
-                if serverSettings.isRetryingPendingUploads, serverSettings.retryTotalCount > 0 {
-                    return serverSettings.retryUploadedCount
-                } else {
-                    return 0
-                }
-            }()
-            Text("(\(progressCurrent)/\(progressTotal))")
-                .font(UIDesignSystem.Typography.monospacedCaption)
-                .foregroundStyle(serverSettings.pendingUploadsCount > 0 ? .orange : UIDesignSystem.Foreground.secondary)
-            if let latency = serverSettings.lastPingLatencyMs {
-                Text("·")
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(serverStatusColor)
-                Text(String(format: appLanguage.string("server.footer_latency"), Int(latency.rounded())))
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(serverStatusColor)
-            } else if serverSettings.uploadToServerEnabled && !serverSettings.isServerReachable {
-                Text("·")
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                Text(appLanguage.string("server.footer_offline"))
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(.red)
-            }
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
+        .layoutPriority(0)
         .onTapGesture {
             serverSettings.showServerSettingsSheet = true
         }
-        .help(appLanguage.string("server.footer_hint"))
+        .help("\(appLanguage.string("server.footer_hint"))\n\(serverSettings.effectiveBaseURL)")
     }
 }
 

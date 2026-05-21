@@ -30,7 +30,7 @@ final class AuxValveCoordinator {
             return .skipped
         }
         guard !settings.normalizedTargetDeviceId.isEmpty else {
-            return .failed(reason: AuxValveClientError.notConfigured.localizedDescription ?? "not configured", elapsedSec: 0)
+            return .failed(reason: AuxValveClientError.notConfigured.userFacingToken, elapsedSec: 0)
         }
 
         let budgetStart = Date()
@@ -77,7 +77,7 @@ final class AuxValveCoordinator {
         } catch {
             let elapsed = Date().timeIntervalSince(budgetStart)
             settings.auxLog("orchestration \(action) failed: \(error.localizedDescription)", level: .warning)
-            return .failed(reason: error.localizedDescription, elapsedSec: elapsed)
+            return .failed(reason: AuxValveUserMessage.from(error), elapsedSec: elapsed)
         }
     }
 

@@ -25,6 +25,29 @@ struct AuxValveStatusFooter: View {
         return Color.secondary
     }
 
+    private var auxValveStatusTextColor: Color {
+        if !auxValveSettings.enabled { return Color.secondary }
+        if !auxValveSettings.isAuxValveReachable { return .red }
+        return statusColor
+    }
+
+    /// 底栏单行：阀 · A1B2 · 45ms（不重复 BOG-VALVE- 前缀）
+    private var statusLine: String {
+        guard auxValveSettings.enabled else {
+            return appLanguage.string("aux_valve.footer_disabled")
+        }
+        guard auxValveSettings.isAuxValveReachable else {
+            return appLanguage.string("aux_valve.footer_offline")
+        }
+        var parts: [String] = []
+        let id = auxValveSettings.normalizedTargetDeviceId
+        if !id.isEmpty { parts.append(id) }
+        if let latency = auxValveSettings.lastHealthLatencyMs {
+            parts.append("\(Int(latency.rounded()))ms")
+        }
+        return parts.isEmpty ? "—" : parts.joined(separator: " ")
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             Text(appLanguage.string("aux_valve.footer_label"))
@@ -33,31 +56,13 @@ struct AuxValveStatusFooter: View {
             Circle()
                 .fill(auxValveSettings.enabled ? statusColor : Color.secondary.opacity(0.5))
                 .frame(width: 6, height: 6)
-            if !auxValveSettings.enabled {
-                Text(appLanguage.string("aux_valve.footer_disabled"))
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(Color.secondary)
-            } else if auxValveSettings.isAuxValveReachable {
-                let id = auxValveSettings.normalizedTargetDeviceId
-                if !id.isEmpty {
-                    Text("BOG-VALVE-\(id)")
-                        .font(UIDesignSystem.Typography.monospacedCaption)
-                        .foregroundStyle(statusColor)
-                }
-                if let latency = auxValveSettings.lastHealthLatencyMs {
-                    Text("·")
-                        .font(UIDesignSystem.Typography.monospacedCaption)
-                        .foregroundStyle(statusColor)
-                    Text(String(format: appLanguage.string("aux_valve.footer_latency"), Int(latency.rounded())))
-                        .font(UIDesignSystem.Typography.monospacedCaption)
-                        .foregroundStyle(statusColor)
-                }
-            } else {
-                Text(appLanguage.string("aux_valve.footer_offline"))
-                    .font(UIDesignSystem.Typography.monospacedCaption)
-                    .foregroundStyle(.red)
-            }
+            Text(statusLine)
+                .font(UIDesignSystem.Typography.monospacedCaption)
+                .foregroundStyle(auxValveStatusTextColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
+        .layoutPriority(0)
         .onTapGesture {
             auxValveSettings.showAuxValveSettingsSheet = true
         }
@@ -195,7 +200,13 @@ struct AuxValveSettingsView: View {
                 .foregroundStyle(UIDesignSystem.Foreground.secondary)
             if auxValveSettings.enabled {
                 if let valve = auxValveSettings.lastStatusValve {
-                    Text(String(format: appLanguage.string("aux_valve.status_valve"), valve, auxValveSettings.lastStatusMoving ? "yes" : "no"))
+                    Text(String(
+                        format: appLanguage.string("aux_valve.status_valve"),
+                        valve,
+                        auxValveSettings.lastStatusMoving
+                            ? appLanguage.string("common.yes")
+                            : appLanguage.string("common.no")
+                    ))
                         .font(UIDesignSystem.Typography.monospacedCaption)
                 }
                 if let latency = auxValveSettings.lastHealthLatencyMs {
@@ -203,7 +214,7 @@ struct AuxValveSettingsView: View {
                         .font(UIDesignSystem.Typography.monospacedCaption)
                 }
                 if let err = auxValveSettings.lastHealthError {
-                    Text(err)
+                    Text(AuxValveUserMessage.localize(err, language: appLanguage))
                         .font(UIDesignSystem.Typography.caption)
                         .foregroundStyle(.red)
                 }
@@ -288,7 +299,7 @@ struct AuxValveSettingsView: View {
                 }
             } catch {
                 await MainActor.run {
-                    testMessage = error.localizedDescription
+                    testMessage = AuxValveUserMessage.localize(AuxValveUserMessage.from(error), language: appLanguage)
                     testInProgress = false
                 }
             }

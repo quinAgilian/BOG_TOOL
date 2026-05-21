@@ -579,6 +579,9 @@
 "menu.firmware_manage" = "Manage Firmware...";
 "menu.server" = "Server";
 
+"common.yes" = "yes";
+"common.no" = "no";
+
 /* Server */
 "server.settings_title" = "Server Settings";
 "server.base_url_label" = "Server URL";
@@ -586,18 +589,21 @@
 "server.base_url_hint" = "Base URL for report upload and preview; default production 8.129.99.18:8000 (use :8001 for test)";
 "server.upload_enabled" = "Upload to server";
 "server.open_preview" = "Open preview";
-"server.footer_upload_on" = "Upload on";
-"server.footer_upload_off" = "Upload off";
+"server.footer_label" = "Srv";
+"server.footer_nick.production" = "Prod";
+"server.footer_nick.testing" = "Test";
+"server.footer_nick.local8000" = "Local";
+"server.footer_nick.local8001" = "L81";
+"server.footer_upload_off" = "−";
 "server.footer_pending" = "Pending %d";
+"server.footer_pending_short" = "P%d";
 "server.footer_hint" = "Click to open server settings";
-"server.footer_latency" = "server ping %d ms";
-"server.footer_offline" = "offline";
+"server.footer_offline" = "!";
 
 /* WiFi aux valve */
-"aux_valve.footer_label" = "Valve";
-"aux_valve.footer_disabled" = "Off";
-"aux_valve.footer_latency" = "%d ms";
-"aux_valve.footer_offline" = "Unreachable";
+"aux_valve.footer_label" = "V";
+"aux_valve.footer_disabled" = "−";
+"aux_valve.footer_offline" = "!";
 "aux_valve.footer_hint" = "Click to open WiFi valve settings";
 "aux_valve.settings_title" = "WiFi Valve Settings";
 "aux_valve.enabled_toggle" = "Use WiFi automatic line valve";
@@ -630,13 +636,16 @@
 "aux_valve.status_footer_title" = "Status";
 "aux_valve.status_valve" = "Valve: %@ · moving: %@";
 "aux_valve.status_latency" = "Latency %d ms";
-"aux_valve.error not_configured" = "Device ID not configured";
-"aux_valve.error discovery_timeout" = "mDNS browse timed out";
-"aux_valve.error device_not_found" = "Target device not found";
-"aux_valve.error wrong_device" = "device_id mismatch";
-"aux_valve.error unauthorized" = "Unauthorized (401)";
-"aux_valve.error decode_failed" = "Failed to decode response";
-"aux_valve.error budget_exceeded" = "Operation budget exceeded";
+"aux_valve.error.not_configured" = "Device ID not configured";
+"aux_valve.error.discovery_timeout" = "mDNS browse timed out";
+"aux_valve.error.device_not_found" = "Target device not found";
+"aux_valve.error.wrong_device" = "device_id mismatch";
+"aux_valve.error.unauthorized" = "Unauthorized (401)";
+"aux_valve.error.decode_failed" = "Failed to decode response";
+"aux_valve.error.budget_exceeded" = "Operation budget exceeded";
+"aux_valve.error.unreachable" = "%@";
+"aux_valve.error.http" = "HTTP %d %@";
+"aux_valve.error.unknown" = "WiFi valve error";
 "aux_valve.alert_failure_title" = "WiFi line valve unavailable";
 "aux_valve.alert_failure_message" = "%@\nElapsed: %.1f s";
 "aux_valve.alert_use_manual" = "Use manual valve this unit";

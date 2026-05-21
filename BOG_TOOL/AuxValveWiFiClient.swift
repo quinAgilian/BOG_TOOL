@@ -31,18 +31,63 @@ enum AuxValveClientError: LocalizedError {
     case decodeFailed
     case budgetExceeded
 
-    var errorDescription: String? {
+    /// `Localizable.strings` 键（点号分隔，供 `AppLanguage.string` 解析）
+    var localizationKey: String? {
         switch self {
-        case .notConfigured: return "aux_valve error not_configured"
-        case .discoveryTimeout: return "aux_valve error discovery_timeout"
-        case .deviceNotFound: return "aux_valve error device_not_found"
-        case .unreachable(let msg): return msg
-        case .wrongDevice: return "aux_valve error wrong_device"
-        case .unauthorized: return "aux_valve error unauthorized"
-        case .httpError(let code, let err): return "HTTP \(code) \(err ?? "")"
-        case .decodeFailed: return "aux_valve error decode_failed"
-        case .budgetExceeded: return "aux_valve error budget_exceeded"
+        case .notConfigured: return "aux_valve.error.not_configured"
+        case .discoveryTimeout: return "aux_valve.error.discovery_timeout"
+        case .deviceNotFound: return "aux_valve.error.device_not_found"
+        case .unreachable: return nil
+        case .wrongDevice: return "aux_valve.error.wrong_device"
+        case .unauthorized: return "aux_valve.error.unauthorized"
+        case .httpError: return "aux_valve.error.http"
+        case .decodeFailed: return "aux_valve.error.decode_failed"
+        case .budgetExceeded: return "aux_valve.error.budget_exceeded"
         }
+    }
+
+    func message(using language: AppLanguage) -> String {
+        switch self {
+        case .unreachable(let msg):
+            return String(format: language.string("aux_valve.error.unreachable"), msg)
+        case .httpError(let code, let err):
+            return String(format: language.string("aux_valve.error.http"), code, err ?? "—")
+        default:
+            guard let key = localizationKey else { return language.string("aux_valve.test_failed") }
+            return language.string(key)
+        }
+    }
+
+    /// 存 Health/Coordinator：优先 i18n 键，由 UI 用 `AuxValveUserMessage.localize` 显示
+    var userFacingToken: String {
+        if let key = localizationKey { return key }
+        switch self {
+        case .unreachable(let msg): return msg
+        case .httpError(let code, let err): return "HTTP \(code) \(err ?? "")"
+        default: return "aux_valve.error.unknown"
+        }
+    }
+
+    var errorDescription: String? { userFacingToken }
+}
+
+/// 将 Coordinator / Health 存的 token 按当前 App 语言显示
+enum AuxValveUserMessage {
+    static func localize(_ token: String, language: AppLanguage) -> String {
+        if token.hasPrefix("aux_valve.error.") {
+            return language.string(token)
+        }
+        if token.hasPrefix("aux_valve.error ") {
+            return language.string(token.replacingOccurrences(of: " ", with: "."))
+        }
+        return token
+    }
+
+    static func from(_ error: Error) -> String {
+        if let aux = error as? AuxValveClientError {
+            return aux.userFacingToken
+        }
+        return error.localizedDescription
     }
 }
 
@@ -244,14 +289,14 @@ final class AuxValveWiFiClient {
             }
             if response.httpStatus == 401 {
                 settings.auxLog("health rejected: 401 token mismatch (configured \(settings.tokenConfiguredDescription))", level: .warning)
-                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.unauthorized.localizedDescription)
+                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.unauthorized.userFacingToken)
             }
             guard response.ok, response.deviceId?.uppercased() == settings.normalizedTargetDeviceId else {
                 settings.auxLog(
                     "health rejected: want device_id=\(settings.normalizedTargetDeviceId) got=\(response.deviceId ?? "nil")",
                     level: .warning
                 )
-                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.wrongDevice.localizedDescription)
+                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.wrongDevice.userFacingToken)
             }
             return AuxValveHealthResult(
                 reachable: true,
@@ -262,7 +307,7 @@ final class AuxValveWiFiClient {
             )
         } catch {
             settings.auxLog("health check error: \(error.localizedDescription)", level: .warning)
-            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: error.localizedDescription)
+            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: AuxValveUserMessage.from(error))
         }
     }
 

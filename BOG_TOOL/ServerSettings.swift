@@ -56,6 +56,51 @@ private enum ServerEnvironment: String, CaseIterable, Identifiable {
         // 兜底：未知配置则默认视为 production
         return .production
     }
+
+    /// 底栏用短昵称（不展示完整域名）
+    func footerNickname(using language: AppLanguage) -> String {
+        switch self {
+        case .production:
+            return language.string("server.footer_nick.production")
+        case .testing:
+            return language.string("server.footer_nick.testing")
+        case .local8000:
+            return language.string("server.footer_nick.local8000")
+        case .local8001:
+            return language.string("server.footer_nick.local8001")
+        }
+    }
+
+    /// 已知环境用昵称；未知 URL 再缩写 host（首段标签 + 非默认端口）
+    static func footerNickname(for baseURL: String, language: AppLanguage) -> String {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        for env in allCases where env.baseURL == trimmed {
+            return env.footerNickname(using: language)
+        }
+        return abbreviatedHostLabel(from: trimmed, language: language)
+    }
+
+    private static func abbreviatedHostLabel(from baseURL: String, language: AppLanguage) -> String {
+        guard let url = URL(string: baseURL), let host = url.host?.lowercased(), !host.isEmpty else {
+            return "?"
+        }
+        if host == "localhost" || host == "127.0.0.1" {
+            return language.string("server.footer_nick.local8000")
+        }
+        if host.contains("generalquin") || host.hasPrefix("bog.") || host == "bog.generalquin.top" {
+            let port = url.port
+            if port == 8081 {
+                return language.string("server.footer_nick.testing")
+            }
+            return language.string("server.footer_nick.production")
+        }
+        let label = host.split(separator: ".").first.map(String.init) ?? host
+        let core = String(label.prefix(6))
+        if let port = url.port, port != 80 && port != 443 {
+            return "\(core):\(port)"
+        }
+        return core
+    }
 }
 
 /// 产测服务器配置（仅支持远程服务器）
@@ -124,6 +169,11 @@ final class ServerSettings: ObservableObject {
     var effectiveBaseURL: String {
         let v = serverBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return v.isEmpty ? Self.defaultBaseURL : v
+    }
+
+    /// 底栏状态行服务器昵称（见 `ServerEnvironment.footerNickname`）
+    func footerNickname(using language: AppLanguage) -> String {
+        ServerEnvironment.footerNickname(for: effectiveBaseURL, language: language)
     }
 
     /// 在默认浏览器中打开数据概览页

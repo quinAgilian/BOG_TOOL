@@ -1490,12 +1490,13 @@ struct ProductionTestView: View {
     }
 
     private func presentAuxValveFailureAlert(reason: String, elapsedSec: TimeInterval) async -> AuxValveFailureAlertChoice {
-        await withCheckedContinuation { (cont: CheckedContinuation<AuxValveFailureAlertChoice, Never>) in
+        let displayReason = AuxValveUserMessage.localize(reason, language: appLanguage)
+        return await withCheckedContinuation { (cont: CheckedContinuation<AuxValveFailureAlertChoice, Never>) in
             DispatchQueue.main.async {
                 self.auxValveFailureTitle = self.appLanguage.string("aux_valve.alert_failure_title")
                 self.auxValveFailureMessage = String(
                     format: self.appLanguage.string("aux_valve.alert_failure_message"),
-                    reason,
+                    displayReason,
                     elapsedSec
                 )
                 self.auxValveFailureResume = { cont.resume(returning: $0) }
