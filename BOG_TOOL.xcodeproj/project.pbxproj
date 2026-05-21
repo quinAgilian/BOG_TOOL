@@ -33,6 +33,7 @@
 		A1000025 /* ServerSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025 /* ServerSettings.swift */; };
 		A1000026 /* ServerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* ServerModels.swift */; };
 		A1000027 /* ServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* ServerClient.swift */; };
+		A1000028 /* GasLeakPhaseTiming.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* GasLeakPhaseTiming.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,6 +66,7 @@
 		A2000025 /* ServerSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettings.swift; sourceTree = "<group>"; };
 		A2000026 /* ServerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerModels.swift; sourceTree = "<group>"; };
 		A2000027 /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
+		A2000028 /* GasLeakPhaseTiming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GasLeakPhaseTiming.swift; sourceTree = "<group>"; };
 		A3000001 /* BOG Tool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BOG Tool.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -94,6 +96,7 @@
 				546474F92F685E990015B05B /* ProductionRulesStore.swift */,
 				546474F52F67DF220015B05B /* ProductionRules.swift */,
 				546474F62F67DF220015B05B /* ProductionRules+Loading.swift */,
+				A2000028 /* GasLeakPhaseTiming.swift */,
 				A2000001 /* BOG_TOOLApp.swift */,
 				A2000017 /* AppLanguage.swift */,
 				A2000025 /* ServerSettings.swift */,
@@ -282,6 +285,7 @@
 				546474FA2F685E990015B05B /* ProductionRulesStore.swift in Sources */,
 				A1000026 /* ServerModels.swift in Sources */,
 				A1000027 /* ServerClient.swift in Sources */,
+				A1000028 /* GasLeakPhaseTiming.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -2091,10 +2091,33 @@ struct ProductionTestView: View {
         var phase1Samples: [SamplePoint] = []
         var betweenSamples: [SamplePoint] = []
         var phase2Samples: [SamplePoint] = []
-        var phaseElapsed: Double = 0
-        let afterReadWaitNs: UInt64 = 600_000_000
         // 为后续判定流程缓存 Phase 1 平均值，避免多次独立计算导致日志与判定存在细微数值差异
         var cachedPhase1Avg: Double?
+
+        /// 在截止时刻前完成 BLE 读与等待，避免固定 600ms 叠在 interval 上导致 Phase 超出配置时长。
+        func readGasLeakSensorsAndWait(bleDeadline: Date) async -> (closeStr: String, openStr: String, valveStr: String, gasStr: String) {
+            ble.readPressure(silent: true)
+            ble.readPressureOpen(silent: true)
+            ble.readValveState()
+            ble.readGasSystemStatus(silent: true)
+            let settle = GasLeakPhaseTiming.bleSettleSeconds(until: bleDeadline)
+            try? await Task.sleep(nanoseconds: UInt64(settle * 1_000_000_000))
+            var closeStr = ble.lastPressureValue
+            var openStr = ble.lastPressureOpenValue
+            if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
+                if GasLeakPhaseTiming.canRetry(until: bleDeadline) {
+                    ble.readPressure(silent: true)
+                    ble.readPressureOpen(silent: true)
+                    let retrySettle = min(GasLeakPhaseTiming.retryExtra, GasLeakPhaseTiming.bleSettleSeconds(until: bleDeadline))
+                    if retrySettle > 0 {
+                        try? await Task.sleep(nanoseconds: UInt64(retrySettle * 1_000_000_000))
+                    }
+                    closeStr = ble.lastPressureValue
+                    openStr = ble.lastPressureOpenValue
+                }
+            }
+            return (closeStr, openStr, ble.lastValveStateValue, ble.lastGasSystemStatusValue)
+        }
         // 关阀压力通道
         func value(for p: SamplePoint) -> Double? { p.pressureClosed }
         // Gas leak 连续采样中若连续两次读到 0，仅告警，不直接判失败
@@ -2120,46 +2143,35 @@ struct ProductionTestView: View {
             }
         }
         
-        while phaseElapsed <= Double(preDur) {
+        let phase1Start = Date()
+        let phase1Times = GasLeakPhaseTiming.sampleTimes(durationSeconds: preDur, intervalSeconds: interval)
+        for (index, sampleT) in phase1Times.enumerated() {
             guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
                 return (false, "连接丢失或用户终止")
             }
-            ble.readPressure(silent: true)
-            ble.readPressureOpen(silent: true)
-            ble.readValveState()
-            ble.readGasSystemStatus(silent: true)
-            try? await Task.sleep(nanoseconds: afterReadWaitNs)
-            var closeStr = ble.lastPressureValue
-            var openStr = ble.lastPressureOpenValue
-            // 遇到错误或0值时快速重读一次
-            if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
-                ble.readPressure(silent: true)
-                ble.readPressureOpen(silent: true)
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                closeStr = ble.lastPressureValue
-                openStr = ble.lastPressureOpenValue
-            }
+            await GasLeakPhaseTiming.waitUntil(phaseStart: phase1Start, targetT: sampleT)
+            let nextT = index + 1 < phase1Times.count ? phase1Times[index + 1] : nil
+            let bleDeadline = GasLeakPhaseTiming.bleDeadline(
+                phaseStart: phase1Start,
+                sampleT: sampleT,
+                nextSampleT: nextT,
+                durationSeconds: preDur
+            )
+            let (closeStr, openStr, valveStr, gasStr) = await readGasLeakSensorsAndWait(bleDeadline: bleDeadline)
             let closeBar = Self.parseBarFromPressureString(closeStr)
             let openBar = Self.parseBarFromPressureString(openStr)
-            let valveStr = ble.lastValveStateValue
-            let gasStr = ble.lastGasSystemStatusValue
             if closeBar != nil || openBar != nil {
-                let point = SamplePoint(t: phaseElapsed, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
+                let point = SamplePoint(t: sampleT, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
                 phase1Samples.append(point)
-                trackConsecutiveZero(value(for: point), phaseLabel: "Phase 1", t: phaseElapsed)
-                let tStr = String(format: "%.1f", phaseElapsed)
+                trackConsecutiveZero(value(for: point), phaseLabel: "Phase 1", t: sampleT)
+                let tStr = String(format: "%.1f", sampleT)
                 let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
                 let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
                 self.log("\(stepLabel)：[Phase 1] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
             }
-            phaseElapsed += interval
-            if phaseElapsed <= Double(preDur) {
-                let remainingNs = UInt64(max(0, interval - 0.6) * 1_000_000_000)
-                if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
-            }
         }
-        
-        self.log("\(stepLabel)：Phase 1 采样完成，共 \(phase1Samples.count) 点", level: .info)
+        let phase1WallSeconds = Date().timeIntervalSince(phase1Start)
+        self.log("\(stepLabel)：Phase 1 采样完成，共 \(phase1Samples.count) 点，配置 \(preDur)s，实际 \(String(format: "%.2f", phase1WallSeconds))s", level: .info)
         // 在 Phase 1 结束时立即计算并记录 Phase 1 平均值；若规则使用 Phase 1 平均作为 reference，则在此时明确声明
         let phase1ValuesForDecision = phase1Samples.compactMap { value(for: $0) }
         if !phase1ValuesForDecision.isEmpty {
@@ -2179,7 +2191,8 @@ struct ProductionTestView: View {
         }
         if config.requireValveClosedConfirm {
             let userActionStart = Date()
-            var betweenElapsed: Double = 0
+            let betweenPhaseStart = Date()
+            var betweenSampleIndex = 0
             var userConfirmed = false
             var userResponded = false
             
@@ -2200,25 +2213,14 @@ struct ProductionTestView: View {
             
             // Phase 2 采样：在用户尚未响应弹窗期间采样，用户一旦确认/取消就立即结束采样
             while isRunning, ble.isConnected, ble.areCharacteristicsReady, !userResponded {
-                ble.readPressure(silent: true)
-                ble.readPressureOpen(silent: true)
-                ble.readValveState()
-                ble.readGasSystemStatus(silent: true)
-                try? await Task.sleep(nanoseconds: afterReadWaitNs)
-                var closeStr = ble.lastPressureValue
-                var openStr = ble.lastPressureOpenValue
-                if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
-                    ble.readPressure(silent: true)
-                    ble.readPressureOpen(silent: true)
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                    closeStr = ble.lastPressureValue
-                    openStr = ble.lastPressureOpenValue
-                }
+                let betweenT = Double(betweenSampleIndex) * interval
+                if betweenT > 3600 { break } // 安全上限，避免意外长时间阻塞
+                await GasLeakPhaseTiming.waitUntil(phaseStart: betweenPhaseStart, targetT: betweenT)
+                let bleDeadline = betweenPhaseStart.addingTimeInterval(betweenT + interval)
+                let (closeStr, openStr, valveStr, gasStr) = await readGasLeakSensorsAndWait(bleDeadline: bleDeadline)
                 let closeBar = Self.parseBarFromPressureString(closeStr)
                 let openBar = Self.parseBarFromPressureString(openStr)
-                let valveStr = ble.lastValveStateValue
-                let gasStr = ble.lastGasSystemStatusValue
-                let t = Double(preDur) + betweenElapsed
+                let t = Double(preDur) + betweenT
                 if closeBar != nil || openBar != nil {
                     let point = SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
                     betweenSamples.append(point)
@@ -2228,10 +2230,7 @@ struct ProductionTestView: View {
                     let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
                     self.log("\(stepLabel)：[Phase 2] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
                 }
-                betweenElapsed += interval
-                if betweenElapsed > 3600 { break } // 安全上限，避免意外长时间阻塞
-                let remainingNs = UInt64(max(0, interval - 0.6) * 1_000_000_000)
-                if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
+                betweenSampleIndex += 1
             }
             
             await confirmationTask.value
@@ -2246,31 +2245,25 @@ struct ProductionTestView: View {
         }
         
         // 5. Phase 3 采样（关阀后）
-        phaseElapsed = 0
+        let phase3Start = Date()
+        let phase3Times = GasLeakPhaseTiming.sampleTimes(durationSeconds: postDur, intervalSeconds: interval)
         var hasLoggedPhase3FirstRef = false
-        while phaseElapsed <= Double(postDur) {
+        for (index, sampleT) in phase3Times.enumerated() {
             guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
                 return (false, "连接丢失或用户终止")
             }
-            ble.readPressure(silent: true)
-            ble.readPressureOpen(silent: true)
-            ble.readValveState()
-            ble.readGasSystemStatus(silent: true)
-            try? await Task.sleep(nanoseconds: afterReadWaitNs)
-            var closeStr = ble.lastPressureValue
-            var openStr = ble.lastPressureOpenValue
-            if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
-                ble.readPressure(silent: true)
-                ble.readPressureOpen(silent: true)
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                closeStr = ble.lastPressureValue
-                openStr = ble.lastPressureOpenValue
-            }
+            await GasLeakPhaseTiming.waitUntil(phaseStart: phase3Start, targetT: sampleT)
+            let nextT = index + 1 < phase3Times.count ? phase3Times[index + 1] : nil
+            let bleDeadline = GasLeakPhaseTiming.bleDeadline(
+                phaseStart: phase3Start,
+                sampleT: sampleT,
+                nextSampleT: nextT,
+                durationSeconds: postDur
+            )
+            let (closeStr, openStr, valveStr, gasStr) = await readGasLeakSensorsAndWait(bleDeadline: bleDeadline)
             let closeBar = Self.parseBarFromPressureString(closeStr)
             let openBar = Self.parseBarFromPressureString(openStr)
-            let valveStr = ble.lastValveStateValue
-            let gasStr = ble.lastGasSystemStatusValue
-            let t = Double(preDur) + userActionDuration + phaseElapsed
+            let t = Double(preDur) + userActionDuration + sampleT
             if closeBar != nil || openBar != nil {
                 let point = SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
                 phase2Samples.append(point)
@@ -2288,14 +2281,9 @@ struct ProductionTestView: View {
                 let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
                 self.log("\(stepLabel)：[Phase 3] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
             }
-            phaseElapsed += interval
-            if phaseElapsed <= Double(postDur) {
-                let remainingNs = UInt64(max(0, interval - 0.6) * 1_000_000_000)
-                if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
-            }
         }
-        
-        self.log("\(stepLabel)：Phase 3 采样完成，共 \(phase2Samples.count) 点", level: .info)
+        let phase3WallSeconds = Date().timeIntervalSince(phase3Start)
+        self.log("\(stepLabel)：Phase 3 采样完成，共 \(phase2Samples.count) 点，配置 \(postDur)s，实际 \(String(format: "%.2f", phase3WallSeconds))s", level: .info)
         
         // 6. 判定：按配置的 limit 基准（Phase 1 平均或 Phase 3 首个值）计算判定线，Phase 3 最低压力低于判定线则失败
         let phase1Values = phase1Samples.compactMap { value(for: $0) }
@@ -2429,41 +2417,34 @@ struct ProductionTestView: View {
                 try? await Task.sleep(nanoseconds: 700_000_000)
 
                 var phase4Samples: [SamplePoint] = []
-                var phase4Elapsed: Double = 0
                 var phase4DropAchieved = false
                 var phase4ConsecutiveOpenZeroCount = 0
-                let phase4Interval = max(0.1, min(3.0, interval))
-                let afterReadWaitNs: UInt64 = 600_000_000
+                let phase4Interval = GasLeakPhaseTiming.clampedInterval(interval)
+                let phase4Start = Date()
+                let phase4Times = GasLeakPhaseTiming.sampleTimes(durationSeconds: monitorDur, intervalSeconds: phase4Interval)
 
-                while phase4Elapsed <= Double(monitorDur) {
+                for (index, sampleT) in phase4Times.enumerated() {
                     guard isRunning, ble.isConnected, ble.areCharacteristicsReady else {
                         return (false, "连接丢失或用户终止")
                     }
-                    ble.readPressure(silent: true)
-                    ble.readPressureOpen(silent: true)
-                    ble.readValveState()
-                    ble.readGasSystemStatus(silent: true)
-                    try? await Task.sleep(nanoseconds: afterReadWaitNs)
-                    var closeStr = ble.lastPressureValue
-                    var openStr = ble.lastPressureOpenValue
-                    if closeStr.hasPrefix("Error") || closeStr == "0 mbar" || openStr.hasPrefix("Error") || openStr == "0 mbar" {
-                        ble.readPressure(silent: true)
-                        ble.readPressureOpen(silent: true)
-                        try? await Task.sleep(nanoseconds: 200_000_000)
-                        closeStr = ble.lastPressureValue
-                        openStr = ble.lastPressureOpenValue
-                    }
+                    await GasLeakPhaseTiming.waitUntil(phaseStart: phase4Start, targetT: sampleT)
+                    let nextT = index + 1 < phase4Times.count ? phase4Times[index + 1] : nil
+                    let bleDeadline = GasLeakPhaseTiming.bleDeadline(
+                        phaseStart: phase4Start,
+                        sampleT: sampleT,
+                        nextSampleT: nextT,
+                        durationSeconds: monitorDur
+                    )
+                    let (closeStr, openStr, valveStr, gasStr) = await readGasLeakSensorsAndWait(bleDeadline: bleDeadline)
                     let closeBar = Self.parseBarFromPressureString(closeStr)
                     let openBar = Self.parseBarFromPressureString(openStr)
-                    let valveStr = ble.lastValveStateValue
-                    let gasStr = ble.lastGasSystemStatusValue
                     if openBar != nil || closeBar != nil {
                         let openMbar = (openBar ?? 0) * 1000
-                        let point = SamplePoint(t: phase4Elapsed, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
-                        if phase4Elapsed <= Double(dropWithin) && openMbar < belowMbar {
+                        let point = SamplePoint(t: sampleT, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
+                        if sampleT <= Double(dropWithin) && openMbar < belowMbar {
                             phase4DropAchieved = true
                             phase4Samples.append(point)
-                            let tStr = String(format: "%.1f", phase4Elapsed)
+                            let tStr = String(format: "%.1f", sampleT)
                             let openStrShort = String(format: "%.0f", openMbar)
                             let belowStrShort = String(format: "%.0f", belowMbar)
                             self.log("\(stepLabel)：[Phase 4] t=\(tStr)s 开阀压力 \(openStrShort) mbar < \(belowStrShort) mbar，达标，立即判定通过", level: .info)
@@ -2478,19 +2459,15 @@ struct ProductionTestView: View {
                             phase4ConsecutiveOpenZeroCount = 0
                         }
                         phase4Samples.append(point)
-                        let tStr = String(format: "%.1f", phase4Elapsed)
+                        let tStr = String(format: "%.1f", sampleT)
                         let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
                         let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
                         self.log("\(stepLabel)：[Phase 4] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
                     }
-                    phase4Elapsed += phase4Interval
-                    if phase4Elapsed <= Double(monitorDur) {
-                        let remainingNs = UInt64(max(0, phase4Interval - 0.6) * 1_000_000_000)
-                        if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
-                    }
                 }
 
-                self.log("\(stepLabel)：Phase 4 开阀泄压采样完成，共 \(phase4Samples.count) 点", level: .info)
+                let phase4WallSeconds = Date().timeIntervalSince(phase4Start)
+                self.log("\(stepLabel)：Phase 4 开阀泄压采样完成，共 \(phase4Samples.count) 点，配置 \(monitorDur)s，实际 \(String(format: "%.2f", phase4WallSeconds))s", level: .info)
 
                 // 将 Phase 4 采样并入上传的 raw data（Phase 1～4 一起上传），无论 Phase 4 判定成功与否
                 var closedSamples = capturedGasLeakClosedSamples ?? []

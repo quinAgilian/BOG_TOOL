@@ -1170,78 +1170,110 @@ struct DebugModeView: View {
         let duration = Double(leakTestDurationSeconds)
         let infinite = leakTestDurationSeconds == 0
         let interval = leakTestIntervalSec
-        let afterReadWaitNs: UInt64 = 600_000_000
         leakTestTask = Task {
-            var elapsed: Double = 0
+            let phaseStart = Date()
             var stopReason = "任务结束"
-            while !Task.isCancelled && (infinite || elapsed <= duration) {
-                let connected: Bool = await MainActor.run { ble.isConnected && ble.areCharacteristicsReady }
-                if !connected {
-                    stopReason = await MainActor.run {
-                        if !ble.isConnected {
-                            return appLanguage.string("debug.gas_leak_stop_reason_disconnected")
+            if infinite {
+                var sampleIndex = 0
+                while !Task.isCancelled {
+                    let elapsed = Double(sampleIndex) * interval
+                    let connected: Bool = await MainActor.run { ble.isConnected && ble.areCharacteristicsReady }
+                    if !connected {
+                        stopReason = await MainActor.run {
+                            if !ble.isConnected {
+                                return appLanguage.string("debug.gas_leak_stop_reason_disconnected")
+                            }
+                            if !ble.areCharacteristicsReady {
+                                return appLanguage.string("debug.gas_leak_stop_reason_gatt_not_ready")
+                            }
+                            return appLanguage.string("debug.gas_leak_stop_reason_state_invalid")
                         }
-                        if !ble.areCharacteristicsReady {
-                            return appLanguage.string("debug.gas_leak_stop_reason_gatt_not_ready")
-                        }
-                        return appLanguage.string("debug.gas_leak_stop_reason_state_invalid")
+                        break
                     }
-                    break
+                    await GasLeakPhaseTiming.waitUntil(phaseStart: phaseStart, targetT: elapsed)
+                    let bleDeadline = phaseStart.addingTimeInterval(elapsed + interval)
+                    await continuousPressureReadSample(elapsed: elapsed, bleDeadline: bleDeadline)
+                    if Task.isCancelled { break }
+                    sampleIndex += 1
                 }
-                await MainActor.run { leakTestElapsedSec = elapsed }
-                await MainActor.run {
-                    ble.readPressure(silent: true)
-                    ble.readPressureOpen(silent: true)
-                    ble.readValveMode()
-                    ble.readValveState()
-                    ble.readGasSystemStatus(silent: true)
-                }
-                try? await Task.sleep(nanoseconds: afterReadWaitNs)
-                if Task.isCancelled { break }
-                let (closeBar, openBar, valveStr, gasStr): (Double?, Double?, String?, String?) = await MainActor.run {
-                    (
-                        Self.parseBarFromPressureString(ble.lastPressureValue),
-                        Self.parseBarFromPressureString(ble.lastPressureOpenValue),
-                        ble.lastValveStateValue.isEmpty ? nil : ble.lastValveStateValue,
-                        ble.lastGasSystemStatusValue.isEmpty ? nil : ble.lastGasSystemStatusValue
+            } else {
+                let sampleTimes = GasLeakPhaseTiming.sampleTimes(durationSeconds: leakTestDurationSeconds, intervalSeconds: interval)
+                for (index, elapsed) in sampleTimes.enumerated() {
+                    if Task.isCancelled { break }
+                    let connected: Bool = await MainActor.run { ble.isConnected && ble.areCharacteristicsReady }
+                    if !connected {
+                        stopReason = await MainActor.run {
+                            if !ble.isConnected {
+                                return appLanguage.string("debug.gas_leak_stop_reason_disconnected")
+                            }
+                            if !ble.areCharacteristicsReady {
+                                return appLanguage.string("debug.gas_leak_stop_reason_gatt_not_ready")
+                            }
+                            return appLanguage.string("debug.gas_leak_stop_reason_state_invalid")
+                        }
+                        break
+                    }
+                    await GasLeakPhaseTiming.waitUntil(phaseStart: phaseStart, targetT: elapsed)
+                    let nextT = index + 1 < sampleTimes.count ? sampleTimes[index + 1] : nil
+                    let bleDeadline = GasLeakPhaseTiming.bleDeadline(
+                        phaseStart: phaseStart,
+                        sampleT: elapsed,
+                        nextSampleT: nextT,
+                        durationSeconds: leakTestDurationSeconds
                     )
+                    await continuousPressureReadSample(elapsed: elapsed, bleDeadline: bleDeadline)
                 }
-                await MainActor.run {
-                    leakTestCurrentPressureBar = closeBar
-                    leakTestCurrentPressureOpenBar = openBar
-                    if let bar = closeBar {
-                        if leakTestAlarmEnabled, let last = leakTestLastPressureForAlarm,
-                           last < leakTestAlarmThresholdBar, bar >= leakTestAlarmThresholdBar {
-                            Self.playAlarmSound()
-                        }
-                        leakTestLastPressureForAlarm = bar
-                        leakTestSamples.append(LeakTestSample(
-                            time: elapsed,
-                            phase: .pre,
-                            pressure: bar,
-                            pressureOpen: openBar,
-                            valveState: valveStr,
-                            gasSystemStatus: gasStr
-                        ))
-                    }
-                }
-                elapsed += interval
-                if !Task.isCancelled && (infinite || elapsed <= duration) {
-                    let remainingSec = interval - 0.6
-                    let remainingNs = UInt64(max(0, remainingSec) * 1_000_000_000)
-                    if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
+                if !Task.isCancelled {
+                    stopReason = String(
+                        format: appLanguage.string("debug.continuous_pressure_stop_reason_duration"),
+                        leakTestDurationSeconds
+                    )
                 }
             }
             if !Task.isCancelled {
                 await MainActor.run {
-                    if !infinite && elapsed > duration {
-                        stopReason = String(
-                            format: appLanguage.string("debug.continuous_pressure_stop_reason_duration"),
-                            Int(duration)
-                        )
-                    }
                     finishLeakTest(reason: stopReason)
                 }
+            }
+        }
+    }
+
+    private func continuousPressureReadSample(elapsed: Double, bleDeadline: Date) async {
+        await MainActor.run { leakTestElapsedSec = elapsed }
+        await MainActor.run {
+            ble.readPressure(silent: true)
+            ble.readPressureOpen(silent: true)
+            ble.readValveMode()
+            ble.readValveState()
+            ble.readGasSystemStatus(silent: true)
+        }
+        let settle = GasLeakPhaseTiming.bleSettleSeconds(until: bleDeadline)
+        try? await Task.sleep(nanoseconds: UInt64(settle * 1_000_000_000))
+        let (closeBar, openBar, valveStr, gasStr): (Double?, Double?, String?, String?) = await MainActor.run {
+            (
+                Self.parseBarFromPressureString(ble.lastPressureValue),
+                Self.parseBarFromPressureString(ble.lastPressureOpenValue),
+                ble.lastValveStateValue.isEmpty ? nil : ble.lastValveStateValue,
+                ble.lastGasSystemStatusValue.isEmpty ? nil : ble.lastGasSystemStatusValue
+            )
+        }
+        await MainActor.run {
+            leakTestCurrentPressureBar = closeBar
+            leakTestCurrentPressureOpenBar = openBar
+            if let bar = closeBar {
+                if leakTestAlarmEnabled, let last = leakTestLastPressureForAlarm,
+                   last < leakTestAlarmThresholdBar, bar >= leakTestAlarmThresholdBar {
+                    Self.playAlarmSound()
+                }
+                leakTestLastPressureForAlarm = bar
+                leakTestSamples.append(LeakTestSample(
+                    time: elapsed,
+                    phase: .pre,
+                    pressure: bar,
+                    pressureOpen: openBar,
+                    valveState: valveStr,
+                    gasSystemStatus: gasStr
+                ))
             }
         }
     }
@@ -1685,13 +1717,20 @@ struct DebugModeView: View {
     /// 启动连续压力测试的单个采样阶段：轮询在后台执行，仅 BLE 与状态更新上主线程
     private func startLeakTestPolling(phase: LeakTestPhase, startOffset: Double, duration: Double) {
         let interval = leakTestIntervalSec
-        let afterReadWaitNs: UInt64 = 600_000_000
+        let durationSeconds = max(0, Int(duration.rounded()))
         leakTestTask = Task {
-            var phaseElapsed: Double = 0
             var stopReason = "任务结束"
-            while !Task.isCancelled && phaseElapsed <= duration {
+            var completedFullPhase = true
+            let phaseStart = Date()
+            let sampleTimes = GasLeakPhaseTiming.sampleTimes(durationSeconds: durationSeconds, intervalSeconds: interval)
+            for (index, sampleT) in sampleTimes.enumerated() {
+                if Task.isCancelled {
+                    completedFullPhase = false
+                    break
+                }
                 let connected: Bool = await MainActor.run { ble.isConnected && ble.areCharacteristicsReady }
                 if !connected {
+                    completedFullPhase = false
                     stopReason = await MainActor.run {
                         if !ble.isConnected {
                             return appLanguage.string("debug.gas_leak_stop_reason_disconnected")
@@ -1703,7 +1742,15 @@ struct DebugModeView: View {
                     }
                     break
                 }
-                await MainActor.run { leakTestElapsedSec = startOffset + phaseElapsed }
+                await GasLeakPhaseTiming.waitUntil(phaseStart: phaseStart, targetT: sampleT)
+                let nextT = index + 1 < sampleTimes.count ? sampleTimes[index + 1] : nil
+                let bleDeadline = GasLeakPhaseTiming.bleDeadline(
+                    phaseStart: phaseStart,
+                    sampleT: sampleT,
+                    nextSampleT: nextT,
+                    durationSeconds: durationSeconds
+                )
+                await MainActor.run { leakTestElapsedSec = startOffset + sampleT }
                 await MainActor.run {
                     ble.readPressure(silent: true)
                     ble.readPressureOpen(silent: true)
@@ -1711,7 +1758,8 @@ struct DebugModeView: View {
                     ble.readValveState()
                     ble.readGasSystemStatus(silent: true)
                 }
-                try? await Task.sleep(nanoseconds: afterReadWaitNs)
+                let settle = GasLeakPhaseTiming.bleSettleSeconds(until: bleDeadline)
+                try? await Task.sleep(nanoseconds: UInt64(settle * 1_000_000_000))
                 if Task.isCancelled { break }
                 let (closeBar, openBar, valveStr, gasStr): (Double?, Double?, String?, String?) = await MainActor.run {
                     (
@@ -1731,7 +1779,7 @@ struct DebugModeView: View {
                         }
                         leakTestLastPressureForAlarm = bar
                         leakTestSamples.append(LeakTestSample(
-                            time: startOffset + phaseElapsed,
+                            time: startOffset + sampleT,
                             phase: phase,
                             pressure: bar,
                             pressureOpen: openBar,
@@ -1740,21 +1788,15 @@ struct DebugModeView: View {
                         ))
                     }
                 }
-                phaseElapsed += interval
-                if !Task.isCancelled && phaseElapsed <= duration {
-                    let remainingSec = interval - 0.6
-                    let remainingNs = UInt64(max(0, remainingSec) * 1_000_000_000)
-                    if remainingNs > 0 { try? await Task.sleep(nanoseconds: remainingNs) }
-                }
             }
             if !Task.isCancelled {
                 await MainActor.run {
-                    let reachedDuration = phaseElapsed > duration
+                    let endSampleT = sampleTimes.last ?? 0
                     handleLeakTestPhaseCompletion(
                         phase,
                         stopReason: stopReason,
-                        reachedDuration: reachedDuration,
-                        endElapsed: startOffset + min(phaseElapsed, duration)
+                        reachedDuration: completedFullPhase,
+                        endElapsed: startOffset + endSampleT
                     )
                 }
             }
