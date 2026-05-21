@@ -14,7 +14,9 @@ enum AuxValveSettingsDefaults {
     static let movingPollIntervalMs: Int = 200
     static let movingPollMaxSec: TimeInterval = 1.0
 
-    static let healthCheckIntervalSec: TimeInterval = 15.0
+    static let healthCheckIntervalSec: TimeInterval = 3.0
+    /// Previous factory default before v3.10 alignment; migrated on load if still stored
+    static let legacyHealthCheckIntervalSec: TimeInterval = 15.0
     static let healthHttpTimeoutSec: TimeInterval = 2.0
 
     static let latencyGreenMaxMs: Double = 500

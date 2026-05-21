@@ -27,6 +27,8 @@ private enum AuxValveSettingsKeys {
     static let cachedHost = "aux_valve_cached_host"
     static let cachedPort = "aux_valve_cached_port"
     static let cachedAt = "aux_valve_cached_at"
+    /// One-time migration: old default health poll was 15s (plan now 3s)
+    static let migratedHealthInterval3s = "aux_valve_migrated_health_interval_3s"
 }
 
 /// 写入主界面日志区（由 ContentView 注入 BLEManager.appendLog）
@@ -246,6 +248,7 @@ final class AuxValveSettings: ObservableObject {
         operationBudgetSec = Self.loadInterval(ud, key: AuxValveSettingsKeys.operationBudgetSec, defaultValue: AuxValveSettingsDefaults.operationBudgetSec, min: AuxValveSettingsDefaults.operationBudgetMin, max: AuxValveSettingsDefaults.operationBudgetMax)
         movingPollIntervalMs = Self.loadInt(ud, key: AuxValveSettingsKeys.movingPollIntervalMs, defaultValue: AuxValveSettingsDefaults.movingPollIntervalMs, min: AuxValveSettingsDefaults.movingPollIntervalMinMs, max: AuxValveSettingsDefaults.movingPollIntervalMaxMs)
         movingPollMaxSec = Self.loadInterval(ud, key: AuxValveSettingsKeys.movingPollMaxSec, defaultValue: AuxValveSettingsDefaults.movingPollMaxSec, min: AuxValveSettingsDefaults.movingPollMaxMinSec, max: AuxValveSettingsDefaults.movingPollMaxMaxSec)
+        Self.migrateLegacyHealthCheckInterval(ud: ud)
         healthCheckIntervalSec = Self.loadInterval(ud, key: AuxValveSettingsKeys.healthCheckIntervalSec, defaultValue: AuxValveSettingsDefaults.healthCheckIntervalSec, min: AuxValveSettingsDefaults.healthCheckIntervalMin, max: AuxValveSettingsDefaults.healthCheckIntervalMax)
         healthHttpTimeoutSec = Self.loadInterval(ud, key: AuxValveSettingsKeys.healthHttpTimeoutSec, defaultValue: AuxValveSettingsDefaults.healthHttpTimeoutSec, min: AuxValveSettingsDefaults.healthHttpTimeoutMin, max: AuxValveSettingsDefaults.healthHttpTimeoutMax)
         latencyGreenMaxMs = Self.loadDouble(ud, key: AuxValveSettingsKeys.latencyGreenMaxMs, defaultValue: AuxValveSettingsDefaults.latencyGreenMaxMs, min: AuxValveSettingsDefaults.latencyGreenMinMs, max: AuxValveSettingsDefaults.latencyGreenMaxBoundMs)
@@ -362,6 +365,20 @@ final class AuxValveSettings: ObservableObject {
             if persist {
                 UserDefaults.standard.set(latencyYellowMaxMs, forKey: AuxValveSettingsKeys.latencyYellowMaxMs)
             }
+        }
+    }
+
+    /// v3.10: 工位若仍存旧默认 15s，一次性改为 3s（用户显式设为其他值不动）
+    private static func migrateLegacyHealthCheckInterval(ud: UserDefaults) {
+        guard !ud.bool(forKey: AuxValveSettingsKeys.migratedHealthInterval3s) else { return }
+        defer { ud.set(true, forKey: AuxValveSettingsKeys.migratedHealthInterval3s) }
+        guard ud.object(forKey: AuxValveSettingsKeys.healthCheckIntervalSec) != nil else { return }
+        let stored = ud.double(forKey: AuxValveSettingsKeys.healthCheckIntervalSec)
+        if abs(stored - AuxValveSettingsDefaults.legacyHealthCheckIntervalSec) < 0.001 {
+            ud.set(
+                AuxValveSettingsDefaults.healthCheckIntervalSec,
+                forKey: AuxValveSettingsKeys.healthCheckIntervalSec
+            )
         }
     }
 
