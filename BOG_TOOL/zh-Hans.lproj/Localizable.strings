@@ -337,16 +337,16 @@
 "production_test_rules.step_read_serial_number_criteria" = "✓ 通过：超时时间内收到非空 SN。✗ 失败：为空或超时。";
 "production_test_rules.serial_read_timeout_section" = "序列号读取";
 "production_test_rules.serial_read_timeout_label" = "读取超时";
-"production_test_rules.step2_title" = "确认固件版本";
+"production_test_rules.step2_title" = "核对固件版本";
 "production_test_rules.step2_desc" = "检查设备固件版本是否与期望版本匹配。";
 "production_test_rules.step2_criteria" = "✓ 通过：固件版本号包含配置的版本字符串。";
-"production_test_rules.step3_title" = "检查 RTC";
+"production_test_rules.step3_title" = "核对设备时钟";
 "production_test_rules.step3_desc" = "检查设备RTC并与系统时间比较。";
 "production_test_rules.step3_criteria" = "✓ 通过：时间误差 ≤ 60秒。⚠ 警告：60-300秒，将写入RTC并重新检查。✗ 失败：> 5秒。";
-"production_test_rules.step4_title" = "读取压力值";
+"production_test_rules.step4_title" = "核对气路压力";
 "production_test_rules.step4_desc" = "读取关闭和开启状态下的压力值。";
 "production_test_rules.step4_criteria" = "✓ 通过：关闭状态 > 1.300 mbar，开启状态 > 1.1 mbar。";
-"production_test_rules.step_disable_diag_title" = "屏蔽系统气体自检（Disable diag）";
+"production_test_rules.step_disable_diag_title" = "禁用气体自检";
 "production_test_rules.step_disable_diag_desc" = "向 co2PressureLimits 写入 12 个 0x00 以屏蔽气体系统自检功能。";
 "production_test_rules.step_disable_diag_pass_polled" = "通过：已向压力限值写入 12×0x00。规则 %1$@ · 等待 %2$@ s · 轮询 ≤ %3$@ s · 读值 %4$@ · 允许 Gas 码 %5$@";
 "production_test_rules.step_disable_diag_pass_no_poll" = "通过：已向压力限值写入 12×0x00。规则 %1$@ · 等待 %2$@ s · 未轮询 Gas status · 允许码 %3$@";
@@ -359,7 +359,7 @@
 "production_test_rules.disable_diag_valve_check_enabled" = "禁用自检后阀门检查";
 "production_test_rules.disable_diag_valve_check_settle_seconds" = "阀门稳定等待（秒）";
 "production_test_rules.disable_diag_valve_check_pressure_read_delay_seconds" = "读压回读等待（秒）";
-"production_test_rules.step_gas_system_status_title" = "读取 Gas system status";
+"production_test_rules.step_gas_system_status_title" = "确认气体系统状态";
 "production_test_rules.gas_status_read_timeout" = "Gas system status: 读取超时或无效";
 "production_test_rules.gas_status_pass" = "Gas system status: %@";
 "production_test_rules.gas_status_fail_expected" = "Gas system status: %@，不在允许集合内";
@@ -368,7 +368,7 @@
 "production_test_rules.step_gas_leak_title" = "气体泄漏检测";
 "production_test_rules.step_gas_leak_desc" = "引入 Debug 模式方法：关阀前/关阀后连续采样，按压降阈值判定是否泄漏。";
 "production_test_rules.step_gas_leak_criteria" = "✓ 通过：Phase 1 平均压力 − Phase 3 最低压力 ≤ 压降阈值。✗ 失败：压降超过阈值判定为泄漏。";
-"production_test_rules.step_gas_leak_closed_title" = "气体泄漏检测（关阀压力）";
+"production_test_rules.step_gas_leak_closed_title" = "检测关阀漏气";
 "production_test_rules.step_gas_leak_closed_desc" = "关阀压力判定；关阀前/关阀后采样与压降阈值可单独配置。";
 "production_test_rules.step_gas_leak_closed_criteria" = "✓ 通过：压降未超阈值。✗ 失败：压降超过阈值判定为泄漏。（逻辑待实现）";
 "production_test_rules.gas_leak_limit_source_title" = "判定线基准";
@@ -433,7 +433,7 @@
 "production_test_rules.step5_title" = "待定";
 "production_test_rules.step5_desc" = "待定义的额外测试步骤。";
 "production_test_rules.step5_criteria" = "";
-"production_test_rules.step_valve_title" = "确保电磁阀是开启的";
+"production_test_rules.step_valve_title" = "确认电磁阀开启";
 "production_test_rules.step_valve_desc" = "检查并确保设备电磁阀处于开启状态。";
 "production_test_rules.step_valve_criteria" = "通过：电磁阀已开启。";
 "production_test_rules.step_reset_title" = "重启设备";
@@ -443,10 +443,10 @@
 "production_test_rules.step_factory_reset_desc" = "通过 Testing 特征擦除 NVS（设备将重启；需固件 1.1.2+ 或 0.x > 0.4.1）。";
 "production_test_rules.step_factory_reset_criteria" = "✓ 通过：已发送恢复出厂且设备已断开。";
 "production_test_rules.step_factory_reset_confirmed_pairing_removed" = "✓ 通过：恢复出厂成功（设备已清除配对）。";
-"production_test_rules.step_ota_title" = "断开前 OTA";
+"production_test_rules.step_ota_title" = "执行固件升级";
 "production_test_rules.step_ota_desc" = "仅当步骤2（确认固件版本）发现版本不匹配且已开启「若 FW 不匹配则触发 OTA」时执行。OTA 步骤始终在 SOP 中，是否执行由该设置决定。";
 "production_test_rules.step_ota_criteria" = "✓ 通过：OTA 完成且设备已重新连接。";
-"production_test_rules.step_disconnect_title" = "安全断开连接";
+"production_test_rules.step_disconnect_title" = "断开设备";
 "production_test_rules.step_disconnect_desc" = "所有测试完成后安全断开设备连接。";
 "production_test_rules.step_disconnect_criteria" = "✓ 通过：设备成功断开连接。";
 "production_test_rules.drag_hint" = "拖动以重新排序（第一步和最后一步已锁定）";
@@ -581,7 +581,7 @@
 "production_test.result_overlay_title_pass" = "产测通过";
 "production_test.result_overlay_title_fail" = "产测失败";
 "production_test.result_overlay_dismiss" = "关闭";
-"production_test.result_criteria_fw" = "固件（一致或 OTA 成功）";
+"production_test.result_criteria_fw" = "确认固件（匹配或升级）";
 "production_test.need_retest" = "需要重测";
 "production_test.need_retest_detail" = "本次因当前固件不支持恢复出厂/重启而在 OTA 后发送了 reboot，请重测以执行后续步骤。";
 "production_test.step_disconnect_after_factory_reset_ok" = "✓ 通过：恢复出厂后设备已断开，符合预期。";
@@ -676,9 +676,9 @@
 "firmware_manager.debug_target" = "目标固件（Debug OTA）";
 "firmware_manager.sop_version" = "产测按 SOP 期望版本自动选择";
 
-"production_test_rules.step_verify_hw_rev_title" = "读取 HW_REV";
+"production_test_rules.step_verify_hw_rev_title" = "核对硬件修订";
 "production_test_rules.step_verify_hw_rev_desc" = "从 Device Information（2A27）读取 HW_REV；超时内读到非空值即通过。";
-"production_test_rules.step_hw_rev_shipping_region_title" = "出货区域 HW_REV";
+"production_test_rules.step_hw_rev_shipping_region_title" = "设置出货区域";
 "production_test_rules.step_hw_rev_shipping_region_desc" = "在完成 HW_REV 读取后，写入表示美国/欧洲出货的 HW_REV；可选自动改写并回读确认。";
 "production_test_rules.shipping_hw_rev_section_title" = "出货区域（HW_REV）";
 "production_test_rules.shipping_hw_rev_hint" = "分别为美国与欧洲配置完整的 P##V##R##。本步骤按「出货目的地」选用对应字符串写入设备。";
