@@ -97,7 +97,7 @@ flowchart LR
 |------|------|
 | LED | 离线常亮（实现为**红**）；配网/连接中**蓝闪**；STA 在线**绿** |
 | 按键 | 长按 ≥3s：关阀 → 清 `ssid`/`pass` → SoftAP `BOG-VALVE-{device_id}`（开放） |
-| 发现 | mDNS `_bogvalve._tcp`，实例 `BOG-VALVE-{device_id}`，端口 **8080** |
+| 发现 | mDNS `_bogvalve._tcp`，实例 `BOG-VALVE-{device_id}`，端口 **12306** |
 | 身份 | **`device_id`** = WiFi MAC 后 4 位大写 hex（如 `A1B2`），**工位绑定 ID，不绑定 IP** |
 | 阀动作 | **150ms** 脉冲，HTTP **同步**返回；典型 `elapsed_ms` ≈ 0.2–0.5s |
 | Fail-safe | STA 离线 **60s** 或 HTTP 空闲 **60s** → 自动关阀脉冲 |
@@ -604,7 +604,7 @@ canUseAuxValveAutomation =
 | 常量 | 值 | 说明 |
 |------|-----|------|
 | mDNS 服务类型 | `_bogvalve._tcp` | API.md |
-| 默认 HTTP 端口 | `8080` | 以 mDNS TXT / API.md 为准；若 TXT 带端口则**用 TXT，非写死 IP:8080** |
+| 默认 HTTP 端口 | `12306` | 以 mDNS TXT / API.md 为准；若 TXT 带端口则**用 TXT，非写死 IP:12306** |
 | API 路径前缀 | `/api/v1` | API.md |
 | `POST /valve` body | `action` + `device_id` | API.md |
 
@@ -683,8 +683,8 @@ P2 交付前：对 `AuxValve*.swift` + 产测编排改动文件执行 §4.11.4 c
 |------|------|------|------|
 | **P0** | 辅材固件 HTTP/mDNS/阀/配网 | `../BOG_VALVE_WIFI` | **已完成** |
 | **P1** | 产线样机、气路 SOP、安全位 | 硬件/工艺 | 进行中 |
-| **P2a** | 独立全局 UI（§4.6）+ Discovery/Client + 健康探测/底栏延迟 | BOG_TOOL | 待做 |
-| **P2b** | 产测编排 + §4.10 规则联动 + §4.9 Alert | BOG_TOOL | 待做 |
+| **P2a** | 独立全局 UI（§4.6）+ Discovery/Client + 健康探测/底栏延迟 | BOG_TOOL | **已完成** |
+| **P2b** | 产测编排 + §4.10 规则联动 + §4.9 Alert + Phase 1 keepalive | BOG_TOOL | **已完成**（联调/回归中） |
 | — | BLE 产测核心 | BOG_TOOL | **不修改** |
 
 ---
