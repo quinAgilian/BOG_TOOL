@@ -258,7 +258,8 @@ final class AuxValveWiFiClient {
             }
         }
         connection.start(queue: resolveQueue)
-        resolveQueue.asyncAfter(deadline: .now() + AuxValveSettingsDefaults.probeTimeoutSec) {
+        let probeTimeout = settings?.probeTimeoutSec ?? AuxValveSettingsDefaults.probeTimeoutSec
+        resolveQueue.asyncAfter(deadline: .now() + probeTimeout) {
             if connection.state != .ready && connection.state != .cancelled {
                 connection.cancel()
                 completion(nil, nil)
