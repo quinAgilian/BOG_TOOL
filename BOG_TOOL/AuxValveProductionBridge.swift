@@ -133,6 +133,46 @@ enum AuxValveProductionBridge {
             break
         }
     }
+
+    /// §4.8：漏气 Phase 1 期间周期性 `GET /health`，刷新辅材 HTTP 空闲计时（间隔须 < 固件 60s fail-safe）
+    static func startPhase1Keepalive(settings: AuxValveSettings) -> Task<Void, Never>? {
+        guard settings.keepaliveEnabled, shouldAttemptWifi(settings: settings) else { return nil }
+        let interval = settings.keepaliveIntervalSec
+        let client = settings.wifiClient
+        settings.auxLog("gas leak Phase 1 keepalive start interval=\(interval)s")
+        return Task {
+            await sendKeepalivePing(settings: settings, client: client)
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                } catch {
+                    break
+                }
+                if Task.isCancelled { break }
+                await sendKeepalivePing(settings: settings, client: client)
+            }
+        }
+    }
+
+    private static func sendKeepalivePing(settings: AuxValveSettings, client: AuxValveWiFiClient) async {
+        do {
+            let endpoint: (host: String, port: UInt16)
+            if let cached = settings.cachedEndpointIfValid() {
+                endpoint = cached
+            } else {
+                let deadline = Date().addingTimeInterval(settings.probeTimeoutSec + settings.discoverTimeoutSec)
+                endpoint = try await client.resolveTargetDevice(settings: settings, budgetDeadline: deadline)
+            }
+            _ = try await client.getHealth(
+                host: endpoint.host,
+                port: endpoint.port,
+                settings: settings,
+                timeout: settings.healthHttpTimeoutSec
+            )
+        } catch {
+            settings.auxLog("keepalive GET /health failed: \(error.localizedDescription)", level: .warning)
+        }
+    }
 }
 
 enum AuxValveAutomationMode {

@@ -2148,6 +2148,9 @@ struct ProductionTestView: View {
                 return (false, appLanguage.string("debug.gas_leak_stop_reason_pipeline_not_confirmed"))
             }
         }
+
+        let phase1Keepalive = AuxValveProductionBridge.startPhase1Keepalive(settings: auxValveSettings)
+        defer { phase1Keepalive?.cancel() }
         
         // 3. Phase 1 采样（关阀前）
         struct SamplePoint {
