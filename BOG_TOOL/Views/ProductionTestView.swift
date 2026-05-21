@@ -80,6 +80,7 @@ struct ProductionTestView: View {
     @EnvironmentObject private var serverClient: ServerClient
     @EnvironmentObject private var productionState: ProductionTestState
     @EnvironmentObject private var productionRulesStore: ProductionRulesStore
+    @EnvironmentObject private var auxValveSettings: AuxValveSettings
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var isRunning = false
@@ -158,6 +159,12 @@ struct ProductionTestView: View {
     /// 压力读取失败时是否弹窗确认重测（由产测规则开关控制）；弹窗回调
     @State private var showPressureRetryAlert = false
     @State private var pressureRetryResume: ((Bool) -> Void)?
+
+    /// §4.9.3 WiFi 气阀编排失败：提醒切换人工 / 重试 / 关闭自动
+    @State private var showAuxValveFailureAlert = false
+    @State private var auxValveFailureTitle = ""
+    @State private var auxValveFailureMessage = ""
+    @State private var auxValveFailureResume: ((AuxValveFailureAlertChoice) -> Void)?
 
     /// 产测提示音：弹窗提示用户做动作时播放，提升可见性
     private func playProductionHintSound() {
@@ -439,6 +446,25 @@ struct ProductionTestView: View {
             }
         } message: {
             Text(gasLeakConfirmMessage)
+        }
+        .alert(auxValveFailureTitle, isPresented: $showAuxValveFailureAlert) {
+            Button(appLanguage.string("aux_valve.alert_use_manual")) {
+                auxValveFailureResume?(.useManualThisRun)
+                auxValveFailureResume = nil
+                showAuxValveFailureAlert = false
+            }
+            Button(appLanguage.string("aux_valve.alert_retry")) {
+                auxValveFailureResume?(.retry)
+                auxValveFailureResume = nil
+                showAuxValveFailureAlert = false
+            }
+            Button(appLanguage.string("aux_valve.alert_disable"), role: .destructive) {
+                auxValveFailureResume?(.disableAutomation)
+                auxValveFailureResume = nil
+                showAuxValveFailureAlert = false
+            }
+        } message: {
+            Text(auxValveFailureMessage)
         }
         .alert(appLanguage.string("production_test.pressure_fail_retry_alert_title"), isPresented: $showPressureRetryAlert) {
             Button(appLanguage.string("production_test.pressure_fail_retry_retry_action")) {
@@ -1438,6 +1464,46 @@ struct ProductionTestView: View {
         }
         ble.appendLog(fqcLine, level: bleLevel)
     }
+
+    /// §4.7 / §4.10.3：读压前 WiFi open；成功跳过 `pressure_pipeline_ready_*`；失败 §4.9 Alert 后仍须人工确认
+    private func tryOpenLineValveViaWiFiBeforePressureStep() async -> Bool {
+        guard AuxValveProductionBridge.shouldAttemptWifi(settings: auxValveSettings) else {
+            return false
+        }
+        self.log("步骤4: 尝试 WiFi 打开产线入口阀 (device_id=\(auxValveSettings.normalizedTargetDeviceId))…", level: .info)
+        let coordinator = AuxValveCoordinator(settings: auxValveSettings)
+        let result = await AuxValveProductionBridge.ensureLineValveOpen(
+            settings: auxValveSettings,
+            coordinator: coordinator,
+            presentFailureAlert: presentAuxValveFailureAlert
+        )
+        switch result {
+        case .wifiSucceeded:
+            self.log("步骤4: WiFi 产线入口阀已开，跳过气路确认弹窗", level: .info)
+            return true
+        case .useManualConfirm:
+            return false
+        case .wifiFailedUseManualConfirm(let reason):
+            self.log("步骤4: WiFi 开阀未成功 (\(reason))，改用手动气路确认", level: .warning)
+            return false
+        }
+    }
+
+    private func presentAuxValveFailureAlert(reason: String, elapsedSec: TimeInterval) async -> AuxValveFailureAlertChoice {
+        await withCheckedContinuation { (cont: CheckedContinuation<AuxValveFailureAlertChoice, Never>) in
+            DispatchQueue.main.async {
+                self.auxValveFailureTitle = self.appLanguage.string("aux_valve.alert_failure_title")
+                self.auxValveFailureMessage = String(
+                    format: self.appLanguage.string("aux_valve.alert_failure_message"),
+                    reason,
+                    elapsedSec
+                )
+                self.auxValveFailureResume = { cont.resume(returning: $0) }
+                self.showAuxValveFailureAlert = true
+                self.playProductionHintSound()
+            }
+        }
+    }
     
     /// 与 log 类似，但将大段 payload 不写入日志行，而是通过 BLEManager 的「点击预览」机制展示；用于上传产测记录 payload 等避免刷屏
     private func logWithPayloadPreview(_ shortMessage: String, payloadJson: String, level: LogLevel = .info) {
@@ -2059,11 +2125,15 @@ struct ProductionTestView: View {
         ble.readValveState()
         try? await Task.sleep(nanoseconds: 700_000_000)
         
-        // 2. Phase 1 前气路确认（可选）
-        if !config.requirePipelineReadyConfirm {
-            self.log("\(stepLabel)：\(appLanguage.string("production_test.gas_leak_phase1_confirm_skipped"))", level: .info)
+        // 2. Phase 1 前气路确认（可选）；WiFi 自动模式或规则关闭时跳过
+        let skipPhase1PipelineConfirm = !config.requirePipelineReadyConfirm || auxValveSettings.canUseAuxValveAutomation
+        if skipPhase1PipelineConfirm {
+            let skipNote = auxValveSettings.canUseAuxValveAutomation
+                ? "（WiFi 自动气阀）"
+                : ""
+            self.log("\(stepLabel)：\(appLanguage.string("production_test.gas_leak_phase1_confirm_skipped"))\(skipNote)", level: .info)
         }
-        if config.requirePipelineReadyConfirm {
+        if config.requirePipelineReadyConfirm && !skipPhase1PipelineConfirm {
             let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
                 DispatchQueue.main.async {
                     self.gasLeakConfirmTitle = appLanguage.string("debug.gas_leak_pipeline_ready_title")
@@ -2184,64 +2254,100 @@ struct ProductionTestView: View {
             }
         }
         
-        // 4. Phase 2：用户确认关阀期间采样，并统计耗时
+        // 4. Phase 2：WiFi 关产线入口阀（§4.4）或人工确认关阀期间采样
         var userActionDuration: Double = 0
         if !config.requireValveClosedConfirm {
             self.log("\(stepLabel)：\(appLanguage.string("production_test.gas_leak_phase2_skipped"))", level: .info)
         }
         if config.requireValveClosedConfirm {
-            let userActionStart = Date()
-            let betweenPhaseStart = Date()
-            var betweenSampleIndex = 0
-            var userConfirmed = false
-            var userResponded = false
-            
-            // 弹出确认弹窗（关阀确认）
-            let confirmationTask = Task {
-                let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                    DispatchQueue.main.async {
-                        self.gasLeakConfirmTitle = appLanguage.string("debug.gas_leak_valve_closed_title")
-                        self.gasLeakConfirmMessage = appLanguage.string("debug.gas_leak_valve_closed_message")
-                        self.gasLeakConfirmResume = { cont.resume(returning: $0) }
-                        self.showGasLeakConfirmAlert = true
-                        self.playProductionHintSound()
-                    }
-                }
-                userConfirmed = confirmed
-                userResponded = true
+            let coordinator = AuxValveCoordinator(settings: auxValveSettings)
+            if AuxValveProductionBridge.shouldAttemptWifi(settings: auxValveSettings) {
+                self.log(
+                    "\(stepLabel)：Phase 2 尝试 WiFi 关闭产线入口阀 (device_id=\(auxValveSettings.normalizedTargetDeviceId)，reachable=\(auxValveSettings.isAuxValveReachable))…",
+                    level: .info
+                )
             }
-            
-            // Phase 2 采样：在用户尚未响应弹窗期间采样，用户一旦确认/取消就立即结束采样
-            while isRunning, ble.isConnected, ble.areCharacteristicsReady, !userResponded {
-                let betweenT = Double(betweenSampleIndex) * interval
-                if betweenT > 3600 { break } // 安全上限，避免意外长时间阻塞
-                await GasLeakPhaseTiming.waitUntil(phaseStart: betweenPhaseStart, targetT: betweenT)
-                let bleDeadline = betweenPhaseStart.addingTimeInterval(betweenT + interval)
+            let wifiCloseResult = await AuxValveProductionBridge.ensureLineValveClose(
+                settings: auxValveSettings,
+                coordinator: coordinator,
+                presentFailureAlert: presentAuxValveFailureAlert
+            )
+
+            if wifiCloseResult == .wifiSucceeded {
+                self.log("\(stepLabel)：WiFi 产线入口阀已关，跳过关阀确认弹窗（§4.4 单次 BLE 读压）", level: .info)
+                let userActionStart = Date()
+                let betweenPhaseStart = Date()
+                let bleDeadline = betweenPhaseStart.addingTimeInterval(Double(preDur) + interval)
                 let (closeStr, openStr, valveStr, gasStr) = await readGasLeakSensorsAndWait(bleDeadline: bleDeadline)
                 let closeBar = Self.parseBarFromPressureString(closeStr)
                 let openBar = Self.parseBarFromPressureString(openStr)
-                let t = Double(preDur) + betweenT
+                let t = Double(preDur)
                 if closeBar != nil || openBar != nil {
                     let point = SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
                     betweenSamples.append(point)
                     trackConsecutiveZero(value(for: point), phaseLabel: "Phase 2", t: t)
                     let tStr = String(format: "%.1f", t)
-                    let closeStr = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
-                    let openStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
-                    self.log("\(stepLabel)：[Phase 2] t=\(tStr)s，关阀=\(closeStr)，开阀=\(openStr)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
+                    let closeDisplay = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                    let openDisplay = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                    self.log("\(stepLabel)：[Phase 2] t=\(tStr)s，关阀=\(closeDisplay)，开阀=\(openDisplay)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
                 }
-                betweenSampleIndex += 1
+                userActionDuration = Date().timeIntervalSince(userActionStart)
+                self.log("\(stepLabel)：Phase 2 WiFi 关阀后采样 1 点，耗时 \(String(format: "%.2f", userActionDuration)) 秒", level: .info)
+            } else {
+                self.log(
+                    "\(stepLabel)：Phase 2 WiFi 未关阀成功 (\(wifiCloseResult))，enabled=\(auxValveSettings.enabled) manualRun=\(auxValveSettings.useManualValveForCurrentRun) → 人工关阀确认",
+                    level: .warning
+                )
+                let userActionStart = Date()
+                let betweenPhaseStart = Date()
+                var betweenSampleIndex = 0
+                var userConfirmed = false
+                var userResponded = false
+
+                let confirmationTask = Task {
+                    let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                        DispatchQueue.main.async {
+                            self.gasLeakConfirmTitle = appLanguage.string("debug.gas_leak_valve_closed_title")
+                            self.gasLeakConfirmMessage = appLanguage.string("debug.gas_leak_valve_closed_message")
+                            self.gasLeakConfirmResume = { cont.resume(returning: $0) }
+                            self.showGasLeakConfirmAlert = true
+                            self.playProductionHintSound()
+                        }
+                    }
+                    userConfirmed = confirmed
+                    userResponded = true
+                }
+
+                while isRunning, ble.isConnected, ble.areCharacteristicsReady, !userResponded {
+                    let betweenT = Double(betweenSampleIndex) * interval
+                    if betweenT > 3600 { break }
+                    await GasLeakPhaseTiming.waitUntil(phaseStart: betweenPhaseStart, targetT: betweenT)
+                    let bleDeadline = betweenPhaseStart.addingTimeInterval(betweenT + interval)
+                    let (closeStr, openStr, valveStr, gasStr) = await readGasLeakSensorsAndWait(bleDeadline: bleDeadline)
+                    let closeBar = Self.parseBarFromPressureString(closeStr)
+                    let openBar = Self.parseBarFromPressureString(openStr)
+                    let t = Double(preDur) + betweenT
+                    if closeBar != nil || openBar != nil {
+                        let point = SamplePoint(t: t, pressureClosed: closeBar, pressureOpen: openBar, valveState: valveStr.isEmpty ? nil : valveStr, gasSystemStatus: gasStr.isEmpty ? nil : gasStr)
+                        betweenSamples.append(point)
+                        trackConsecutiveZero(value(for: point), phaseLabel: "Phase 2", t: t)
+                        let tStr = String(format: "%.1f", t)
+                        let closeDisplay = closeBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                        let openDisplay = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "--"
+                        self.log("\(stepLabel)：[Phase 2] t=\(tStr)s，关阀=\(closeDisplay)，开阀=\(openDisplay)，阀门=\(valveStr.isEmpty ? "--" : valveStr)，Gas=\(gasStr.isEmpty ? "--" : gasStr)", level: .debug)
+                    }
+                    betweenSampleIndex += 1
+                }
+
+                await confirmationTask.value
+                guard userConfirmed else {
+                    let msg = appLanguage.string("debug.gas_leak_stop_reason_valve_not_confirmed")
+                    self.log("\(stepLabel)：✗ \(msg)", level: .warning)
+                    return (false, msg)
+                }
+                userActionDuration = Date().timeIntervalSince(userActionStart)
+                self.log("\(stepLabel)：Phase 2 采样完成，共 \(betweenSamples.count) 点，耗时 \(String(format: "%.2f", userActionDuration)) 秒", level: .info)
             }
-            
-            await confirmationTask.value
-            guard userConfirmed else {
-                let msg = appLanguage.string("debug.gas_leak_stop_reason_valve_not_confirmed")
-                self.log("\(stepLabel)：✗ \(msg)", level: .warning)
-                return (false, msg)
-            }
-            userActionDuration = Date().timeIntervalSince(userActionStart)
-            let durationStr = String(format: "%.2f", userActionDuration)
-            self.log("\(stepLabel)：Phase 2 采样完成，共 \(betweenSamples.count) 点，耗时 \(durationStr) 秒", level: .info)
         }
         
         // 5. Phase 3 采样（关阀后）
@@ -2527,6 +2633,7 @@ struct ProductionTestView: View {
         currentTestId = sessionRunId
         lastTestStartTime = Date()
         lastTestEndTime = nil
+        auxValveSettings.resetManualValveForNewRun()
 
         // 如果未连接，先连接设备
         if !ble.isConnected {
@@ -3241,8 +3348,9 @@ struct ProductionTestView: View {
                     var closedPressureValue: Double? = nil
                     var openPressureValue: Double? = nil
                     pressureRetryLoop: while true {
-                        // 在开始压力测试前，让产线人员确认气路与阀门状态
-                        do {
+                        // WiFi 产线入口阀已开则跳过气路确认弹窗（§4.7）；失败或未启用时仍走人工确认
+                        let skipPipelineConfirm = await self.tryOpenLineValveViaWiFiBeforePressureStep()
+                        if !skipPipelineConfirm {
                             let confirmed = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
                                 DispatchQueue.main.async {
                                     self.gasLeakConfirmTitle = appLanguage.string("production_test.pressure_pipeline_ready_title")

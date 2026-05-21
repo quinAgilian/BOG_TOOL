@@ -65,6 +65,7 @@ struct ProductionTestRulesView: View {
     @EnvironmentObject private var productionState: ProductionTestState
     @EnvironmentObject private var ble: BLEManager
     @EnvironmentObject private var productionRulesStore: ProductionRulesStore
+    @EnvironmentObject private var auxValveSettings: AuxValveSettings
     @ObservedObject var firmwareManager: FirmwareManager
     @State private var hasAppliedThisSession: Bool = false
     @State private var hasUnsavedChanges: Bool = false
@@ -412,9 +413,41 @@ struct ProductionTestRulesView: View {
         .onAppear {
             // 每次打开时用当前已应用的 JSON 规则回填 UI，ESC 关闭视为丢弃未应用改动
             applyProductionRules(productionRulesStore.rules)
+            applyAuxValveRulesLinkage()
             hasAppliedThisSession = false
             hasUnsavedChanges = false
         }
+        .onReceive(NotificationCenter.default.publisher(for: .auxValveHealthDidChange)) { _ in
+            applyAuxValveRulesLinkage()
+        }
+    }
+
+    /// §4.10.2：WiFi 自动可用时锁定漏气确认项（UI + 保存时写入 JSON）
+    private func applyAuxValveRulesLinkage() {
+        guard auxValveSettings.canUseAuxValveAutomation else { return }
+        if gasLeakClosedRequirePipelineReadyConfirm {
+            gasLeakClosedRequirePipelineReadyConfirm = false
+            hasUnsavedChanges = true
+        }
+        if !gasLeakClosedRequireValveClosedConfirm {
+            gasLeakClosedRequireValveClosedConfirm = true
+            hasUnsavedChanges = true
+        }
+    }
+
+    private var auxValveRulesBannerText: String? {
+        switch AuxValveProductionBridge.automationMode(settings: auxValveSettings) {
+        case .manualGlobalOff:
+            return appLanguage.string("aux_valve.rules_banner_enable_wifi")
+        case .enabledButUnreachable:
+            return appLanguage.string("aux_valve.rules_banner_unreachable")
+        case .wifiAutomatic:
+            return appLanguage.string("aux_valve.rules_automation_hint")
+        }
+    }
+
+    private var auxValveLockConfirmToggles: Bool {
+        auxValveSettings.canUseAuxValveAutomation
     }
     
     private var header: some View {
@@ -2307,6 +2340,12 @@ struct ProductionTestRulesView: View {
     /// 气体泄漏检测（关阀压力）步骤配置视图（气路/关阀确认 → Phase 1/3 参数 → Phase 4）
     private var gasLeakClosedConfigurationView: some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
+            if let banner = auxValveRulesBannerText {
+                Text(banner)
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(auxValveLockConfirmToggles ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             // Phase 1 前确认、Phase 2 前确认、Phase 1/3 时长与判定参数（gasLeakConfigView 内已按执行顺序）
             gasLeakConfigView(
                 preCloseDuration: $gasLeakClosedPreCloseDurationSeconds,
@@ -2326,6 +2365,7 @@ struct ProductionTestRulesView: View {
                 ),
                 requirePipelineReadyConfirm: $gasLeakClosedRequirePipelineReadyConfirm,
                 requireValveClosedConfirm: $gasLeakClosedRequireValveClosedConfirm,
+                lockConfirmToggles: auxValveLockConfirmToggles,
                 keyPrefix: "production_test_gas_leak_closed"
             )
             Divider()
@@ -2369,6 +2409,7 @@ struct ProductionTestRulesView: View {
         limitFloorBar: Binding<Double>,
         requirePipelineReadyConfirm: Binding<Bool>,
         requireValveClosedConfirm: Binding<Bool>,
+        lockConfirmToggles: Bool = false,
         keyPrefix: String
     ) -> some View {
         VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.lg) {
@@ -2386,6 +2427,7 @@ struct ProductionTestRulesView: View {
                     Toggle("", isOn: requirePipelineReadyConfirm)
                         .labelsHidden()
                         .toggleStyle(.switch)
+                        .disabled(lockConfirmToggles)
                         .onChange(of: requirePipelineReadyConfirm.wrappedValue) { newValue in
                             UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_pipeline_ready_confirm")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)
@@ -2399,6 +2441,7 @@ struct ProductionTestRulesView: View {
                     Toggle("", isOn: requireValveClosedConfirm)
                         .labelsHidden()
                         .toggleStyle(.switch)
+                        .disabled(lockConfirmToggles)
                         .onChange(of: requireValveClosedConfirm.wrappedValue) { newValue in
                             UserDefaults.standard.set(newValue, forKey: "\(keyPrefix)_require_valve_closed_confirm")
                             NotificationCenter.default.post(name: .productionTestRulesDidChange, object: nil)

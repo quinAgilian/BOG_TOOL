@@ -24,6 +24,7 @@ struct BOG_TOOLApp: App {
     @StateObject private var appLanguage = AppLanguage()
     @StateObject private var serverSettings: ServerSettings
     @StateObject private var serverClient: ServerClient
+    @StateObject private var auxValveSettings: AuxValveSettings
     @StateObject private var productionRulesStore = ProductionRulesStore()
 
     init() {
@@ -33,6 +34,10 @@ struct BOG_TOOLApp: App {
         settings.triggerHealthCheck()
         _serverSettings = StateObject(wrappedValue: settings)
         _serverClient = StateObject(wrappedValue: client)
+
+        let auxSettings = AuxValveSettings()
+        auxSettings.triggerHealthCheck()
+        _auxValveSettings = StateObject(wrappedValue: auxSettings)
         #if DEBUG
         // InjectionIII 热重载：加载后保存 Swift 文件即可在运行中的 App 里看到 UI 更新
         _ = Bundle(path: "/Applications/InjectionIII.app/Contents/Resources/macOSInjection.bundle")?.load()
@@ -46,6 +51,7 @@ struct BOG_TOOLApp: App {
                 .environmentObject(appLanguage)
                 .environmentObject(serverSettings)
                 .environmentObject(serverClient)
+                .environmentObject(auxValveSettings)
                 .environmentObject(productionRulesStore)
                 #if DEBUG
                 .modifier(InjectionObserver())

@@ -34,6 +34,13 @@
 		A1000026 /* ServerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* ServerModels.swift */; };
 		A1000027 /* ServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* ServerClient.swift */; };
 		A1000028 /* GasLeakPhaseTiming.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* GasLeakPhaseTiming.swift */; };
+		A1000029 /* AuxValveProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000029 /* AuxValveProtocol.swift */; };
+		A1000030 /* AuxValveSettingsDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000030 /* AuxValveSettingsDefaults.swift */; };
+		A1000031 /* AuxValveSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000031 /* AuxValveSettings.swift */; };
+		A1000032 /* AuxValveWiFiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000032 /* AuxValveWiFiClient.swift */; };
+		A1000033 /* AuxValveCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000033 /* AuxValveCoordinator.swift */; };
+		A1000034 /* AuxValveSettingsUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000034 /* AuxValveSettingsUI.swift */; };
+		A1000035 /* AuxValveProductionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000035 /* AuxValveProductionBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -67,6 +74,13 @@
 		A2000026 /* ServerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerModels.swift; sourceTree = "<group>"; };
 		A2000027 /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
 		A2000028 /* GasLeakPhaseTiming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GasLeakPhaseTiming.swift; sourceTree = "<group>"; };
+		A2000029 /* AuxValveProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveProtocol.swift; sourceTree = "<group>"; };
+		A2000030 /* AuxValveSettingsDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveSettingsDefaults.swift; sourceTree = "<group>"; };
+		A2000031 /* AuxValveSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveSettings.swift; sourceTree = "<group>"; };
+		A2000032 /* AuxValveWiFiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveWiFiClient.swift; sourceTree = "<group>"; };
+		A2000033 /* AuxValveCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveCoordinator.swift; sourceTree = "<group>"; };
+		A2000034 /* AuxValveSettingsUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveSettingsUI.swift; sourceTree = "<group>"; };
+		A2000035 /* AuxValveProductionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveProductionBridge.swift; sourceTree = "<group>"; };
 		A3000001 /* BOG Tool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BOG Tool.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -100,6 +114,13 @@
 				A2000001 /* BOG_TOOLApp.swift */,
 				A2000017 /* AppLanguage.swift */,
 				A2000025 /* ServerSettings.swift */,
+				A2000029 /* AuxValveProtocol.swift */,
+				A2000030 /* AuxValveSettingsDefaults.swift */,
+				A2000031 /* AuxValveSettings.swift */,
+				A2000032 /* AuxValveWiFiClient.swift */,
+				A2000033 /* AuxValveCoordinator.swift */,
+				A2000034 /* AuxValveSettingsUI.swift */,
+				A2000035 /* AuxValveProductionBridge.swift */,
 				A2000022 /* UIDesignSystem.swift */,
 				A5000012 /* Networking */,
 				A5000003 /* Views */,
@@ -286,6 +307,13 @@
 				A1000026 /* ServerModels.swift in Sources */,
 				A1000027 /* ServerClient.swift in Sources */,
 				A1000028 /* GasLeakPhaseTiming.swift in Sources */,
+				A1000029 /* AuxValveProtocol.swift in Sources */,
+				A1000030 /* AuxValveSettingsDefaults.swift in Sources */,
+				A1000031 /* AuxValveSettings.swift in Sources */,
+				A1000032 /* AuxValveWiFiClient.swift in Sources */,
+				A1000033 /* AuxValveCoordinator.swift in Sources */,
+				A1000034 /* AuxValveSettingsUI.swift in Sources */,
+				A1000035 /* AuxValveProductionBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

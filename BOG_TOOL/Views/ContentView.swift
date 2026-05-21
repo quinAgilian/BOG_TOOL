@@ -104,6 +104,7 @@ struct ContentView: View {
     @EnvironmentObject private var appSettings: AppSettings
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverSettings: ServerSettings
+    @EnvironmentObject private var auxValveSettings: AuxValveSettings
     @EnvironmentObject private var productionRulesStore: ProductionRulesStore
     @StateObject private var ble = BLEManager()
     @StateObject private var productionState = ProductionTestState()
@@ -203,6 +204,10 @@ struct ContentView: View {
                         .foregroundStyle(UIDesignSystem.Foreground.secondary)
                     ServerStatusFooter(serverSettings: serverSettings)
                         .environmentObject(appLanguage)
+                    Text("·")
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    AuxValveStatusFooter(auxValveSettings: auxValveSettings)
+                        .environmentObject(appLanguage)
                     Spacer()
                 }
                 .padding(.horizontal, UIDesignSystem.Padding.lg)
@@ -280,6 +285,12 @@ struct ContentView: View {
             // 启动时先激活窗口，再设置置顶，否则未激活时 level 可能不生效
             NSApp.activate(ignoringOtherApps: true)
             applyWindowFloating(appSettings.windowFloating)
+            auxValveSettings.bindLogHandler { msg, level in
+                ble.appendLog(msg, level: level)
+            }
+            if auxValveSettings.enabled {
+                auxValveSettings.triggerHealthCheck()
+            }
             // 失败落盘：若有待重传的产测结果，自动重传
             serverSettings.retryPendingUploads { msg in
                 DispatchQueue.main.async { ble.appendLog(msg, level: .info) }
@@ -292,6 +303,10 @@ struct ContentView: View {
         .onChange(of: ble.isOTACancelled) { if $0 { uploadOtaResultToServer(success: false) } }
         .sheet(isPresented: $serverSettings.showServerSettingsSheet) {
             ServerSettingsView(serverSettings: serverSettings)
+                .environmentObject(appLanguage)
+        }
+        .sheet(isPresented: $auxValveSettings.showAuxValveSettingsSheet) {
+            AuxValveSettingsView(auxValveSettings: auxValveSettings)
                 .environmentObject(appLanguage)
         }
     }
@@ -758,5 +773,6 @@ private struct LogLevelFilterView: View {
         .environmentObject(AppSettings())
         .environmentObject(AppLanguage())
         .environmentObject(ServerSettings())
+        .environmentObject(AuxValveSettings())
         .environmentObject(ProductionRulesStore())
 }

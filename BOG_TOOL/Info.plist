@@ -15,7 +15,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.2.6</string>
 	<key>CFBundleVersion</key>
-	<string>141</string>
+	<string>145</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
@@ -58,6 +58,12 @@
 	<string>BOG CO2_controller 项目工具</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>用于通过 BLE 连接 ESP32-C2 设备。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_bogvalve._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于在产线局域网发现与控制 WiFi 气阀辅材（mDNS）。</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

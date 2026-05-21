@@ -6,6 +6,7 @@ struct DeviceListView: View {
     @EnvironmentObject private var productionState: ProductionTestState
     @EnvironmentObject private var productionRulesStore: ProductionRulesStore
     @EnvironmentObject private var serverClient: ServerClient
+    @EnvironmentObject private var auxValveSettings: AuxValveSettings
     @ObservedObject var ble: BLEManager
     var selectedMode: AppMode  // 当前模式：产测或Debug
     @ObservedObject var firmwareManager: FirmwareManager
@@ -43,6 +44,7 @@ struct DeviceListView: View {
                 .environmentObject(appLanguage)
                 .environmentObject(serverClient)
                 .environmentObject(productionState)
+                .environmentObject(auxValveSettings)
         }
         .sheet(isPresented: $showGattProtocol) {
             GattProtocolView()
