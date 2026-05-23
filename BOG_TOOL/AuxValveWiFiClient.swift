@@ -91,6 +91,12 @@ enum AuxValveUserMessage {
     }
 }
 
+/// 解析阀 endpoint：`full` 含 mDNS；`cachedOnly` 仅探测缓存（定时 health 降频用）
+enum AuxValveDiscoveryPolicy {
+    case full
+    case cachedOnly
+}
+
 /// mDNS 发现 + HTTP（/health、/status、POST /valve）
 final class AuxValveWiFiClient {
     private let browserQueue = DispatchQueue(label: "AuxValveWiFiClient.browser")
@@ -182,7 +188,11 @@ final class AuxValveWiFiClient {
         }
     }
 
-    func resolveTargetDevice(settings: AuxValveSettings, budgetDeadline: Date?) async throws -> (host: String, port: UInt16) {
+    func resolveTargetDevice(
+        settings: AuxValveSettings,
+        budgetDeadline: Date?,
+        discoveryPolicy: AuxValveDiscoveryPolicy = .full
+    ) async throws -> (host: String, port: UInt16) {
         let targetId = settings.normalizedTargetDeviceId
         guard !targetId.isEmpty else { throw AuxValveClientError.notConfigured }
 
@@ -196,6 +206,10 @@ final class AuxValveWiFiClient {
             settings.auxLog("cached endpoint probe failed, fall back to mDNS", level: .warning)
         } else {
             settings.auxLog("no valid cached endpoint")
+        }
+
+        guard discoveryPolicy == .full else {
+            throw AuxValveClientError.deviceNotFound
         }
 
         try checkBudget(budgetDeadline)
@@ -269,12 +283,22 @@ final class AuxValveWiFiClient {
 
     // MARK: - HTTP
 
-    func performHealthCheck(settings: AuxValveSettings) async -> AuxValveHealthResult {
+    func performHealthCheck(settings: AuxValveSettings, periodic: Bool = false) async -> AuxValveHealthResult {
         guard settings.enabled, !settings.normalizedTargetDeviceId.isEmpty else {
             return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: nil)
         }
+        let discoveryPolicy: AuxValveDiscoveryPolicy
+        if !periodic || settings.isAuxValveReachable || settings.consumePeriodicFullDiscoverySlot() {
+            discoveryPolicy = .full
+        } else {
+            discoveryPolicy = .cachedOnly
+        }
         do {
-            let endpoint = try await resolveTargetDevice(settings: settings, budgetDeadline: nil)
+            let endpoint = try await resolveTargetDevice(
+                settings: settings,
+                budgetDeadline: nil,
+                discoveryPolicy: discoveryPolicy
+            )
             let response = try await getHealth(
                 host: endpoint.host,
                 port: endpoint.port,
@@ -307,7 +331,6 @@ final class AuxValveWiFiClient {
                 errorMessage: nil
             )
         } catch {
-            settings.auxLog("health check error: \(error.localizedDescription)", level: .warning)
             return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: AuxValveUserMessage.from(error))
         }
     }

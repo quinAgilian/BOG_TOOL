@@ -40,8 +40,12 @@ final class AuxValveSettings: ObservableObject {
     let wifiClient: AuxValveWiFiClient
     private var logHandler: AuxValveLogHandler?
 
-    /// 为 false 时抑制 debug 级 aux 日志（定时 health 轮询，避免 HTTP 追踪刷屏）
+    /// 为 false 时抑制 debug/warning 级 aux 日志（定时 health 轮询，避免 mDNS/HTTP 刷屏）
     var auxHttpTraceEnabled = true
+
+    /// 定时 health 且不可达时，每隔 N 次才做一次完整 mDNS（其余仅探测缓存 endpoint）
+    private static let periodicFullDiscoveryEvery = 10
+    private var periodicHealthPollIndex = 0
 
     /// 绑定日志区；msg 会自动加 `[AuxValve]` 前缀，level 默认 debug
     func bindLogHandler(_ handler: @escaping AuxValveLogHandler) {
@@ -50,7 +54,7 @@ final class AuxValveSettings: ObservableObject {
     }
 
     func auxLog(_ message: String, level: BLEManager.LogLevel = .debug) {
-        if !auxHttpTraceEnabled, level == .debug { return }
+        if !auxHttpTraceEnabled, level == .debug || level == .warning { return }
         guard let logHandler else { return }
         let line = "[AuxValve] \(message)"
         if Thread.isMainThread {
@@ -281,7 +285,7 @@ final class AuxValveSettings: ObservableObject {
         Task {
             let wasTracing = self.auxHttpTraceEnabled
             if periodic { self.auxHttpTraceEnabled = false }
-            let result = await wifiClient.performHealthCheck(settings: self)
+            let result = await wifiClient.performHealthCheck(settings: self, periodic: periodic)
             if periodic { self.auxHttpTraceEnabled = wasTracing }
             await MainActor.run {
                 self.applyHealthResult(result, logOnlyOnChange: periodic)
@@ -326,9 +330,20 @@ final class AuxValveSettings: ObservableObject {
                 auxLog("health FAIL: \(result.errorMessage ?? "unknown")", level: .warning)
             }
         }
+        if result.reachable {
+            periodicHealthPollIndex = 0
+        }
         if wasReachable != isAuxValveReachable || changed {
             NotificationCenter.default.post(name: .auxValveHealthDidChange, object: self)
         }
+    }
+
+    /// 定时轮询且当前不可达：是否本轮做完整 mDNS（约每 30s 一次，3s 间隔 × 10）
+    func consumePeriodicFullDiscoverySlot() -> Bool {
+        periodicHealthPollIndex += 1
+        guard periodicHealthPollIndex >= Self.periodicFullDiscoveryEvery else { return false }
+        periodicHealthPollIndex = 0
+        return true
     }
 
     private func clearReachability(log: Bool = true) {
