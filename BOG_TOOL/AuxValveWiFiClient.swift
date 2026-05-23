@@ -18,6 +18,17 @@ struct AuxValveHTTPResponse {
     let elapsedMs: Int?
     let errorCode: String?
     let latencyMs: Double
+    let boundClientId: String?
+    let bindArmed: Bool?
+}
+
+struct AuxValvePressureReading: Equatable {
+    let sensorOk: Bool
+    let valid: Bool
+    let pressureMbar: Double?
+    let temperatureC: Double?
+    let sampleIntervalMs: Int
+    let ageMs: Int?
 }
 
 enum AuxValveClientError: LocalizedError {
@@ -26,6 +37,7 @@ enum AuxValveClientError: LocalizedError {
     case deviceNotFound
     case unreachable(String)
     case wrongDevice
+    case wrongClient
     case unauthorized
     case httpError(Int, String?)
     case decodeFailed
@@ -39,6 +51,7 @@ enum AuxValveClientError: LocalizedError {
         case .deviceNotFound: return "aux_valve.error.device_not_found"
         case .unreachable: return nil
         case .wrongDevice: return "aux_valve.error.wrong_device"
+        case .wrongClient: return "aux_valve.error.wrong_client"
         case .unauthorized: return "aux_valve.error.unauthorized"
         case .httpError: return "aux_valve.error.http"
         case .decodeFailed: return "aux_valve.error.decode_failed"
@@ -85,6 +98,9 @@ enum AuxValveUserMessage {
 
     static func from(_ error: Error) -> String {
         if let aux = error as? AuxValveClientError {
+            if case .httpError(_, let code) = aux, code == "bind_not_armed" {
+                return "aux_valve.error.bind_not_armed"
+            }
             return aux.userFacingToken
         }
         return error.localizedDescription
@@ -105,10 +121,13 @@ final class AuxValveWiFiClient {
     // MARK: - Discovery
 
     func discoverServices(timeout: TimeInterval, settings: AuxValveSettings? = nil) async -> [AuxValveDiscoveredService] {
-        settings?.auxLog("mDNS browse \(AuxValveProtocol.mdnsServiceType) timeout=\(timeout)s")
+        let resolveGrace = settings?.probeTimeoutSec ?? AuxValveSettingsDefaults.probeTimeoutSec
+        settings?.auxLog("mDNS browse \(AuxValveProtocol.mdnsServiceType) timeout=\(timeout)s resolveGrace=\(resolveGrace)s")
         return await withCheckedContinuation { continuation in
             var collected: [String: AuxValveDiscoveredService] = [:]
             var skippedNames: [String] = []
+            var pendingResolves = 0
+            var browseEnded = false
             let lock = NSLock()
             var finished = false
 
@@ -116,6 +135,10 @@ final class AuxValveWiFiClient {
                 for: .bonjour(type: AuxValveProtocol.mdnsServiceType, domain: AuxValveProtocol.mdnsDomain),
                 using: .tcp
             )
+
+            func sortedList() -> [AuxValveDiscoveredService] {
+                Array(collected.values).sorted { $0.deviceId < $1.deviceId }
+            }
 
             func finish(_ services: [AuxValveDiscoveredService]) {
                 lock.lock()
@@ -126,15 +149,34 @@ final class AuxValveWiFiClient {
                 continuation.resume(returning: services)
             }
 
+            func maybeFinish(force: Bool) {
+                lock.lock()
+                let pending = pendingResolves
+                let ended = browseEnded
+                let list = sortedList()
+                let done = finished
+                lock.unlock()
+                guard !done else { return }
+                if force || (ended && pending == 0) {
+                    if list.isEmpty {
+                        settings?.auxLog("mDNS browse done: 0 devices (skipped names: \(skippedNames.isEmpty ? "none" : skippedNames.joined(separator: ", ")))", level: .warning)
+                    } else {
+                        let summary = list.map { "\($0.deviceId)@\($0.host):\($0.port)" }.joined(separator: ", ")
+                        settings?.auxLog("mDNS browse done: \(list.count) device(s): \(summary)")
+                    }
+                    finish(list)
+                }
+            }
+
             browser.stateUpdateHandler = { state in
                 switch state {
                 case .failed(let err):
                     settings?.auxLog("mDNS browser failed: \(err.localizedDescription)", level: .warning)
-                    finish(Array(collected.values).sorted { $0.deviceId < $1.deviceId })
+                    maybeFinish(force: true)
                 case .ready:
                     settings?.auxLog("mDNS browser ready")
                 case .waiting(let err):
-                    settings?.auxLog("mDNS browser waiting: \(err.localizedDescription)")
+                    settings?.auxLog("mDNS browser waiting: \(err.localizedDescription)", level: .warning)
                 default:
                     break
                 }
@@ -153,21 +195,31 @@ final class AuxValveWiFiClient {
                         settings?.auxLog("mDNS skip invalid instance name (need BOG-VALVE-XXXX hex): \"\(name)\"")
                         continue
                     }
+                    lock.lock()
+                    pendingResolves += 1
+                    lock.unlock()
                     self.resolveEndpoint(result.endpoint, serviceName: name, deviceId: deviceId, settings: settings) { host, port in
-                        guard let host, let port else {
-                            settings?.auxLog("mDNS resolve failed for \(name) id=\(deviceId)")
-                            return
+                        defer {
+                            lock.lock()
+                            pendingResolves -= 1
+                            lock.unlock()
+                            maybeFinish(force: false)
+                        }
+                        let resolvedHost = host ?? AuxValveProtocol.mdnsHostname(for: deviceId)
+                        let resolvedPort = port ?? AuxValveProtocol.defaultHTTPPort
+                        if host == nil {
+                            settings?.auxLog("mDNS resolve fallback for \(name) -> \(resolvedHost):\(resolvedPort)", level: .warning)
                         }
                         lock.lock()
                         collected[deviceId] = AuxValveDiscoveredService(
                             id: deviceId,
                             deviceId: deviceId,
                             serviceName: name,
-                            host: host,
-                            port: port
+                            host: resolvedHost,
+                            port: resolvedPort
                         )
                         lock.unlock()
-                        settings?.auxLog("mDNS resolved \(name) -> \(host):\(port)")
+                        settings?.auxLog("mDNS resolved \(name) -> \(resolvedHost):\(resolvedPort)")
                     }
                 }
             }
@@ -175,15 +227,12 @@ final class AuxValveWiFiClient {
             browser.start(queue: browserQueue)
             browserQueue.asyncAfter(deadline: .now() + timeout) {
                 lock.lock()
-                let list = Array(collected.values).sorted { $0.deviceId < $1.deviceId }
+                browseEnded = true
                 lock.unlock()
-                if list.isEmpty {
-                    settings?.auxLog("mDNS browse done: 0 devices (skipped names: \(skippedNames.isEmpty ? "none" : skippedNames.joined(separator: ", ")))", level: .warning)
-                } else {
-                    let summary = list.map { "\($0.deviceId)@\($0.host):\($0.port)" }.joined(separator: ", ")
-                    settings?.auxLog("mDNS browse done: \(list.count) device(s): \(summary)")
+                maybeFinish(force: false)
+                self.browserQueue.asyncAfter(deadline: .now() + resolveGrace) {
+                    maybeFinish(force: true)
                 }
-                finish(list)
             }
         }
     }
@@ -228,7 +277,9 @@ final class AuxValveWiFiClient {
         do {
             let resp = try await getHealth(host: host, port: port, settings: settings, timeout: timeout)
             settings.auxLog("probe GET /health \(host):\(port) -> HTTP \(resp.httpStatus) ok=\(resp.ok) device_id=\(resp.deviceId ?? "nil")")
-            return true
+            return resp.httpStatus == 200
+                && resp.ok
+                && resp.deviceId?.uppercased() == settings.normalizedTargetDeviceId
         } catch {
             settings.auxLog("probe GET /health \(host):\(port) failed: \(error.localizedDescription)", level: .warning)
             return false
@@ -242,6 +293,16 @@ final class AuxValveWiFiClient {
         settings: AuxValveSettings?,
         completion: @escaping (String?, UInt16?) -> Void
     ) {
+        let lock = NSLock()
+        var finished = false
+        func finishOnce(_ host: String?, _ port: UInt16?) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !finished else { return }
+            finished = true
+            completion(host, port)
+        }
+
         let connection = NWConnection(to: endpoint, using: .tcp)
         connection.stateUpdateHandler = { state in
             switch state {
@@ -254,19 +315,19 @@ final class AuxValveWiFiClient {
                     }
                     connection.cancel()
                     if let hostStr {
-                        completion(hostStr, portNum)
+                        finishOnce(hostStr, portNum)
                     } else {
-                        completion(nil, nil)
+                        finishOnce(nil, nil)
                     }
                 } else {
                     connection.cancel()
-                    completion(nil, nil)
+                    finishOnce(nil, nil)
                 }
             case .failed(let err):
                 settings?.auxLog("NWConnection resolve failed \(serviceName): \(err.localizedDescription)", level: .warning)
-                completion(nil, nil)
+                finishOnce(nil, nil)
             case .cancelled:
-                completion(nil, nil)
+                break
             default:
                 break
             }
@@ -274,9 +335,9 @@ final class AuxValveWiFiClient {
         connection.start(queue: resolveQueue)
         let probeTimeout = settings?.probeTimeoutSec ?? AuxValveSettingsDefaults.probeTimeoutSec
         resolveQueue.asyncAfter(deadline: .now() + probeTimeout) {
-            if connection.state != .ready && connection.state != .cancelled {
+            if !finished {
                 connection.cancel()
-                completion(nil, nil)
+                finishOnce(nil, nil)
             }
         }
     }
@@ -285,7 +346,7 @@ final class AuxValveWiFiClient {
 
     func performHealthCheck(settings: AuxValveSettings, periodic: Bool = false) async -> AuxValveHealthResult {
         guard settings.enabled, !settings.normalizedTargetDeviceId.isEmpty else {
-            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: nil)
+            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: nil, boundClientId: nil, bindArmed: false)
         }
         let discoveryPolicy: AuxValveDiscoveryPolicy
         if !periodic || settings.isAuxValveReachable || settings.consumePeriodicFullDiscoverySlot() {
@@ -313,25 +374,28 @@ final class AuxValveWiFiClient {
                 )
             }
             if response.httpStatus == 401 {
-                settings.auxLog("health rejected: 401 token mismatch (configured \(settings.tokenConfiguredDescription))", level: .warning)
-                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.unauthorized.userFacingToken)
+                settings.auxLog("health rejected: 401 (device may require legacy token in NVS)", level: .warning)
+                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.unauthorized.userFacingToken, boundClientId: nil, bindArmed: false)
             }
             guard response.ok, response.deviceId?.uppercased() == settings.normalizedTargetDeviceId else {
                 settings.auxLog(
                     "health rejected: want device_id=\(settings.normalizedTargetDeviceId) got=\(response.deviceId ?? "nil")",
                     level: .warning
                 )
-                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.wrongDevice.userFacingToken)
+                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.wrongDevice.userFacingToken, boundClientId: nil, bindArmed: false)
             }
+            let moving = response.moving ?? (response.valve == "moving")
             return AuxValveHealthResult(
                 reachable: true,
                 latencyMs: response.latencyMs,
                 valve: response.valve,
-                moving: response.moving ?? false,
-                errorMessage: nil
+                moving: moving,
+                errorMessage: nil,
+                boundClientId: response.boundClientId,
+                bindArmed: response.bindArmed ?? false
             )
         } catch {
-            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: AuxValveUserMessage.from(error))
+            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: AuxValveUserMessage.from(error), boundClientId: nil, bindArmed: false)
         }
     }
 
@@ -343,13 +407,86 @@ final class AuxValveWiFiClient {
         try await request(path: AuxValveProtocol.statusPath, host: host, port: port, method: "GET", body: nil, settings: settings, timeout: timeout)
     }
 
+    func fetchPressure(settings: AuxValveSettings) async throws -> AuxValvePressureReading {
+        let endpoint = try await resolveTargetDevice(settings: settings, budgetDeadline: nil)
+        return try await getPressure(
+            host: endpoint.host,
+            port: endpoint.port,
+            settings: settings,
+            timeout: settings.httpTimeoutSec
+        )
+    }
+
+    func getPressure(host: String, port: UInt16, settings: AuxValveSettings, timeout: TimeInterval) async throws -> AuxValvePressureReading {
+        guard let url = AuxValveProtocol.makeHTTPURL(host: host, port: port, path: AuxValveProtocol.pressurePath) else {
+            throw AuxValveClientError.unreachable("invalid url (\(host):\(port))")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        settings.auxLog("GET \(url.absoluteString) timeout=\(timeout)s")
+        let start = Date()
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            settings.auxLog("HTTP transport error: \(error.localizedDescription)", level: .warning)
+            throw AuxValveClientError.unreachable(error.localizedDescription)
+        }
+        let latencyMs = Date().timeIntervalSince(start) * 1000
+        let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if httpStatus == 401 { throw AuxValveClientError.unauthorized }
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw AuxValveClientError.decodeFailed
+        }
+        let ok = json["ok"] as? Bool ?? false
+        let errorCode = json["error"] as? String
+        settings.auxLog(
+            "HTTP response \(httpStatus) ok=\(ok) err=\(errorCode ?? "—") "
+            + "\(String(format: "%.0f", latencyMs))ms"
+        )
+        guard httpStatus == 200, ok else {
+            throw AuxValveClientError.httpError(httpStatus, errorCode)
+        }
+        return parsePressureJSON(json)
+    }
+
+    private func parsePressureJSON(_ json: [String: Any]) -> AuxValvePressureReading {
+        AuxValvePressureReading(
+            sensorOk: json["sensor_ok"] as? Bool ?? false,
+            valid: json["valid"] as? Bool ?? false,
+            pressureMbar: json["pressure_mbar"] as? Double,
+            temperatureC: json["temperature_c"] as? Double,
+            sampleIntervalMs: json["sample_interval_ms"] as? Int ?? 1000,
+            ageMs: json["age_ms"] as? Int
+        )
+    }
+
     func postValve(action: String, host: String, port: UInt16, settings: AuxValveSettings, timeout: TimeInterval) async throws -> AuxValveHTTPResponse {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "action": action,
             "device_id": settings.normalizedTargetDeviceId,
+            "client_id": settings.workstationClientId,
         ]
-        settings.auxLog("POST /valve \(host):\(port) action=\(action) device_id=\(settings.normalizedTargetDeviceId)")
+        settings.auxLog("POST /valve \(host):\(port) action=\(action) device_id=\(settings.normalizedTargetDeviceId) client_id=\(settings.workstationClientId.prefix(8))…")
         return try await request(path: AuxValveProtocol.valvePath, host: host, port: port, method: "POST", body: body, settings: settings, timeout: timeout)
+    }
+
+    func postBind(host: String, port: UInt16, settings: AuxValveSettings, timeout: TimeInterval) async throws -> AuxValveHTTPResponse {
+        let body: [String: Any] = [
+            "client_id": settings.workstationClientId,
+            "station_label": settings.workstationLabel,
+        ]
+        settings.auxLog("POST /bind \(host):\(port) client_id=\(settings.workstationClientId.prefix(8))… label=\(settings.workstationLabel)")
+        return try await request(path: AuxValveProtocol.bindPath, host: host, port: port, method: "POST", body: body, settings: settings, timeout: timeout)
+    }
+
+    func postUnbind(host: String, port: UInt16, settings: AuxValveSettings, timeout: TimeInterval) async throws -> AuxValveHTTPResponse {
+        let body: [String: Any] = [
+            "client_id": settings.workstationClientId,
+        ]
+        settings.auxLog("POST /unbind \(host):\(port) client_id=\(settings.workstationClientId.prefix(8))…")
+        return try await request(path: AuxValveProtocol.unbindPath, host: host, port: port, method: "POST", body: body, settings: settings, timeout: timeout)
     }
 
     func pollUntilValveState(
@@ -367,6 +504,9 @@ final class AuxValveWiFiClient {
             if status.httpStatus == 401 { throw AuxValveClientError.unauthorized }
             if status.errorCode == "wrong_device" || status.deviceId?.uppercased() != settings.normalizedTargetDeviceId {
                 throw AuxValveClientError.wrongDevice
+            }
+            if status.errorCode == "wrong_client" {
+                throw AuxValveClientError.wrongClient
             }
             if status.ok, status.valve == expected, status.moving != true {
                 settings.auxLog("poll valve reached \(expected)")
@@ -416,12 +556,7 @@ final class AuxValveWiFiClient {
                 request.httpBody = try JSONSerialization.data(withJSONObject: body)
             }
         }
-        let token = settings.token.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !token.isEmpty {
-            request.setValue(token, forHTTPHeaderField: "X-Device-Token")
-        }
-
-        settings.auxLog("\(method) \(url.absoluteString) timeout=\(timeout)s token=\(settings.tokenConfiguredDescription)")
+        settings.auxLog("\(method) \(url.absoluteString) timeout=\(timeout)s")
 
         let start = Date()
         let (data, response): (Data, URLResponse)
@@ -440,9 +575,11 @@ final class AuxValveWiFiClient {
             deviceId: json?["device_id"] as? String,
             valve: json?["valve"] as? String,
             moving: json?["moving"] as? Bool,
-            elapsedMs: json?["elapsed_ms"] as? Int,
+            elapsedMs: (json?["elapsed_ms"] as? NSNumber)?.intValue,
             errorCode: json?["error"] as? String,
-            latencyMs: latencyMs
+            latencyMs: latencyMs,
+            boundClientId: json?["bound_client_id"] as? String,
+            bindArmed: json?["bind_armed"] as? Bool
         )
         settings.auxLog(
             "HTTP response \(httpStatus) ok=\(parsed.ok) err=\(parsed.errorCode ?? "—") "

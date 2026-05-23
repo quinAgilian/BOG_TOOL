@@ -8,7 +8,7 @@ extension Notification.Name {
 private enum AuxValveSettingsKeys {
     static let enabled = "aux_valve_enabled"
     static let targetDeviceId = "aux_valve_target_device_id"
-    static let token = "aux_valve_token"
+    static let workstationClientId = "aux_valve_workstation_client_id"
     static let discoverTimeoutSec = "aux_valve_discover_timeout_sec"
     static let probeTimeoutSec = "aux_valve_probe_timeout_sec"
     static let httpTimeoutSec = "aux_valve_http_timeout_sec"
@@ -64,13 +64,6 @@ final class AuxValveSettings: ObservableObject {
         }
     }
 
-    var tokenConfiguredDescription: String {
-        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.isEmpty { return "none" }
-        if t.count <= 8 { return "len=\(t.count)" }
-        return "len=\(t.count) prefix=\(t.prefix(4))…"
-    }
-
     @Published var enabled: Bool {
         didSet {
             UserDefaults.standard.set(enabled, forKey: AuxValveSettingsKeys.enabled)
@@ -84,16 +77,30 @@ final class AuxValveSettings: ObservableObject {
         }
     }
 
+    @Published private(set) var lastBoundClientIdOnDevice: String?
+    @Published private(set) var lastBindArmedOnDevice = false
+
+    /// 本工位 UUID（首次启动生成，与阀 NVS `bound_client_id` 对应）
+    var workstationClientId: String {
+        let ud = UserDefaults.standard
+        if let existing = ud.string(forKey: AuxValveSettingsKeys.workstationClientId), !existing.isEmpty {
+            return existing
+        }
+        let created = UUID().uuidString
+        ud.set(created, forKey: AuxValveSettingsKeys.workstationClientId)
+        return created
+    }
+
+    var workstationLabel: String {
+        ProcessInfo.processInfo.hostName
+    }
+
     @Published var targetDeviceId: String {
         didSet {
             let normalized = Self.normalizeDeviceId(targetDeviceId)
             if normalized != targetDeviceId { targetDeviceId = normalized; return }
             UserDefaults.standard.set(normalized, forKey: AuxValveSettingsKeys.targetDeviceId)
         }
-    }
-
-    @Published var token: String {
-        didSet { UserDefaults.standard.set(token, forKey: AuxValveSettingsKeys.token) }
     }
 
     @Published var discoverTimeoutSec: TimeInterval {
@@ -230,6 +237,18 @@ final class AuxValveSettings: ObservableObject {
         enabled && !normalizedTargetDeviceId.isEmpty && isAuxValveReachable
     }
 
+    /// 手动测试开/关阀：与产测编排同一可用性门槛，且阀不在 moving、阀侧已认本工位
+    var canRunManualValveTest: Bool {
+        canUseAuxValveAutomation && !lastStatusMoving && isWorkstationAuthorizedOnDevice
+    }
+
+    /// health 可达时：阀 NVS `bound_client_id` 与本工位一致
+    var isWorkstationAuthorizedOnDevice: Bool {
+        guard isAuxValveReachable else { return false }
+        guard let bound = lastBoundClientIdOnDevice, !bound.isEmpty else { return false }
+        return bound == workstationClientId
+    }
+
     var normalizedTargetDeviceId: String {
         Self.normalizeDeviceId(targetDeviceId)
     }
@@ -245,7 +264,9 @@ final class AuxValveSettings: ObservableObject {
         let ud = UserDefaults.standard
         enabled = ud.object(forKey: AuxValveSettingsKeys.enabled) as? Bool ?? AuxValveSettingsDefaults.enabled
         targetDeviceId = Self.normalizeDeviceId(ud.string(forKey: AuxValveSettingsKeys.targetDeviceId) ?? AuxValveSettingsDefaults.targetDeviceId)
-        token = ud.string(forKey: AuxValveSettingsKeys.token) ?? AuxValveSettingsDefaults.token
+        if ud.string(forKey: AuxValveSettingsKeys.workstationClientId)?.isEmpty != false {
+            ud.set(UUID().uuidString, forKey: AuxValveSettingsKeys.workstationClientId)
+        }
         discoverTimeoutSec = Self.loadInterval(ud, key: AuxValveSettingsKeys.discoverTimeoutSec, defaultValue: AuxValveSettingsDefaults.discoverTimeoutSec, min: AuxValveSettingsDefaults.discoverTimeoutMin, max: AuxValveSettingsDefaults.discoverTimeoutMax)
         probeTimeoutSec = Self.loadInterval(ud, key: AuxValveSettingsKeys.probeTimeoutSec, defaultValue: AuxValveSettingsDefaults.probeTimeoutSec, min: AuxValveSettingsDefaults.probeTimeoutMin, max: AuxValveSettingsDefaults.probeTimeoutMax)
         httpTimeoutSec = Self.loadInterval(ud, key: AuxValveSettingsKeys.httpTimeoutSec, defaultValue: AuxValveSettingsDefaults.httpTimeoutSec, min: AuxValveSettingsDefaults.httpTimeoutMin, max: AuxValveSettingsDefaults.httpTimeoutMax)
@@ -280,7 +301,7 @@ final class AuxValveSettings: ObservableObject {
             return
         }
         if !periodic {
-            auxLog("health check start target=\(normalizedTargetDeviceId) token=\(tokenConfiguredDescription)")
+            auxLog("health check start target=\(normalizedTargetDeviceId)")
         }
         Task {
             let wasTracing = self.auxHttpTraceEnabled
@@ -319,6 +340,8 @@ final class AuxValveSettings: ObservableObject {
         lastStatusValve = result.valve
         lastStatusMoving = result.moving
         lastHealthError = result.errorMessage
+        lastBoundClientIdOnDevice = result.boundClientId
+        lastBindArmedOnDevice = result.bindArmed
         let changed = wasReachable != isAuxValveReachable
             || wasError != lastHealthError
             || wasValve != lastStatusValve
@@ -433,4 +456,6 @@ struct AuxValveHealthResult {
     let valve: String?
     let moving: Bool
     let errorMessage: String?
+    let boundClientId: String?
+    let bindArmed: Bool
 }

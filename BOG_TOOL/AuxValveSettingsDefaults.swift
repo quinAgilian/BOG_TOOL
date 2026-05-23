@@ -4,9 +4,8 @@ import Foundation
 enum AuxValveSettingsDefaults {
     static let enabled = false
     static let targetDeviceId = ""
-    static let token = ""
 
-    static let discoverTimeoutSec: TimeInterval = 2.0
+    static let discoverTimeoutSec: TimeInterval = 3.0
     static let probeTimeoutSec: TimeInterval = 2.0
     static let httpTimeoutSec: TimeInterval = 2.0
     static let operationBudgetSec: TimeInterval = 5.0

@@ -84,6 +84,7 @@ final class AuxValveCoordinator {
     private func validateStatus(_ response: AuxValveHTTPResponse) throws {
         if response.httpStatus == 401 { throw AuxValveClientError.unauthorized }
         if response.errorCode == "wrong_device" { throw AuxValveClientError.wrongDevice }
+        if response.errorCode == "wrong_client" { throw AuxValveClientError.wrongClient }
         if response.deviceId?.uppercased() != settings.normalizedTargetDeviceId {
             throw AuxValveClientError.wrongDevice
         }
@@ -95,6 +96,7 @@ final class AuxValveCoordinator {
     private func validateValvePost(_ response: AuxValveHTTPResponse) throws {
         if response.httpStatus == 401 { throw AuxValveClientError.unauthorized }
         if response.httpStatus == 409, response.errorCode == "wrong_device" { throw AuxValveClientError.wrongDevice }
+        if response.httpStatus == 409, response.errorCode == "wrong_client" { throw AuxValveClientError.wrongClient }
         guard response.ok else {
             throw AuxValveClientError.httpError(response.httpStatus, response.errorCode)
         }

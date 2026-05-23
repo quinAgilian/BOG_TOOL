@@ -728,9 +728,8 @@ struct ProductionTestView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     ForEach(Array(stepLogs.enumerated()), id: \.offset) { _, logLine in
                                         Text(logLine)
-                                            .font(.system(.caption2, design: .monospaced))
+                                            .font(UIDesignSystem.Typography.logBody)
                                             .foregroundStyle(.secondary)
-                                            .textSelection(.enabled)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }

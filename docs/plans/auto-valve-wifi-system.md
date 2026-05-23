@@ -97,8 +97,9 @@ flowchart LR
 | 能力 | 要点 |
 |------|------|
 | LED | 离线常亮（实现为**红**）；配网/连接中**蓝闪**；STA 在线**绿** |
-| 按键 | **长按 10s**（目标）：**仅** WiFi 配网/重配网 → 清 `ssid`/`pass` → SoftAP；**不是** App 解绑 |
-| 解绑 | **仅 App 本地**删 `targetDeviceId`；**不断** 辅材 WiFi（见 PROVISIONING.md） |
+| 按键 | **短按**切阀；**3s** 工位换绑；**10s** WiFi 配网/重配网 → SoftAP |
+| 工位绑定 | 阀 NVS 存 `client_id`；**3s** 换绑窗口；App `POST /bind` / `/unbind` |
+| 解绑 | App 按钮 + `POST /unbind`；或阀 **3s** 后他站绑定 |
 | 发现 | 配网前：扫热点 `BOG-VALVE-*`；上线后：mDNS `_bogvalve._tcp`，端口 **12306** |
 | 身份 | **`device_id`** = WiFi MAC 后 4 位大写 hex（如 `A1B2`），**工位绑定 ID，不绑定 IP** |
 | 阀动作 | **150ms** 脉冲，HTTP **同步**返回；典型 `elapsed_ms` ≈ 0.2–0.5s |
@@ -111,8 +112,8 @@ flowchart LR
 
 | 操作 | 说明 |
 |------|------|
-| 配网 / 换 WiFi | 列表选 `BOG-VALVE-{id}` → **该阀长按 10s** → 连 SoftAP → `POST /provision` `{ssid,psk}`，**无 token** |
-| 解绑 | App「解绑」仅删工位绑定；**不要**长按（长按会清 WiFi） |
+| 配网 / 换 WiFi | 阀 **长按 10s** → SoftAP → `POST /provision` |
+| 换绑 / 解绑 | 阀 **长按 3s** → 换绑窗口；App `POST /bind` / `/unbind` |
 | 发现 | 未上线：WiFi 热点列表；已上线：mDNS |
 
 Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App **v1 不做** Captive Portal。

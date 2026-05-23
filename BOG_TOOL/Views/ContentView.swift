@@ -498,7 +498,7 @@ private struct ServerStatusFooter: View {
                 .fill(serverSettings.uploadToServerEnabled ? serverStatusColor : Color.secondary.opacity(0.5))
                 .frame(width: 6, height: 6)
             Text(statusLine)
-                .font(UIDesignSystem.Typography.monospacedCaption)
+                .font(UIDesignSystem.Typography.caption)
                 .foregroundStyle(serverStatusColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -622,7 +622,6 @@ private struct LogContentTextView: View, Equatable {
                     HStack(alignment: .top, spacing: UIDesignSystem.Spacing.sm) {
                         Text(entry.line)
                             .foregroundStyle(LogLevelColor.color(entry.level))
-                            .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Button(appLanguage.string("log.preview_payload")) {
                             previewPayloadId = pid
@@ -642,7 +641,7 @@ private struct LogContentTextView: View, Equatable {
             Color.clear.frame(height: 0)
                 .id(Self.logBottomId)
         }
-        .font(UIDesignSystem.Typography.monospacedCaption)
+        .font(UIDesignSystem.Typography.logBody)
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
         .sheet(isPresented: Binding(

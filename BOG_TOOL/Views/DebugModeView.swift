@@ -57,6 +57,7 @@ private enum DebugDisclosureStorageKey {
     static let valve = "debug_ui_disclosure_valve_v1"
     static let pressure = "debug_ui_disclosure_pressure_v1"
     static let continuous = "debug_ui_disclosure_continuous_v1"
+    static let wifiValvePressure = "debug_ui_disclosure_wifi_valve_pressure_v1"
     static let guided = "debug_ui_disclosure_guided_v1"
     static let gas = "debug_ui_disclosure_gas_v1"
     static let co2SelfCheck = "debug_ui_disclosure_co2_self_v1"
@@ -88,6 +89,7 @@ private let actionButtonWidth: CGFloat = UIDesignSystem.Component.actionButtonWi
 struct DebugModeView: View {
     @EnvironmentObject private var appLanguage: AppLanguage
     @EnvironmentObject private var serverSettings: ServerSettings
+    @EnvironmentObject private var auxValveSettings: AuxValveSettings
     @ObservedObject var ble: BLEManager
     @ObservedObject var firmwareManager: FirmwareManager
     /// 手动模式复选框状态（false=auto, true=manual）
@@ -210,6 +212,9 @@ struct DebugModeView: View {
             }
             DebugDisclosureSection(title: appLanguage.string("debug.section.continuous_pressure"), storageKey: DebugDisclosureStorageKey.continuous, defaultExpanded: false) {
                 continuousPressureReadSection
+            }
+            DebugDisclosureSection(title: appLanguage.string("debug.section.wifi_valve_pressure"), storageKey: DebugDisclosureStorageKey.wifiValvePressure, defaultExpanded: false) {
+                DebugWifiValvePressureMonitor(auxValveSettings: auxValveSettings)
             }
             DebugDisclosureSection(title: appLanguage.string("debug.section.guided_leak"), storageKey: DebugDisclosureStorageKey.guided, defaultExpanded: false) {
                 guidedLeakTestSection

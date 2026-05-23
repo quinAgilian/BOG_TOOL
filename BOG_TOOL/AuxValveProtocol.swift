@@ -9,12 +9,20 @@ enum AuxValveProtocol {
     static let healthPath = "\(apiBasePath)/health"
     static let statusPath = "\(apiBasePath)/status"
     static let valvePath = "\(apiBasePath)/valve"
+    static let pressurePath = "\(apiBasePath)/pressure"
+    static let bindPath = "\(apiBasePath)/bind"
+    static let unbindPath = "\(apiBasePath)/unbind"
 
     /// 固件默认端口；mDNS TXT 若带端口则优先 TXT（见 API.md）
     static let defaultHTTPPort: UInt16 = 12306
 
     static func deviceName(for deviceId: String) -> String {
         "BOG-VALVE-\(deviceId.uppercased())"
+    }
+
+    /// 固件 mDNS hostname（`wifi_manager.c` / virtual_valve）
+    static func mdnsHostname(for deviceId: String) -> String {
+        "bog-valve-\(deviceId.uppercased()).local"
     }
 
     static func extractDeviceId(fromServiceName name: String) -> String? {

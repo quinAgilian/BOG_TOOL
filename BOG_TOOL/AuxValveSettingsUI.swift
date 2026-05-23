@@ -51,13 +51,13 @@ struct AuxValveStatusFooter: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(appLanguage.string("aux_valve.footer_label"))
-                .font(UIDesignSystem.Typography.monospacedCaption)
+                .font(UIDesignSystem.Typography.caption)
                 .foregroundStyle(UIDesignSystem.Foreground.secondary)
             Circle()
                 .fill(auxValveSettings.enabled ? statusColor : Color.secondary.opacity(0.5))
                 .frame(width: 6, height: 6)
             Text(statusLine)
-                .font(UIDesignSystem.Typography.monospacedCaption)
+                .font(UIDesignSystem.Typography.caption)
                 .foregroundStyle(auxValveStatusTextColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -80,93 +80,335 @@ struct AuxValveSettingsView: View {
     @State private var showAdvanced = false
     @State private var discovered: [AuxValveDiscoveredService] = []
     @State private var isScanning = false
+    @State private var didCompleteScan = false
+    @State private var selectedDeviceId: String?
     @State private var testMessage: String?
     @State private var testInProgress = false
+    @State private var isUnbinding = false
+    @State private var isBinding = false
+    @State private var didAutoScanThisSession = false
+
+    /// 本机已绑定 device_id（与阀是否在线无关）
+    private var hasLocalBinding: Bool {
+        !auxValveSettings.normalizedTargetDeviceId.isEmpty
+    }
+
+    private var canRunValveTest: Bool {
+        hasLocalBinding && auxValveSettings.canRunManualValveTest && !testInProgress
+    }
+
+    private var valveTestDisabledReasonKey: String? {
+        if testInProgress { return nil }
+        if !hasLocalBinding { return nil }
+        if !auxValveSettings.enabled {
+            return "aux_valve.test_disabled_not_enabled"
+        }
+        if !auxValveSettings.isAuxValveReachable {
+            return "aux_valve.test_disabled_offline"
+        }
+        if auxValveSettings.lastStatusMoving {
+            return "aux_valve.test_disabled_moving"
+        }
+        if let bound = auxValveSettings.lastBoundClientIdOnDevice, !bound.isEmpty,
+           bound != auxValveSettings.workstationClientId {
+            return "aux_valve.error.wrong_client"
+        }
+        if auxValveSettings.lastBoundClientIdOnDevice?.isEmpty != false {
+            return "aux_valve.test_disabled_not_bound_on_device"
+        }
+        return nil
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xxl) {
-            HStack {
-                Text(appLanguage.string("aux_valve.settings_title"))
-                    .font(.title2.weight(.semibold))
-                Spacer()
-                Button(appLanguage.string("firmware_manager.close")) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-
-            Toggle(isOn: $auxValveSettings.enabled) {
-                Text(appLanguage.string("aux_valve.enabled_toggle"))
-                    .font(UIDesignSystem.Typography.body)
-            }
-            .toggleStyle(.switch)
-
-            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
-                Text(appLanguage.string("aux_valve.device_id_label"))
-                    .font(UIDesignSystem.Typography.subsectionTitle)
-                HStack {
-                    TextField(appLanguage.string("aux_valve.device_id_placeholder"), text: $auxValveSettings.targetDeviceId)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 120)
-                    Button(appLanguage.string("aux_valve.scan_button")) {
-                        scanDevices()
-                    }
-                    .disabled(isScanning)
+        ScrollView {
+            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xxl) {
+                headerRow
+                Toggle(isOn: $auxValveSettings.enabled) {
+                    Text(appLanguage.string("aux_valve.enabled_toggle"))
+                        .font(UIDesignSystem.Typography.body)
                 }
-                if isScanning {
-                    Text(appLanguage.string("aux_valve.scanning"))
+                .toggleStyle(.switch)
+
+                deviceBindingSection
+
+                DisclosureGroup(isExpanded: $showAdvanced) {
+                    advancedSettingsGrid
+                } label: {
+                    Text(appLanguage.string("aux_valve.advanced_section"))
+                        .font(UIDesignSystem.Typography.subsectionTitle)
+                }
+
+                if hasLocalBinding {
+                    valveTestSection
+                }
+
+                footerStatusSection
+
+                if let testMessage {
+                    Text(testMessage)
                         .font(UIDesignSystem.Typography.caption)
-                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
-                }
-                if !discovered.isEmpty {
-                    ForEach(discovered) { item in
-                        Button {
-                            auxValveSettings.targetDeviceId = item.deviceId
-                        } label: {
-                            Text("\(item.serviceName) — \(item.host):\(item.port)")
-                                .font(UIDesignSystem.Typography.caption)
-                        }
-                        .buttonStyle(.plain)
-                    }
+                        .foregroundStyle(testMessageIsError ? Color.red : UIDesignSystem.Foreground.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-
-            VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
-                Text(appLanguage.string("aux_valve.token_label"))
-                    .font(UIDesignSystem.Typography.subsectionTitle)
-                SecureField(appLanguage.string("aux_valve.token_placeholder"), text: $auxValveSettings.token)
-                    .textFieldStyle(.roundedBorder)
+            .padding(UIDesignSystem.Padding.xxl)
+        }
+        .frame(minWidth: 440, minHeight: 420)
+        .onAppear {
+            syncSelectionFromSettings()
+            clearScanSession()
+            auxValveSettings.triggerHealthCheck()
+            if !hasLocalBinding, !didAutoScanThisSession {
+                didAutoScanThisSession = true
+                scanDevices()
             }
-
-            DisclosureGroup(isExpanded: $showAdvanced) {
-                advancedSettingsGrid
-            } label: {
-                Text(appLanguage.string("aux_valve.advanced_section"))
-                    .font(UIDesignSystem.Typography.subsectionTitle)
+        }
+        .onDisappear {
+            didAutoScanThisSession = false
+        }
+        .onChange(of: auxValveSettings.targetDeviceId) { _ in
+            syncSelectionFromSettings()
+            if hasLocalBinding {
+                clearScanSession()
+            } else if !didAutoScanThisSession, !isScanning {
+                didAutoScanThisSession = true
+                scanDevices()
             }
+        }
+    }
 
+    private func clearScanSession() {
+        discovered = []
+        didCompleteScan = false
+        isScanning = false
+        if !hasLocalBinding {
+            selectedDeviceId = nil
+        }
+    }
+
+    private var headerRow: some View {
+        HStack {
+            Text(appLanguage.string("aux_valve.settings_title"))
+                .font(.title2.weight(.semibold))
+            Spacer()
+            Button(appLanguage.string("firmware_manager.close")) { dismiss() }
+                .keyboardShortcut(.cancelAction)
+        }
+    }
+
+    private var deviceBindingSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+            Text(appLanguage.string(hasLocalBinding ? "aux_valve.binding_section_bound" : "aux_valve.binding_section_title"))
+                .font(UIDesignSystem.Typography.subsectionTitle)
+
+            if hasLocalBinding {
+                boundDevicePanel
+            } else {
+                unboundDevicePanel
+            }
+        }
+    }
+
+    private var boundDevicePanel: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            currentBindingRow
+            Text(appLanguage.string("aux_valve.bind_change_hint"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var valveTestSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            Text(appLanguage.string("aux_valve.test_section_title"))
+                .font(UIDesignSystem.Typography.subsectionTitle)
             HStack(spacing: UIDesignSystem.Spacing.md) {
                 Button(appLanguage.string("aux_valve.test_open")) {
                     runValveTest(action: "open")
                 }
-                .disabled(testInProgress || !auxValveSettings.enabled)
+                .disabled(!canRunValveTest)
                 Button(appLanguage.string("aux_valve.test_close")) {
                     runValveTest(action: "close")
                 }
-                .disabled(testInProgress || !auxValveSettings.enabled)
+                .disabled(!canRunValveTest)
+                if testInProgress {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            if let key = valveTestDisabledReasonKey {
+                Text(appLanguage.string(key))
+                    .font(UIDesignSystem.Typography.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var unboundDevicePanel: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.md) {
+            pairingReminderBanner
+
+            HStack(spacing: UIDesignSystem.Spacing.sm) {
+                Button(appLanguage.string("aux_valve.scan_button")) {
+                    scanDevices()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isScanning)
+                if isScanning {
+                    ProgressView().controlSize(.small)
+                    Text(appLanguage.string("aux_valve.scanning"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
             }
 
-            footerStatusSection
-
-            if let testMessage {
-                Text(testMessage)
+            if !discovered.isEmpty {
+                Text(appLanguage.string("aux_valve.scan_results_hint"))
                     .font(UIDesignSystem.Typography.caption)
                     .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                discoveredDeviceList
+                Button(appLanguage.string("aux_valve.use_selected")) {
+                    applySelectedDevice()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedDeviceId == nil || isScanning || isBinding)
+                if isBinding {
+                    ProgressView().controlSize(.small)
+                    Text(appLanguage.string("aux_valve.binding_in_progress"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                } else if isScanning {
+                    Text(appLanguage.string("aux_valve.bind_wait_scan"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                } else if selectedDeviceId == nil {
+                    Text(appLanguage.string("aux_valve.bind_select_first"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
+            } else if didCompleteScan && !isScanning {
+                emptyScanReminder
             }
         }
-        .padding(UIDesignSystem.Padding.xxl)
-        .frame(minWidth: 420, minHeight: 360)
-        .onAppear {
-            auxValveSettings.triggerHealthCheck()
+    }
+
+    private var currentBindingRow: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.sm) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(appLanguage.string("aux_valve.current_binding_label"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                    Text(AuxValveProtocol.deviceName(for: auxValveSettings.normalizedTargetDeviceId))
+                        .font(UIDesignSystem.Typography.body.weight(.semibold))
+                    bindingReachabilityBadge
+                }
+                Spacer()
+                Button(appLanguage.string("aux_valve.unbind")) {
+                    unbindDevice()
+                }
+                .buttonStyle(.bordered)
+                .disabled(isUnbinding)
+            }
+            if isUnbinding {
+                HStack(spacing: UIDesignSystem.Spacing.xs) {
+                    ProgressView().controlSize(.small)
+                    Text(appLanguage.string("aux_valve.unbind_in_progress"))
+                        .font(UIDesignSystem.Typography.caption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
+            }
         }
+        .padding(UIDesignSystem.Padding.sm)
+        .background(Color.green.opacity(0.06))
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+
+    @ViewBuilder
+    private var bindingReachabilityBadge: some View {
+        if !auxValveSettings.enabled {
+            Text(appLanguage.string("aux_valve.binding_status_disabled"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+        } else if auxValveSettings.isAuxValveReachable {
+            Text(appLanguage.string("aux_valve.binding_status_online"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(.green)
+        } else {
+            Text(appLanguage.string("aux_valve.binding_status_offline"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var pairingReminderBanner: some View {
+        Label(appLanguage.string("aux_valve.pairing_banner_compact"), systemImage: "hand.tap.fill")
+            .font(UIDesignSystem.Typography.caption)
+            .foregroundStyle(.orange)
+            .padding(UIDesignSystem.Padding.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.08))
+            .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+
+    private var emptyScanReminder: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+            Text(appLanguage.string("aux_valve.scan_empty_title"))
+                .font(UIDesignSystem.Typography.caption.weight(.semibold))
+            Text(appLanguage.string("aux_valve.scan_empty_steps"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(UIDesignSystem.Padding.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08))
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+    }
+
+    private var discoveredDeviceList: some View {
+        VStack(spacing: 0) {
+            ForEach(discovered) { item in
+                discoveredDeviceRow(item)
+                if item.id != discovered.last?.id {
+                    Divider()
+                }
+            }
+        }
+        .background(UIDesignSystem.Background.light)
+        .cornerRadius(UIDesignSystem.CornerRadius.md)
+        .overlay(
+            RoundedRectangle(cornerRadius: UIDesignSystem.CornerRadius.md)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+        )
+    }
+
+    private func discoveredDeviceRow(_ item: AuxValveDiscoveredService) -> some View {
+        let isSelected = selectedDeviceId == item.deviceId
+        return Button {
+            selectedDeviceId = item.deviceId
+            applySelectedDevice()
+        } label: {
+            HStack(spacing: UIDesignSystem.Spacing.sm) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.serviceName)
+                        .font(UIDesignSystem.Typography.body.weight(.medium))
+                    Text("\(item.host):\(item.port)")
+                        .font(UIDesignSystem.Typography.monospacedCaption)
+                        .foregroundStyle(UIDesignSystem.Foreground.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, UIDesignSystem.Padding.sm)
+            .padding(.vertical, UIDesignSystem.Padding.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
     }
 
     private var advancedSettingsGrid: some View {
@@ -258,19 +500,253 @@ struct AuxValveSettingsView: View {
         .font(UIDesignSystem.Typography.caption)
     }
 
+    private var testMessageIsError: Bool {
+        guard let testMessage else { return false }
+        let errors = [
+            appLanguage.string("aux_valve.scan_empty_permission_hint"),
+            appLanguage.string("aux_valve.bind_no_selection"),
+            appLanguage.string("aux_valve.error.bind_not_armed"),
+        ]
+        if errors.contains(testMessage) { return true }
+        return testMessage.contains("HTTP") || testMessage.contains("错误") || testMessage.contains("失败")
+    }
+
     private func scanDevices() {
+        guard !hasLocalBinding else { return }
         isScanning = true
+        didCompleteScan = false
         discovered = []
+        testMessage = nil
+        let traceWasEnabled = auxValveSettings.auxHttpTraceEnabled
+        auxValveSettings.auxHttpTraceEnabled = true
+        auxValveSettings.auxLog("settings sheet: manual scan started")
         Task {
             let list = await auxValveSettings.wifiClient.discoverServices(timeout: auxValveSettings.discoverTimeoutSec, settings: auxValveSettings)
             await MainActor.run {
-                discovered = list
+                auxValveSettings.auxHttpTraceEnabled = traceWasEnabled
+                discovered = list.sorted { $0.serviceName.localizedCaseInsensitiveCompare($1.serviceName) == .orderedAscending }
                 isScanning = false
+                didCompleteScan = true
+                if discovered.isEmpty {
+                    testMessage = appLanguage.string("aux_valve.scan_empty_permission_hint")
+                } else if selectedDeviceId == nil {
+                    selectedDeviceId = discovered.first?.deviceId
+                }
             }
         }
     }
 
+    private func applySelectedDevice() {
+        guard !isBinding else {
+            auxValveSettings.auxLog("bind ignored: already in progress", level: .warning)
+            return
+        }
+        guard let id = selectedDeviceId,
+              let item = discovered.first(where: { $0.deviceId == id }) else {
+            auxValveSettings.auxHttpTraceEnabled = true
+            auxValveSettings.auxLog(
+                "bind aborted: no selection (selected=\(selectedDeviceId ?? "nil") discovered=\(discovered.count) scanning=\(isScanning))",
+                level: .warning
+            )
+            testMessage = isScanning
+                ? appLanguage.string("aux_valve.bind_wait_scan")
+                : appLanguage.string("aux_valve.bind_no_selection")
+            return
+        }
+        isBinding = true
+        testMessage = nil
+        let traceWasEnabled = auxValveSettings.auxHttpTraceEnabled
+        auxValveSettings.auxHttpTraceEnabled = true
+        let myClientId = auxValveSettings.workstationClientId
+        auxValveSettings.auxLog(
+            "bind step 1/4: start device=\(id) endpoint=\(item.host):\(item.port) "
+            + "client_id=\(myClientId.prefix(8))… label=\(auxValveSettings.workstationLabel)",
+            level: .info
+        )
+        Task {
+            defer {
+                Task { @MainActor in
+                    isBinding = false
+                    auxValveSettings.auxHttpTraceEnabled = traceWasEnabled
+                    auxValveSettings.auxLog("bind finished device=\(id)", level: .info)
+                }
+            }
+            do {
+                auxValveSettings.saveCachedEndpoint(host: item.host, port: item.port)
+                auxValveSettings.auxLog("bind step 2/4: cached endpoint \(item.host):\(item.port)", level: .info)
+
+                auxValveSettings.auxLog("bind step 3/4: GET /health …", level: .info)
+                let health = try await auxValveSettings.wifiClient.getHealth(
+                    host: item.host,
+                    port: item.port,
+                    settings: auxValveSettings,
+                    timeout: auxValveSettings.httpTimeoutSec
+                )
+                guard health.httpStatus == 200, health.ok else {
+                    auxValveSettings.auxLog(
+                        "bind failed: health HTTP \(health.httpStatus) ok=\(health.ok) err=\(health.errorCode ?? "—")",
+                        level: .warning
+                    )
+                    throw AuxValveClientError.httpError(health.httpStatus, health.errorCode)
+                }
+                guard health.deviceId?.uppercased() == id.uppercased() else {
+                    auxValveSettings.auxLog(
+                        "bind failed: device_id mismatch health=\(health.deviceId ?? "nil") expected=\(id)",
+                        level: .warning
+                    )
+                    throw AuxValveClientError.wrongDevice
+                }
+                let remoteBound = health.boundClientId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                auxValveSettings.auxLog(
+                    "bind health OK valve=\(health.valve ?? "—") remote_bound=\(remoteBound.isEmpty ? "none" : String(remoteBound.prefix(8)) + "…") "
+                    + "bind_armed=\(health.bindArmed == true)",
+                    level: .info
+                )
+
+                if remoteBound == myClientId, !remoteBound.isEmpty {
+                    await MainActor.run {
+                        auxValveSettings.targetDeviceId = id
+                        auxValveSettings.auxLog(
+                            "bind step 4/4: skipped POST /bind — valve already bound to this station device=\(id)",
+                            level: .info
+                        )
+                        auxValveSettings.triggerHealthCheck()
+                        testMessage = String(format: appLanguage.string("aux_valve.bind_success_relinked"), id)
+                    }
+                    return
+                }
+
+                if !remoteBound.isEmpty, remoteBound != myClientId, health.bindArmed != true {
+                    auxValveSettings.auxLog(
+                        "bind failed: valve bound to another station (remote=\(String(remoteBound.prefix(8)))…) and bind_armed=false — long-press valve ~3s to rebind",
+                        level: .warning
+                    )
+                    throw AuxValveClientError.httpError(503, "bind_not_armed")
+                }
+
+                auxValveSettings.auxLog("bind step 4/4: POST /bind …", level: .info)
+                let bindResp = try await auxValveSettings.wifiClient.postBind(
+                    host: item.host,
+                    port: item.port,
+                    settings: auxValveSettings,
+                    timeout: auxValveSettings.httpTimeoutSec
+                )
+                guard bindResp.ok else {
+                    auxValveSettings.auxLog(
+                        "bind failed: POST /bind HTTP \(bindResp.httpStatus) err=\(bindResp.errorCode ?? "—")",
+                        level: .warning
+                    )
+                    throw AuxValveClientError.httpError(bindResp.httpStatus, bindResp.errorCode)
+                }
+                await MainActor.run {
+                    auxValveSettings.targetDeviceId = id
+                    auxValveSettings.auxLog(
+                        "bind success: device=\(id) client_id=\(myClientId.prefix(8))… bound_client=\(bindResp.boundClientId.map { String($0.prefix(8)) + "…" } ?? "—")",
+                        level: .info
+                    )
+                    auxValveSettings.triggerHealthCheck()
+                    testMessage = String(format: appLanguage.string("aux_valve.bind_success"), id)
+                }
+            } catch {
+                await MainActor.run {
+                    let msg = AuxValveUserMessage.localize(AuxValveUserMessage.from(error), language: appLanguage)
+                    auxValveSettings.auxLog("bind failed: \(msg)", level: .warning)
+                    testMessage = msg
+                }
+            }
+        }
+    }
+
+    private func unbindDevice() {
+        guard hasLocalBinding else {
+            auxValveSettings.auxLog("unbind ignored: no local binding", level: .warning)
+            return
+        }
+        guard !isUnbinding else {
+            auxValveSettings.auxLog("unbind ignored: already in progress", level: .warning)
+            return
+        }
+        let previousId = auxValveSettings.normalizedTargetDeviceId
+        isUnbinding = true
+        testMessage = nil
+        let traceWasEnabled = auxValveSettings.auxHttpTraceEnabled
+        auxValveSettings.auxHttpTraceEnabled = true
+        auxValveSettings.auxLog(
+            "unbind step 1/3: start device=\(previousId) client_id=\(auxValveSettings.workstationClientId.prefix(8))… enabled=\(auxValveSettings.enabled)",
+            level: .info
+        )
+        Task {
+            var remoteOk = false
+            var remoteDetail = "skipped (WiFi valve disabled)"
+            defer {
+                Task { @MainActor in
+                    isUnbinding = false
+                    auxValveSettings.auxHttpTraceEnabled = traceWasEnabled
+                    auxValveSettings.auxLog(
+                        "unbind finished device=\(previousId) remote=\(remoteOk) (\(remoteDetail))",
+                        level: .info
+                    )
+                }
+            }
+            if auxValveSettings.enabled {
+                do {
+                    auxValveSettings.auxLog("unbind step 2/3: resolve endpoint …", level: .info)
+                    let endpoint = try await auxValveSettings.wifiClient.resolveTargetDevice(
+                        settings: auxValveSettings,
+                        budgetDeadline: nil
+                    )
+                    auxValveSettings.auxLog(
+                        "unbind step 2/3: endpoint \(endpoint.host):\(endpoint.port)",
+                        level: .info
+                    )
+                    auxValveSettings.auxLog("unbind step 3/3: POST /unbind …", level: .info)
+                    let resp = try await auxValveSettings.wifiClient.postUnbind(
+                        host: endpoint.host,
+                        port: endpoint.port,
+                        settings: auxValveSettings,
+                        timeout: auxValveSettings.httpTimeoutSec
+                    )
+                    remoteOk = resp.ok
+                    remoteDetail = resp.ok
+                        ? "POST /unbind OK"
+                        : "POST /unbind HTTP \(resp.httpStatus) err=\(resp.errorCode ?? "—")"
+                    if resp.ok {
+                        auxValveSettings.auxLog("unbind remote OK device=\(previousId)", level: .info)
+                    } else {
+                        auxValveSettings.auxLog("unbind remote rejected: \(remoteDetail)", level: .warning)
+                    }
+                } catch {
+                    remoteDetail = error.localizedDescription
+                    auxValveSettings.auxLog(
+                        "unbind remote failed (local unbind continues): \(error.localizedDescription)",
+                        level: .warning
+                    )
+                }
+            }
+            await MainActor.run {
+                auxValveSettings.targetDeviceId = ""
+                selectedDeviceId = nil
+                clearScanSession()
+                auxValveSettings.auxLog(
+                    "unbind step 3/3: cleared local targetDeviceId (was \(previousId))",
+                    level: .info
+                )
+                testMessage = remoteOk
+                    ? appLanguage.string("aux_valve.unbind_success")
+                    : appLanguage.string("aux_valve.unbind_success_local_only")
+                didAutoScanThisSession = true
+                scanDevices()
+            }
+        }
+    }
+
+    private func syncSelectionFromSettings() {
+        let normalized = auxValveSettings.normalizedTargetDeviceId
+        selectedDeviceId = normalized.isEmpty ? nil : normalized
+    }
+
     private func runValveTest(action: String) {
+        guard canRunValveTest else { return }
         testInProgress = true
         testMessage = nil
         auxValveSettings.auxLog("manual test \(action) from settings sheet")

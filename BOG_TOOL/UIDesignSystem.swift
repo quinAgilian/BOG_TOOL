@@ -71,6 +71,9 @@ enum UIDesignSystem {
         
         /// 等宽说明文字：用于代码、数据的小号文本
         static let monospacedCaption: Font = .system(.caption, design: .monospaced)
+
+        /// 日志正文：中英混排，避免 monospaced 在 macOS 上对 CJK 产生叠字/糊字
+        static let logBody: Font = .system(.caption)
     }
     
     // MARK: - Colors（颜色系统）

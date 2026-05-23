@@ -41,6 +41,7 @@
 		A1000033 /* AuxValveCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000033 /* AuxValveCoordinator.swift */; };
 		A1000034 /* AuxValveSettingsUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000034 /* AuxValveSettingsUI.swift */; };
 		A1000035 /* AuxValveProductionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000035 /* AuxValveProductionBridge.swift */; };
+		A1000036 /* DebugWifiValvePressureMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000036 /* DebugWifiValvePressureMonitor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -81,6 +82,7 @@
 		A2000033 /* AuxValveCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveCoordinator.swift; sourceTree = "<group>"; };
 		A2000034 /* AuxValveSettingsUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveSettingsUI.swift; sourceTree = "<group>"; };
 		A2000035 /* AuxValveProductionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxValveProductionBridge.swift; sourceTree = "<group>"; };
+		A2000036 /* DebugWifiValvePressureMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugWifiValvePressureMonitor.swift; sourceTree = "<group>"; };
 		A3000001 /* BOG Tool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BOG Tool.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -139,6 +141,7 @@
 			children = (
 				A2000002 /* ContentView.swift */,
 				A2000003 /* DebugModeView.swift */,
+				A2000036 /* DebugWifiValvePressureMonitor.swift */,
 				A2000004 /* DeviceListView.swift */,
 				A2000018 /* GattProtocolView.swift */,
 				A2000019 /* OTASectionView.swift */,
@@ -314,6 +317,7 @@
 				A1000033 /* AuxValveCoordinator.swift in Sources */,
 				A1000034 /* AuxValveSettingsUI.swift in Sources */,
 				A1000035 /* AuxValveProductionBridge.swift in Sources */,
+				A1000036 /* DebugWifiValvePressureMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
