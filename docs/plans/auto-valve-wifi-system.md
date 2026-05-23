@@ -25,6 +25,7 @@
 | 主题 | 权威文档 |
 |------|----------|
 | HTTP 字段、状态码、curl 示例 | [`../BOG_VALVE_WIFI/docs/API.md`](../BOG_VALVE_WIFI/docs/API.md) |
+| **配网 / 发现 / 解绑（已确认）** | [`../BOG_VALVE_WIFI/docs/PROVISIONING.md`](../BOG_VALVE_WIFI/docs/PROVISIONING.md) |
 | LED、阀脉冲、NVS、fail-safe | [`../BOG_VALVE_WIFI/docs/FIRMWARE.md`](../BOG_VALVE_WIFI/docs/FIRMWARE.md) |
 | 配网、链路测试、App 集成要点 | [`../BOG_VALVE_WIFI/docs/TESTING.md`](../BOG_VALVE_WIFI/docs/TESTING.md)（§四） |
 | WiFi 产线边界、回退、BOG_TOOL 模块/UI/阶段 | **本文** |
@@ -96,20 +97,25 @@ flowchart LR
 | 能力 | 要点 |
 |------|------|
 | LED | 离线常亮（实现为**红**）；配网/连接中**蓝闪**；STA 在线**绿** |
-| 按键 | 长按 ≥3s：关阀 → 清 `ssid`/`pass` → SoftAP `BOG-VALVE-{device_id}`（开放） |
-| 发现 | mDNS `_bogvalve._tcp`，实例 `BOG-VALVE-{device_id}`，端口 **12306** |
+| 按键 | **长按 10s**（目标）：**仅** WiFi 配网/重配网 → 清 `ssid`/`pass` → SoftAP；**不是** App 解绑 |
+| 解绑 | **仅 App 本地**删 `targetDeviceId`；**不断** 辅材 WiFi（见 PROVISIONING.md） |
+| 发现 | 配网前：扫热点 `BOG-VALVE-*`；上线后：mDNS `_bogvalve._tcp`，端口 **12306** |
 | 身份 | **`device_id`** = WiFi MAC 后 4 位大写 hex（如 `A1B2`），**工位绑定 ID，不绑定 IP** |
 | 阀动作 | **150ms** 脉冲，HTTP **同步**返回；典型 `elapsed_ms` ≈ 0.2–0.5s |
 | Fail-safe | STA 离线 **60s** 或 HTTP 空闲 **60s** → 自动关阀脉冲 |
 | 扩展 | `/pressure` 气压（mbar）；**产测 v1 可不接**，失败不挡产测 |
 
-### 3.2 配网（无 App 内 Captive Portal）
+### 3.2 配网 / 解绑（无 App 内 Captive Portal）
 
-1. 连接辅材 SoftAP `BOG-VALVE-XXXX`（网关多为 `192.168.4.1`）。
-2. `POST /api/v1/provision`：`ssid`、`psk`、建议 `token`（32 hex）。
-3. 重启后 STA + mDNS；Mac 验证：`tools/bog_valve_link_test.py`（见固件 `tools/README.md`）。
+**权威**：[BOG_VALVE_WIFI/docs/PROVISIONING.md](../BOG_VALVE_WIFI/docs/PROVISIONING.md)（已确认；固件/App 待实现）。
 
-App **v1 不做**自动弹浏览器配网；工位一次性 curl / 脚本即可。
+| 操作 | 说明 |
+|------|------|
+| 配网 / 换 WiFi | 列表选 `BOG-VALVE-{id}` → **该阀长按 10s** → 连 SoftAP → `POST /provision` `{ssid,psk}`，**无 token** |
+| 解绑 | App「解绑」仅删工位绑定；**不要**长按（长按会清 WiFi） |
+| 发现 | 未上线：WiFi 热点列表；已上线：mDNS |
+
+Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App **v1 不做** Captive Portal。
 
 ### 3.3 HTTP API — 不在此重复
 
@@ -121,7 +127,7 @@ App **v1 不做**自动弹浏览器配网；工位一次性 curl / 脚本即可�
 |----|------|
 | `POST /valve` |  body **必须**含 `"device_id":"A1B2"`，与目标辅材一致 |
 | 错设备 | HTTP **409** `error: wrong_device` → 视为辅材不可用 → §4.9 Alert + 人工 |
-| 鉴权 | 已配 token 时 Header `X-Device-Token`；401 → 不可用 |
+| 鉴权 | **目标**：无 Token；靠 `device_id` + 网络隔离。*当前固件* 可有 token → 401 |
 | 到位判定 | `POST` 返回 `ok:true` 且 `valve` 为目标；必要时短轮询 `GET /status`（`moving`） |
 | 互斥超时 | 固件 `VALVE_HTTP_TIMEOUT_MS` = **8s**（排队/锁），非阀行程 8s |
 | 禁止字段 | 辅材 API 不得出现 BLE/GATT/DUT 阀语义 |
