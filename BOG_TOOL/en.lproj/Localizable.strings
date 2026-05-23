@@ -643,6 +643,12 @@
 "aux_valve.error.bind_not_armed" = "Valve is bound to another station. Long-press the valve ~3s (release before 10s) to open the re-bind window, then tap Bind selected again within 120s.";
 "aux_valve.unbind_success" = "Unbound: cleared on this Mac and valve NVS (WiFi unchanged).";
 "aux_valve.pairing_banner_compact" = "Re-bind: long-press valve ~3s, then Use Selected; WiFi: ~10s; short press toggles valve.";
+"aux_valve.led_section_title" = "Valve LED";
+"aux_valve.led_green_solid" = "Green · Solid — Closed, online";
+"aux_valve.led_blue_blink" = "Blue · Blink — Closed, connecting";
+"aux_valve.led_red_solid" = "Red · Solid — Closed, offline or provisioning";
+"aux_valve.led_red_slow" = "Red · Slow blink — Valve open";
+"aux_valve.led_red_fast" = "Red · Fast blink — Valve moving";
 "aux_valve.scan_empty_title" = "No valve found on LAN";
 "aux_valve.scan_empty_steps" = "1. Same WiFi as this Mac; virtual_valve or hardware powered on.\n2. Never provisioned: long-press ~10s on the valve → provision factory WiFi → scan again.\n3. macOS: System Settings → Privacy & Security → Local Network → allow BOG Tool.";
 "aux_valve.scan_empty_permission_hint" = "No valve found. Check same WiFi, virtual_valve running, and Local Network permission for BOG Tool in System Settings.";

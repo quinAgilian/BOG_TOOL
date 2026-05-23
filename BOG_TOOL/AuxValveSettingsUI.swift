@@ -131,6 +131,8 @@ struct AuxValveSettingsView: View {
 
                 deviceBindingSection
 
+                ledIndicatorSection
+
                 DisclosureGroup(isExpanded: $showAdvanced) {
                     advancedSettingsGrid
                 } label: {
@@ -409,6 +411,30 @@ struct AuxValveSettingsView: View {
         }
         .buttonStyle(.plain)
         .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+    }
+
+    private var ledIndicatorSection: some View {
+        VStack(alignment: .leading, spacing: UIDesignSystem.Spacing.xs) {
+            Text(appLanguage.string("aux_valve.led_section_title"))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+            ledLegendRow(color: .green, textKey: "aux_valve.led_green_solid")
+            ledLegendRow(color: .blue, textKey: "aux_valve.led_blue_blink")
+            ledLegendRow(color: .red, textKey: "aux_valve.led_red_solid")
+            ledLegendRow(color: .red, textKey: "aux_valve.led_red_slow")
+            ledLegendRow(color: .red, textKey: "aux_valve.led_red_fast")
+        }
+    }
+
+    private func ledLegendRow(color: Color, textKey: String) -> some View {
+        HStack(spacing: UIDesignSystem.Spacing.sm) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(appLanguage.string(textKey))
+                .font(UIDesignSystem.Typography.caption)
+                .foregroundStyle(UIDesignSystem.Foreground.secondary)
+        }
     }
 
     private var advancedSettingsGrid: some View {

@@ -656,6 +656,12 @@
 "aux_valve.error.bind_not_armed" = "阀门已绑定其他工位。请在阀上长按约 3 秒（10 秒内松开）打开换绑窗口，120 秒内再点「绑定所选」。";
 "aux_valve.unbind_success" = "已解绑：本机与阀门 NVS 绑定已清除（WiFi 不变）。";
 "aux_valve.pairing_banner_compact" = "换绑：阀上长按约 3 秒 → 换绑窗口内点「使用所选」；换 WiFi：长按约 10 秒；短按切阀。";
+"aux_valve.led_section_title" = "阀上指示灯";
+"aux_valve.led_green_solid" = "绿 · 常亮 — 关阀，网络正常";
+"aux_valve.led_blue_blink" = "蓝 · 闪烁 — 关阀，连接 WiFi";
+"aux_valve.led_red_solid" = "红 · 常亮 — 关阀，离线或待配网";
+"aux_valve.led_red_slow" = "红 · 慢闪 — 阀已开";
+"aux_valve.led_red_fast" = "红 · 快闪 — 阀动作中";
 "aux_valve.scan_empty_title" = "局域网未发现气阀";
 "aux_valve.scan_empty_steps" = "1. 与 Mac 同一 WiFi，确认 virtual_valve 或硬件已上电。\n2. 若从未配网：在阀门上长按约 10 秒 → 配好工厂 WiFi → 再扫描。\n3. macOS：系统设置 → 隐私与安全性 → 本地网络 → 允许 BOG Tool。";
 "aux_valve.scan_empty_permission_hint" = "未发现气阀。请确认同一 WiFi、virtual_valve 已运行，并在系统设置中为 BOG Tool 开启「本地网络」权限。";
