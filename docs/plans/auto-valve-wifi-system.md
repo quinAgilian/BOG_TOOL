@@ -56,7 +56,7 @@ flowchart LR
 | 链路 | 作用 | 改动范围 |
 |------|------|----------|
 | **BLE → DUT** | 连接、压力/Gas、DUT 内阀（`setValve`）、OTA、漏气步骤 BLE 采样 | **不改** |
-| **WiFi → 辅材** | 产线气路阀开/关，替代 Phase 2 人工拧阀 | **BOG_TOOL 编排 + 工位设置 UI**（待实现） |
+| **WiFi → 辅材** | 产线气路阀开/关，替代 Phase 2 人工拧阀 | **BOG_TOOL 编排 + 工位设置 UI**（**P2 已完成**） |
 
 ### 1.2 痛点
 
@@ -82,7 +82,7 @@ flowchart LR
 | **BLE 与 WiFi 无关** | 两通道、两设备；无「WiFi 失败则用 BLE 关产线阀」 |
 | **DUT 阀 ≠ 辅材阀** | DUT 阀：BLE；产线气路阀：仅 WiFi 辅材 |
 | **HTTP 契约** | 以 **`BOG_VALVE_WIFI/docs/API.md`** 为准，本文不重复维护字段表 |
-| **实现状态** | 固件与 Mac 链路脚本 **已有**；BOG_TOOL App/UI **待 P2** |
+| **实现状态** | 固件、Mac 链路脚本、BOG_TOOL App/UI **P2 已完成**（联调/回归中） |
 | **入口阀编排** | **`step_read_pressure`**：确保**开**；**`step_gas_leak_closed` Phase 2**：**关**（废除 open 漏气步骤见另文） |
 | **拆 DUT 前** | **不**在 App 内自动开阀（§8.2）；入口阀应由工艺/操作员在拆线前打开，避免憋气浪费 |
 
@@ -108,7 +108,7 @@ flowchart LR
 
 ### 3.2 配网 / 解绑（无 App 内 Captive Portal）
 
-**权威**：[BOG_VALVE_WIFI/docs/PROVISIONING.md](../BOG_VALVE_WIFI/docs/PROVISIONING.md)（已确认；固件/App 待实现）。
+**权威**：[BOG_VALVE_WIFI/docs/PROVISIONING.md](../BOG_VALVE_WIFI/docs/PROVISIONING.md)（固件/App/sim **已实现**）。
 
 | 操作 | 说明 |
 |------|------|
@@ -128,7 +128,7 @@ Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App
 |----|------|
 | `POST /valve` |  body **必须**含 `"device_id":"A1B2"`，与目标辅材一致 |
 | 错设备 | HTTP **409** `error: wrong_device` → 视为辅材不可用 → §4.9 Alert + 人工 |
-| 鉴权 | **目标**：无 Token；靠 `device_id` + 网络隔离。*当前固件* 可有 token → 401 |
+| 鉴权 | **无 Token**；`device_id` + **`client_id`**（已绑阀）+ 网络隔离 |
 | 到位判定 | `POST` 返回 `ok:true` 且 `valve` 为目标；必要时短轮询 `GET /status`（`moving`） |
 | 互斥超时 | 固件 `VALVE_HTTP_TIMEOUT_MS` = **8s**（排队/锁），非阀行程 8s |
 | 禁止字段 | 辅材 API 不得出现 BLE/GATT/DUT 阀语义 |
@@ -137,8 +137,8 @@ Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App
 
 1. mDNS 解析当前 IP（或工位缓存 IP 作首轮探测）。
 2. `GET /status` → 确认 `device_id == 工位 targetDeviceId`。
-3. `POST /valve` `{"action":"close","device_id":"…"}`。
-4. 失败/超时/409/401 → §4.9：**Alert 提醒切换** → 人工确认弹窗；**不**因辅材 Fail 整轮产测。
+3. `POST /valve` `{"action":"close","device_id":"…","client_id":"…"}`（已绑阀时）。
+4. 失败/超时/409（`wrong_device`/`wrong_client`）→ §4.9：**Alert 提醒切换** → 人工确认弹窗；**不**因辅材 Fail 整轮产测。
 
 ### 3.4 固件验收（P0）
 
@@ -150,7 +150,7 @@ Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App
 
 ## 4. BOG_TOOL — 集成与 UI（不碰 BLE）
 
-> **App 代码与 UI 待实现**；以下为已对齐固件与 UI 讨论的规格。
+> **App 代码与 UI（P2）已实现**；以下为规格与实现对齐说明。
 
 ### 4.1 模块（命名示例）
 
@@ -158,8 +158,7 @@ Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App
 |------|------|
 | `AuxValveSettings` | 全局配置唯一入口（§4.11）：持久化、运行时读取、**无业务魔法数** |
 | `AuxValveSettingsDefaults` | 仅存放**出厂默认**常量（单文件）；实现时禁止在 View/Coordinator 写 `2.0` / `500` |
-| `AuxValveWiFiDiscovery` | `NWBrowser` `_bogvalve._tcp`；匹配 `BOG-VALVE-{targetDeviceId}`；缓存 IP 仅作加速 |
-| `AuxValveWiFiClient` | 封装 API.md：`/health`、`/status`、`POST /valve`（含 `device_id`） |
+| `AuxValveWiFiClient` | mDNS 浏览 `_bogvalve._tcp` + HTTP：`/health`、`/status`、`POST /valve`/`/bind`/`/unbind`（含 `device_id`、`client_id`） |
 | `AuxValveCoordinator` | 发现 → 校验 ID → close/open → 成功/不可用枚举 |
 | `AuxValveSettingsView` | 独立 Sheet 配置页（见 §4.6） |
 | `AuxValveStatusFooter` | 主界面/产测底部可点击状态条（仿 `ServerStatusFooter`） |
@@ -177,14 +176,14 @@ Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App
 
 1. 若 `enabled == false` 或本台已选「改用手动阀」（§4.9 会话覆盖）→ **不发起 HTTP**，走人工。
 2. mDNS 浏览（`discoverTimeoutSec`）或缓存 IP 探测（`probeTimeoutSec`）→ `GET /status`。
-3. `ok == true` 且 `device_id == targetDeviceId`；token 正确。
+3. `ok == true` 且 `device_id == targetDeviceId`；已绑阀时 `client_id` 匹配。
 4. `POST /valve`（open/close）成功且 `valve` 到位（`moving` 轮询见 §4.9.2）。
 5. 整次 `ensureOpen` / `ensureClose` 墙钟不超过 `operationBudgetSec`，否则视为失败。
 
 **视为不可用**（仅日志，§4.3）：
 
 - 发现超时、无服务、不可达、非 2xx  
-- `ok: false`、`401`、`409 wrong_device`  
+- `ok: false`、`409 wrong_device` / `wrong_client`
 - close 超时或仍为 `moving`  
 
 ### 4.3 成功无确认 / 失败提醒切换
@@ -206,7 +205,7 @@ Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App
 
 | 步骤 | 失败时（`enabled==true` 且未会话覆盖） |
 |------|----------------------------------------|
-| 1 | **Alert**（非阻塞产测结果）：超时 / 不可达 / 401 / wrong_device / 未到位；文案含原因与已耗时 |
+| 1 | **Alert**（非阻塞产测结果）：超时 / 不可达 / wrong_device / wrong_client / 未到位；文案含原因与已耗时 |
 | 2 | 按钮见 §4.9（本台改手动 / 重试一次 / 关闭自动气阀） |
 | 3 | 选定后 → **现网**人工确认弹窗（读压或关阀），继续 BLE |
 
@@ -363,7 +362,7 @@ read_pressure:  WiFi open（或人工确认已开）  →  …中间步骤…  �
 
 #### 4.9.3 失败 Alert — 「提醒切换」
 
-**触发**：`enabled==true` 且 §4.2/§4.9.2 失败（含无响应、超时、401、409、未到位）。
+**触发**：`enabled==true` 且 §4.2/§4.9.2 失败（含无响应、超时、409、未到位）。
 
 **不触发**：`enabled==false`；或本台已 `useManualValveForCurrentRun`。
 
@@ -395,7 +394,7 @@ Alert 之后 **必须** 进入现网人工工序弹窗（不能静默跳过拧�
 - 漏气步骤 BLE 判定公式/阈值改动  
 - 固件 API 对接 BOG GATT UUID  
 - App 内 SoftAP 配网向导（v1）  
-- `ProductionRules` JSON 承载辅材 token（v1 用工位设置；上传快照是否带 `auxValveEnabled` **待定**）
+- 产测上传快照是否带 `auxValveEnabled` / 本台是否曾 fallback 人工（**待定**）
 
 ### 4.6 独立全局 UI（仿「服务器设置」）— **已决，必做**
 
@@ -442,10 +441,9 @@ Alert 之后 **必须** 进入现网人工工序弹窗（不能静默跳过拧�
 |------|------|
 | 标题栏 | 「WiFi 气阀设置」+ 关闭 |
 | **主开关** | Toggle **「使用 WiFi 自动气阀」** → `enabled`（§4.9.1） |
-| 设备 | `targetDeviceId` 文本框（4 位 hex，大写）；**扫描**按钮 → mDNS 列表，点选填入 |
-| 鉴权 | `token`（SecureField 或粘贴）；说明见 API.md |
-| 高级（可折叠） | §4.11.1 全部超时/延迟阈值/重试次数（**禁止** Sheet 内写死仅展示用数字） |
-| 动作 | **测试开阀** / **测试关阀**（Sheet 内执行，显示本次 `elapsed_ms` 与结果） |
+| 设备 | mDNS **扫描** → 点选 → **`POST /bind`**（无手动填 ID / Token） |
+| 高级（可折叠） | §4.11.1 全部超时/延迟阈值/重试次数 |
+| 动作 | **测试开阀** / **测试关阀**；**解绑** |
 | 页脚状态 | 当前 `valve` / `moving` / 最近延迟 / 最近错误（只读，来自 `/status`） |
 
 配网（SoftAP + curl）**不**做进 Sheet v1；页脚链到 `BOG_VALVE_WIFI` 文档或工位 SOP 说明。
@@ -550,7 +548,7 @@ canUseAuxValveAutomation =
 
 | 阶段 | 内容 |
 |------|------|
-| **P2a** | `AuxValveSettings` + `AuxValveWiFiDiscovery/Client` + `AuxValveSettingsView` + `AuxValveStatusFooter` + 注入 `BOG_TOOLApp` / `ContentView` |
+| **P2a** | `AuxValveSettings` + `AuxValveWiFiClient` + `AuxValveSettingsView` + `AuxValveStatusFooter` + 注入 `BOG_TOOLApp` / `ContentView` |
 | **P2b** | 产测 `ensureOpen`/`ensureClose` + §4.9 Alert + §4.10 规则联动 |
 | **P2c** | Debug 模式复用同一 `EnvironmentObject`（可选） |
 
@@ -567,8 +565,8 @@ canUseAuxValveAutomation =
 | 键（示例） | 含义 | 出厂默认（仅 `AuxValveSettingsDefaults`） | 允许范围（示例） |
 |------------|------|------------------------------------------|------------------|
 | `enabled` | 使用 WiFi 自动气阀 | `false` | bool |
-| `targetDeviceId` | 绑定辅材 ID | `""` | 4 hex |
-| `token` | `X-Device-Token` | `""` | 字符串 |
+| `targetDeviceId` | 绑定辅材 ID（bind 成功后写入） | `""` | 4 hex |
+| `workstationClientId` | 本机工位 UUID（首次启动生成） | 自动生成 | UUID |
 | `discoverTimeoutSec` | mDNS 浏览超时 | `2.0` | 1–5 |
 | `probeTimeoutSec` | 首包 HTTP（发现后） | `2.0` | 1–5 |
 | `httpTimeoutSec` | 单次 GET/POST | `2.0` | 1–10 |
@@ -649,7 +647,7 @@ canUseAuxValveAutomation =
 | 固件 60s fail-safe、150ms 脉冲 | **App 不出现** | `BOG_VALVE_WIFI` 文档；工艺知晓 |
 | 产测步骤 order | 模板 JSON | `default_production_rules.json` |
 
-**明确不算「违规硬编码」**：`true`/`false` 业务分支、`401`/`409` HTTP 状态码、`"open"`/`"close"` API 枚举字符串、本地化 key 名。
+**明确不算「违规硬编码」**：`true`/`false` 业务分支、`409` HTTP 状态码、`"open"`/`"close"` API 枚举字符串、本地化 key 名。
 
 **仍禁止**：在 `ProductionTestView`、`ProductionTestRulesView`、`AuxValveCoordinator`、`ContentView` 中出现可调超时/阈值的 **数字字面量**（含 `TimeInterval(2)`、`500`、`0.6`）。
 
@@ -660,8 +658,8 @@ P2 交付前：对 `AuxValve*.swift` + 产测编排改动文件执行 §4.11.4 c
 ## 5. 产测工位 SOP（目标）
 
 1. **BLE 连 DUT**（不变）。  
-2. **辅材上电**：已配网 → 绿灯；否则长按 3s → SoftAP → `POST /provision`（curl 或脚本）。  
-3. **Mac 工位**：点击底栏 **「气阀」** 打开设置 Sheet，填写 `device_id` + token，「扫描 / 测试开阀、关阀」，确认底栏延迟为绿/黄后打开 **「使用 WiFi 自动气阀」**。  
+2. **辅材上电**：已配网 → 绿灯；否则 **长按 10s** → SoftAP → `POST /provision`。  
+3. **Mac 工位**：底栏 **「阀」** → **扫描** → 点选绑定 → 测试开/关阀 → 打开 **「使用 WiFi 自动气阀」**。  
 4. **`step_read_pressure`**：WiFi 开入口阀并 `status` 确认 → **无弹窗**；失败才用现弹窗人工确认。  
 5. **`step_gas_leak_closed` Phase 2**：WiFi 关阀并确认 → **无弹窗**；失败才用现有关阀确认弹窗。  
 6. **拆 DUT 前**：入口阀须**打开**（通常人工开，不在 App Phase 4 末尾自动开，§8.2）。  
@@ -676,7 +674,7 @@ P2 交付前：对 `AuxValve*.swift` + 产测编排改动文件执行 §4.11.4 c
 | 固件 | 见 `BOG_VALVE_WIFI/docs/TESTING.md` §3 清单 + `bog_valve_link_test.py run` |
 | App 设置 UI | 扫描、绑定 ID、测试 open/close，与脚本结果一致 |
 | 联调 | 自动关阀成功：`gasLeakClosedUserActionSeconds` 显著缩短 |
-| 回归 | 关闭工位开关 / 断辅材 / 错 token / wrong_device → 弹窗与 BLE 结果与现网一致 |
+| 回归 | 关闭工位开关 / 断辅材 / wrong_client / wrong_device → 弹窗与 BLE 结果与现网一致 |
 | 中途掉线 | 见 §4.8：读压后断网、Phase 2 关阀失败回退、Phase 2 成功后断网跑完漏气 |
 | 并行 | 辅材 + DUT BLE 产测同时运行（TESTING.md §3.4 #13） |
 | 无硬编码 | §4.11.4 checklist 全通过 |
