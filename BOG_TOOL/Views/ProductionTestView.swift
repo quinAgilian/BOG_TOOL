@@ -1293,6 +1293,8 @@ struct ProductionTestView: View {
         guard let pressureReadPollIntervalMs = pressureCfg.pressureReadPollIntervalMs else { issues.append("[JSON缺失] step_read_pressure.pressure_read_poll_interval_ms"); throw StrictRulesError.missingItems(issues) }
         guard let pressureRetryReadTimeoutSeconds = pressureCfg.pressureRetryReadTimeoutSeconds else { issues.append("[JSON缺失] step_read_pressure.pressure_retry_read_timeout_seconds"); throw StrictRulesError.missingItems(issues) }
         guard let pressureRetryReadPollIntervalMs = pressureCfg.pressureRetryReadPollIntervalMs else { issues.append("[JSON缺失] step_read_pressure.pressure_retry_read_poll_interval_ms"); throw StrictRulesError.missingItems(issues) }
+        let pressureValveSettleSeconds = pressureCfg.pressureValveSettleSeconds ?? 1.1
+        let pressureAutoRetryMaxAttempts = max(1, pressureCfg.pressureAutoRetryMaxAttempts ?? 3)
 
         // firmware upgrade / fail 时跳过恢复出厂和断开
         guard let firmwareUpgradeEnabled = verifyCfg.firmwareUpgradeEnabled else { issues.append("[JSON缺失] step_verify_firmware.firmware_upgrade_enabled"); throw StrictRulesError.missingItems(issues) }
@@ -1357,6 +1359,8 @@ struct ProductionTestView: View {
             pressureReadPollIntervalMs: pressureReadPollIntervalMs,
             pressureRetryReadTimeoutSeconds: pressureRetryReadTimeoutSeconds,
             pressureRetryReadPollIntervalMs: pressureRetryReadPollIntervalMs,
+            pressureValveSettleSeconds: pressureValveSettleSeconds,
+            pressureAutoRetryMaxAttempts: pressureAutoRetryMaxAttempts,
             gasSystemStatusExpectedValues: gasSystemStatusMerged
         )
 
@@ -1424,6 +1428,8 @@ struct ProductionTestView: View {
         let pressureReadPollIntervalMs: Int
         let pressureRetryReadTimeoutSeconds: Double
         let pressureRetryReadPollIntervalMs: Int
+        let pressureValveSettleSeconds: Double
+        let pressureAutoRetryMaxAttempts: Int
         let gasSystemStatusExpectedValues: [Int]
     }
     
@@ -1981,6 +1987,223 @@ struct ProductionTestView: View {
         return false
     }
     
+    /// BLE 压力字符串是否可读（非 "--" / Error）
+    private func pressureReadingIsValid(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        return !trimmed.isEmpty && trimmed != "--" && !trimmed.hasPrefix("Error")
+    }
+
+    /// 压力 bar 是否在 mbar 阈值内
+    private func pressureBarInThresholds(_ bar: Double?, minMbar: Double, maxMbar: Double) -> Bool {
+        guard let bar else { return false }
+        let mbar = bar * 1000.0
+        return mbar >= minMbar && mbar <= maxMbar
+    }
+
+    /// 同时发起开/关阀压力读并轮询至双通道有效或超时
+    private func readBothPressureChannels(timeoutSeconds: Double, pollIntervalMs: Int) async -> (open: String, closed: String) {
+        await MainActor.run {
+            ble.clearLastPressureOpenValue()
+            ble.clearLastPressureValue()
+            ble.readPressureOpen()
+            ble.readPressure()
+        }
+        let pollNs = UInt64(pollIntervalMs) * 1_000_000
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            let pair = await MainActor.run { (ble.lastPressureOpenValue, ble.lastPressureValue) }
+            if pressureReadingIsValid(pair.0) && pressureReadingIsValid(pair.1) {
+                return pair
+            }
+            try? await Task.sleep(nanoseconds: pollNs)
+        }
+        return await MainActor.run { (ble.lastPressureOpenValue, ble.lastPressureValue) }
+    }
+
+    /// 切阀 settle 后读取单通道压力
+    private func readPressureChannelAfterValve(open channelOpen: Bool, settleSeconds: Double, timeoutSeconds: Double, pollIntervalMs: Int) async -> String {
+        let label = channelOpen ? "开阀压力" : "关阀压力"
+        try? await Task.sleep(nanoseconds: UInt64(max(0, settleSeconds) * 1_000_000_000))
+        await MainActor.run {
+            if channelOpen {
+                ble.clearLastPressureOpenValue()
+                ble.readPressureOpen()
+            } else {
+                ble.clearLastPressureValue()
+                ble.readPressure()
+            }
+        }
+        return await waitForPressureValue(
+            getValue: { channelOpen ? ble.lastPressureOpenValue : ble.lastPressureValue },
+            timeoutSeconds: timeoutSeconds,
+            pollIntervalMs: pollIntervalMs,
+            label: label
+        )
+    }
+
+    /// 步骤4：先双通道读压；异常通道再按需切阀 → settle → 重读
+    private func acquirePressureReadingsStep4(thresholds: TestThresholds) async -> (openBar: Double?, closedBar: Double?, openStr: String, closedStr: String) {
+        self.log("步骤4: 先读取开/关阀双通道压力（不切换 DUT 阀）", level: .info)
+        var (openStr, closedStr) = await readBothPressureChannels(
+            timeoutSeconds: thresholds.pressureReadTimeoutSeconds,
+            pollIntervalMs: thresholds.pressureReadPollIntervalMs
+        )
+        var openBar = Self.parseBarFromPressureString(openStr)
+        var closedBar = Self.parseBarFromPressureString(closedStr)
+
+        let openOk = pressureReadingIsValid(openStr)
+            && pressureBarInThresholds(openBar, minMbar: thresholds.pressureOpenMin, maxMbar: thresholds.pressureOpenMax)
+        let closedOk = pressureReadingIsValid(closedStr)
+            && pressureBarInThresholds(closedBar, minMbar: thresholds.pressureClosedMin, maxMbar: thresholds.pressureClosedMax)
+
+        if openOk && closedOk {
+            self.log("步骤4: 双通道压力均在范围内，无需切阀", level: .info)
+            self.log("开启压力: \(openStr)", level: .info)
+            self.log("关闭压力: \(closedStr)", level: .info)
+            return (openBar, closedBar, openStr, closedStr)
+        }
+
+        let settleSec = thresholds.pressureValveSettleSeconds
+        self.log(
+            "步骤4: 压力需刷新（开阀通道=\(openOk ? "OK" : "重读")，关阀通道=\(closedOk ? "OK" : "重读")）；切阀后等待 \(String(format: "%.1f", settleSec))s（固件刷新周期 1s）",
+            level: .info
+        )
+
+        if !openOk {
+            self.log("打开 DUT 阀并重读开阀压力…", level: .info)
+            if await ensureValveState(open: true) {
+                self.log("DUT 阀已打开", level: .info)
+            } else {
+                self.log("警告：DUT 阀打开状态异常（当前: \(ble.lastValveStateValue)）", level: .warning)
+            }
+            openStr = await readPressureChannelAfterValve(
+                open: true,
+                settleSeconds: settleSec,
+                timeoutSeconds: thresholds.pressureReadTimeoutSeconds,
+                pollIntervalMs: thresholds.pressureReadPollIntervalMs
+            )
+            openBar = Self.parseBarFromPressureString(openStr)
+            self.log("开阀压力（切阀后）: \(openStr)", level: .info)
+        } else {
+            self.log("开启压力: \(openStr)", level: .info)
+        }
+
+        if !closedOk {
+            self.log("关闭 DUT 阀并重读关阀压力…", level: .info)
+            if await ensureValveState(open: false) {
+                self.log("DUT 阀已关闭", level: .info)
+            } else {
+                self.log("警告：DUT 阀关闭状态异常（当前: \(ble.lastValveStateValue)）", level: .warning)
+            }
+            closedStr = await readPressureChannelAfterValve(
+                open: false,
+                settleSeconds: settleSec,
+                timeoutSeconds: thresholds.pressureReadTimeoutSeconds,
+                pollIntervalMs: thresholds.pressureReadPollIntervalMs
+            )
+            closedBar = Self.parseBarFromPressureString(closedStr)
+            self.log("关阀压力（切阀后）: \(closedStr)", level: .info)
+        } else {
+            self.log("关闭压力: \(closedStr)", level: .info)
+        }
+
+        return (openBar, closedBar, openStr, closedStr)
+    }
+
+    private struct PressureStepEvaluation {
+        let passed: Bool
+        let summary: String
+        let openBar: Double?
+        let closedBar: Double?
+    }
+
+    /// 步骤4：对读压结果做阈值 / 差值判定
+    private func evaluatePressureStepReadings(
+        thresholds: TestThresholds,
+        openStr: String,
+        closedStr: String,
+        openBar: Double?,
+        closedBar: Double?
+    ) -> PressureStepEvaluation {
+        let pressureClosedMin = thresholds.pressureClosedMin
+        let pressureClosedMax = thresholds.pressureClosedMax
+        let pressureOpenMin = thresholds.pressureOpenMin
+        let pressureOpenMax = thresholds.pressureOpenMax
+
+        if !pressureReadingIsValid(openStr) {
+            self.log(appLanguage.string("production_test.pressure_read_timeout_open"), level: .warning)
+        }
+        if !pressureReadingIsValid(closedStr) {
+            self.log(appLanguage.string("production_test.pressure_read_timeout_closed"), level: .warning)
+        }
+
+        var pressurePassed = true
+        var pressureMessages: [String] = []
+        let closedRangeStr = String(format: "%.0f~%.0f mbar", pressureClosedMin, pressureClosedMax)
+        let openRangeStr = String(format: "%.0f~%.0f mbar", pressureOpenMin, pressureOpenMax)
+        let closedDisplayStr = closedBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "-- mbar"
+        let openDisplayStr = openBar.map { String(format: "%.0f mbar", $0 * 1000) } ?? "-- mbar"
+
+        if let closedBar {
+            let closedMbar = closedBar * 1000.0
+            if closedMbar >= pressureClosedMin && closedMbar <= pressureClosedMax {
+                self.log("✓ 关闭压力验证通过: \(closedMbar) mbar（\(pressureClosedMin)~\(pressureClosedMax) mbar）", level: .info)
+                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
+            } else {
+                self.log("✗ 关闭压力验证失败: \(closedMbar) mbar（应在 \(pressureClosedMin)~\(pressureClosedMax) mbar）", level: .error)
+                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
+                pressurePassed = false
+            }
+        } else {
+            self.log("警告：无法解析关闭压力值", level: .warning)
+            pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_warn")))
+            pressurePassed = false
+        }
+
+        if let openBar {
+            let openMbar = openBar * 1000.0
+            if openMbar >= pressureOpenMin && openMbar <= pressureOpenMax {
+                self.log("✓ 开启压力验证通过: \(openMbar) mbar（\(pressureOpenMin)~\(pressureOpenMax) mbar）", level: .info)
+                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
+            } else {
+                self.log("✗ 开启压力验证失败: \(openMbar) mbar（应在 \(pressureOpenMin)~\(pressureOpenMax) mbar）", level: .error)
+                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
+                pressurePassed = false
+            }
+        } else {
+            self.log("警告：无法解析开启压力值", level: .warning)
+            pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_warn")))
+            pressurePassed = false
+        }
+
+        if thresholds.pressureDiffCheckEnabled {
+            let diffMin = thresholds.pressureDiffMin
+            let diffMax = thresholds.pressureDiffMax
+            let diffRangeStr = "\(Int(diffMin))~\(Int(diffMax)) mbar"
+            if let closedMbar = closedBar.map({ $0 * 1000.0 }),
+               let openMbar = openBar.map({ $0 * 1000.0 }) {
+                let diff = abs(openMbar - closedMbar)
+                if diff >= diffMin && diff <= diffMax {
+                    self.log("✓ 压力差值验证通过: \(String(format: "%.0f", diff)) mbar（\(Int(diffMin))~\(Int(diffMax)) mbar）", level: .info)
+                    pressureMessages.append(String(format: appLanguage.string("production_test.pressure_diff_line"), diff, diffRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
+                } else {
+                    self.log("✗ 压力差值验证失败: \(String(format: "%.0f", diff)) mbar（应在 \(Int(diffMin))~\(Int(diffMax)) mbar）", level: .error)
+                    pressureMessages.append(String(format: appLanguage.string("production_test.pressure_diff_line"), diff, diffRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
+                    pressurePassed = false
+                }
+            } else {
+                let closedReason = closedBar == nil ? appLanguage.string("production_test.pressure_value_missing") : appLanguage.string("production_test.pressure_value_read")
+                let openReason = openBar == nil ? appLanguage.string("production_test.pressure_value_missing") : appLanguage.string("production_test.pressure_value_read")
+                self.log(String(format: appLanguage.string("production_test.pressure_diff_uncalc_reason"), closedReason, openReason), level: .warning)
+                pressureMessages.append(appLanguage.string("production_test.pressure_diff_uncalc"))
+                pressurePassed = false
+            }
+        }
+
+        let summary = pressureMessages.joined(separator: "\n") + "\n" + appLanguage.string("production_test.pressure_criteria_hint")
+        return PressureStepEvaluation(passed: pressurePassed, summary: summary, openBar: openBar, closedBar: closedBar)
+    }
+
     /// 轮询等待压力读取结果，直到值有效（非 "--" 且非空、非 "Error..."）或超时。用于产测步骤4：BLE 读是异步的，固定 500ms 可能尚未收到回调，导致 lastPressureValue 仍为 "--" 无法解析。
     private func waitForPressureValue(getValue: @Sendable @escaping () -> String, timeoutSeconds: Double, pollIntervalMs: Int, label: String) async -> String {
         let pollNs = UInt64(pollIntervalMs) * 1_000_000
@@ -3371,167 +3594,49 @@ struct ProductionTestView: View {
                             }
                         }
                         
-                        self.log("步骤4: 读取压力值（先开阀→读开阀压力→关阀→读关阀压力）", level: .info)
-                        
-                        let pressureClosedMin = rules.thresholds.pressureClosedMin
-                        let pressureClosedMax = rules.thresholds.pressureClosedMax
-                        let pressureOpenMin = rules.thresholds.pressureOpenMin
-                        let pressureOpenMax = rules.thresholds.pressureOpenMax
-                        
-                        // 1. 打开阀门：发令后最多 valve_open_timeout 秒内轮询 valveState 直至 open（同 ensureValveState）
-                        self.log("打开阀门...", level: .info)
-                        if await ensureValveState(open: true) {
-                            self.log("阀门已打开", level: .info)
-                        } else {
-                            self.log("警告：阀门状态异常（当前: \(ble.lastValveStateValue)）", level: .warning)
-                        }
-                        
-                        // 2. 读取开阀压力（清空旧值后发起读取，轮询等待设备响应，避免固定 500ms 未收到回调导致仍为 "--"）
-                        try? await Task.sleep(nanoseconds: 100_000_000)
-                        self.log("读取开启状态压力...", level: .info)
-                        ble.clearLastPressureOpenValue()
-                        ble.readPressureOpen()
-                        var openPressureStr = await waitForPressureValue(
-                            getValue: { ble.lastPressureOpenValue },
-                            timeoutSeconds: rules.thresholds.pressureReadTimeoutSeconds,
-                            pollIntervalMs: rules.thresholds.pressureReadPollIntervalMs,
-                            label: "开阀压力"
-                        )
-                        if openPressureStr.isEmpty || openPressureStr == "--" {
-                            self.log(appLanguage.string("production_test.pressure_read_timeout_open"), level: .warning)
-                        } else {
-                            self.log("开启压力: \(openPressureStr)", level: .info)
-                        }
-                        // 若为错误或0值，快速重读一次；若两次均为 0，则记录标记
-                        if openPressureStr.hasPrefix("Error") || openPressureStr == "0 mbar" {
-                            self.log("检测到开阀压力异常(\(openPressureStr))，快速重读一次", level: .warning)
-                            ble.clearLastPressureOpenValue()
-                            ble.readPressureOpen()
-                            openPressureStr = await waitForPressureValue(
-                                getValue: { ble.lastPressureOpenValue },
-                                timeoutSeconds: rules.thresholds.pressureRetryReadTimeoutSeconds,
-                                pollIntervalMs: rules.thresholds.pressureRetryReadPollIntervalMs,
-                                label: "开阀压力[重读]"
+                        let maxAutoAttempts = rules.thresholds.pressureAutoRetryMaxAttempts
+                        var lastEvaluation: PressureStepEvaluation?
+
+                        for attempt in 1...maxAutoAttempts {
+                            if attempt == 1 {
+                                self.log("步骤4: 读取压力值（先双通道读，异常再切阀）", level: .info)
+                            } else {
+                                self.log("步骤4: 自动重试 \(attempt)/\(maxAutoAttempts)…", level: .info)
+                            }
+
+                            let acquired = await acquirePressureReadingsStep4(thresholds: rules.thresholds)
+                            let evaluation = evaluatePressureStepReadings(
+                                thresholds: rules.thresholds,
+                                openStr: acquired.openStr,
+                                closedStr: acquired.closedStr,
+                                openBar: acquired.openBar,
+                                closedBar: acquired.closedBar
                             )
-                            self.log("开阀压力[重读]结果: \(openPressureStr)", level: .info)
-                        }
-                        openPressureValue = Self.parseBarFromPressureString(openPressureStr)
-                        
-                        // 3. 关闭阀门：发令后最多 valve_open_timeout 秒内轮询直至 closed
-                        self.log("关闭阀门...", level: .info)
-                        if await ensureValveState(open: false) {
-                            self.log("阀门已关闭", level: .info)
-                        } else {
-                            self.log("警告：阀门状态异常（当前: \(ble.lastValveStateValue)）", level: .warning)
-                        }
-                        
-                        // 4. 读取关闭状态压力（同样轮询等待响应）
-                        self.log("读取关闭状态压力...", level: .info)
-                        ble.clearLastPressureValue()
-                        ble.readPressure()
-                        var closedPressureStr = await waitForPressureValue(
-                            getValue: { ble.lastPressureValue },
-                            timeoutSeconds: rules.thresholds.pressureReadTimeoutSeconds,
-                            pollIntervalMs: rules.thresholds.pressureReadPollIntervalMs,
-                            label: "关阀压力"
-                        )
-                        if closedPressureStr.isEmpty || closedPressureStr == "--" {
-                            self.log(appLanguage.string("production_test.pressure_read_timeout_closed"), level: .warning)
-                        } else {
-                            self.log("关闭压力: \(closedPressureStr)", level: .info)
-                        }
-                        // 若为错误或0值，快速重读一次；若两次均为 0，则记录标记
-                        if closedPressureStr.hasPrefix("Error") || closedPressureStr == "0 mbar" {
-                            self.log("检测到关阀压力异常(\(closedPressureStr))，快速重读一次", level: .warning)
-                            ble.clearLastPressureValue()
-                            ble.readPressure()
-                            closedPressureStr = await waitForPressureValue(
-                                getValue: { ble.lastPressureValue },
-                                timeoutSeconds: rules.thresholds.pressureRetryReadTimeoutSeconds,
-                                pollIntervalMs: rules.thresholds.pressureRetryReadPollIntervalMs,
-                                label: "关阀压力[重读]"
-                            )
-                            self.log("关阀压力[重读]结果: \(closedPressureStr)", level: .info)
-                        }
-                        closedPressureValue = Self.parseBarFromPressureString(closedPressureStr)
-                        
-                        var pressurePassed = true
-                        var pressureMessages: [String] = []
-                        let closedRangeStr = String(format: "%.0f~%.0f mbar", pressureClosedMin, pressureClosedMax)
-                        let openRangeStr = String(format: "%.0f~%.0f mbar", pressureOpenMin, pressureOpenMax)
-                        let closedDisplayStr = closedPressureValue.map { String(format: "%.0f mbar", $0 * 1000) } ?? "-- mbar"
-                        let openDisplayStr = openPressureValue.map { String(format: "%.0f mbar", $0 * 1000) } ?? "-- mbar"
-                        
-                        if let closedBar = closedPressureValue {
-                            let closedMbar = closedBar * 1000.0
-                            if closedMbar >= pressureClosedMin && closedMbar <= pressureClosedMax {
-                                self.log("✓ 关闭压力验证通过: \(closedMbar) mbar（\(pressureClosedMin)~\(pressureClosedMax) mbar）", level: .info)
-                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
-                            } else {
-                                self.log("✗ 关闭压力验证失败: \(closedMbar) mbar（应在 \(pressureClosedMin)~\(pressureClosedMax) mbar）", level: .error)
-                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
-                                pressurePassed = false
-                            }
-                        } else {
-                            self.log("警告：无法解析关闭压力值", level: .warning)
-                            pressureMessages.append(String(format: appLanguage.string("production_test.pressure_closed_line"), closedDisplayStr, closedRangeStr, appLanguage.string("production_test.pressure_mark_warn")))
-                            pressurePassed = false
-                        }
-                        
-                        if let openBar = openPressureValue {
-                            let openMbar = openBar * 1000.0
-                            if openMbar >= pressureOpenMin && openMbar <= pressureOpenMax {
-                                self.log("✓ 开启压力验证通过: \(openMbar) mbar（\(pressureOpenMin)~\(pressureOpenMax) mbar）", level: .info)
-                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
-                            } else {
-                                self.log("✗ 开启压力验证失败: \(openMbar) mbar（应在 \(pressureOpenMin)~\(pressureOpenMax) mbar）", level: .error)
-                                pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
-                                pressurePassed = false
-                            }
-                        } else {
-                            self.log("警告：无法解析开启压力值", level: .warning)
-                            pressureMessages.append(String(format: appLanguage.string("production_test.pressure_open_line"), openDisplayStr, openRangeStr, appLanguage.string("production_test.pressure_mark_warn")))
-                            pressurePassed = false
-                        }
-                        
-                        if rules.thresholds.pressureDiffCheckEnabled {
-                            let diffMin = rules.thresholds.pressureDiffMin
-                            let diffMax = rules.thresholds.pressureDiffMax
-                            let diffRangeStr = "\(Int(diffMin))~\(Int(diffMax)) mbar"
-                            if let closedMbar = closedPressureValue.map({ $0 * 1000.0 }),
-                               let openMbar = openPressureValue.map({ $0 * 1000.0 }) {
-                                let diff = abs(openMbar - closedMbar)
-                                if diff >= diffMin && diff <= diffMax {
-                                    self.log("✓ 压力差值验证通过: \(String(format: "%.0f", diff)) mbar（\(Int(diffMin))~\(Int(diffMax)) mbar）", level: .info)
-                                    pressureMessages.append(String(format: appLanguage.string("production_test.pressure_diff_line"), diff, diffRangeStr, appLanguage.string("production_test.pressure_mark_ok")))
-                                } else {
-                                    self.log("✗ 压力差值验证失败: \(String(format: "%.0f", diff)) mbar（应在 \(Int(diffMin))~\(Int(diffMax)) mbar）", level: .error)
-                                    pressureMessages.append(String(format: appLanguage.string("production_test.pressure_diff_line"), diff, diffRangeStr, appLanguage.string("production_test.pressure_mark_fail")))
-                                    pressurePassed = false
-                                }
-                            } else {
-                                let closedReason = closedPressureValue == nil ? appLanguage.string("production_test.pressure_value_missing") : appLanguage.string("production_test.pressure_value_read")
-                                let openReason = openPressureValue == nil ? appLanguage.string("production_test.pressure_value_missing") : appLanguage.string("production_test.pressure_value_read")
-                                self.log(String(format: appLanguage.string("production_test.pressure_diff_uncalc_reason"), closedReason, openReason), level: .warning)
-                                pressureMessages.append(appLanguage.string("production_test.pressure_diff_uncalc"))
-                                pressurePassed = false
+                            lastEvaluation = evaluation
+                            openPressureValue = evaluation.openBar
+                            closedPressureValue = evaluation.closedBar
+
+                            if evaluation.passed {
+                                stepResults[step.id] = evaluation.summary
+                                stepStatuses[step.id] = .passed
+                                recordStepOutcome(stepId: step.id, outcome: "passed")
+                                capturedPressureClosedMbar = evaluation.closedBar.map { $0 * 1000.0 }
+                                capturedPressureOpenMbar = evaluation.openBar.map { $0 * 1000.0 }
+                                break pressureRetryLoop
                             }
                         }
-                        
-                        // 将各条压力结论用换行拼接，提升报表可读性
-                        let pressureSummary = pressureMessages.joined(separator: "\n")
-                        stepResults[step.id] = pressureSummary + "\n" + appLanguage.string("production_test.pressure_criteria_hint")
-                        stepStatuses[step.id] = pressurePassed ? .passed : .failed
-                        if pressurePassed {
-                            recordStepOutcome(stepId: step.id, outcome: "passed")
-                            capturedPressureClosedMbar = closedPressureValue.map { $0 * 1000.0 }
-                            capturedPressureOpenMbar = openPressureValue.map { $0 * 1000.0 }
-                            break pressureRetryLoop
-                        }
+
+                        guard let evaluation = lastEvaluation else { break pressureRetryLoop }
+                        stepResults[step.id] = evaluation.summary
+                        stepStatuses[step.id] = .failed
+                        openPressureValue = evaluation.openBar
+                        closedPressureValue = evaluation.closedBar
+                        self.log("步骤4: 自动重试 \(maxAutoAttempts) 次后仍不达标", level: .warning)
+
                         if !rules.thresholds.pressureFailRetryConfirmEnabled {
                             recordStepOutcome(stepId: step.id, outcome: "failed")
-                            capturedPressureClosedMbar = closedPressureValue.map { $0 * 1000.0 }
-                            capturedPressureOpenMbar = openPressureValue.map { $0 * 1000.0 }
+                            capturedPressureClosedMbar = evaluation.closedBar.map { $0 * 1000.0 }
+                            capturedPressureOpenMbar = evaluation.openBar.map { $0 * 1000.0 }
                             break pressureRetryLoop
                         }
                         let userWantsRetry = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
@@ -3542,8 +3647,8 @@ struct ProductionTestView: View {
                         }
                         if !userWantsRetry {
                             recordStepOutcome(stepId: step.id, outcome: "failed")
-                            capturedPressureClosedMbar = closedPressureValue.map { $0 * 1000.0 }
-                            capturedPressureOpenMbar = openPressureValue.map { $0 * 1000.0 }
+                            capturedPressureClosedMbar = evaluation.closedBar.map { $0 * 1000.0 }
+                            capturedPressureOpenMbar = evaluation.openBar.map { $0 * 1000.0 }
                             break pressureRetryLoop
                         }
                         self.log("步骤4: 用户选择重新测试压力", level: .info)

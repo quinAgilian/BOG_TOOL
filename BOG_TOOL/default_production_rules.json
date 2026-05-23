@@ -148,7 +148,9 @@
         "pressure_read_poll_interval_ms": 100,
         "pressure_read_timeout_seconds": 2.5,
         "pressure_retry_read_poll_interval_ms": 50,
-        "pressure_retry_read_timeout_seconds": 0.3
+        "pressure_retry_read_timeout_seconds": 0.3,
+        "pressure_valve_settle_seconds": 1.1,
+        "pressure_auto_retry_max_attempts": 3
       },
       "enabled": true,
       "fatal_on_failure": true,

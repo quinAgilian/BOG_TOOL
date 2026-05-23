@@ -638,6 +638,8 @@ struct ProductionTestRulesView: View {
                 config.pressureReadPollIntervalMs = 100
                 config.pressureRetryReadTimeoutSeconds = 0.3
                 config.pressureRetryReadPollIntervalMs = 50
+                config.pressureValveSettleSeconds = 1.1
+                config.pressureAutoRetryMaxAttempts = 3
                 
             case TestStep.disableDiag.id:
                 config.waitSeconds = disableDiagWaitSeconds

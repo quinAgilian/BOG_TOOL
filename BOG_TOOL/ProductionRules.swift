@@ -107,6 +107,10 @@ struct ProductionRules: Codable, Equatable {
             var pressureReadPollIntervalMs: Int?
             var pressureRetryReadTimeoutSeconds: Double?
             var pressureRetryReadPollIntervalMs: Int?
+            /// 切阀后等待固件压力刷新（秒）；应略大于 DUT 1s 采样周期，默认 1.1
+            var pressureValveSettleSeconds: Double?
+            /// 自动重试最大次数（含首次，默认 3）；耗尽后才标 Fail / 弹人工重测
+            var pressureAutoRetryMaxAttempts: Int?
 
             // step_disable_diag、step_gas_system_status 均可用 expected_gas_status_values；加载产测阈值时「读 Gas status」步的允许集合会与 disable_diag 的期望做并集，避免两步配置不一致
             var waitSeconds: Double?
@@ -183,6 +187,8 @@ struct ProductionRules: Codable, Equatable {
                 case pressureReadPollIntervalMs = "pressure_read_poll_interval_ms"
                 case pressureRetryReadTimeoutSeconds = "pressure_retry_read_timeout_seconds"
                 case pressureRetryReadPollIntervalMs = "pressure_retry_read_poll_interval_ms"
+                case pressureValveSettleSeconds = "pressure_valve_settle_seconds"
+                case pressureAutoRetryMaxAttempts = "pressure_auto_retry_max_attempts"
 
                 case waitSeconds = "wait_seconds"
                 case expectedGasStatusValues = "expected_gas_status_values"
