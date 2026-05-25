@@ -5,6 +5,13 @@ extension Notification.Name {
     static let auxValveHealthDidChange = Notification.Name("auxValveHealthDidChange")
 }
 
+/// 本地已选阀与阀 NVS 绑定是否一致（方案 A：保留本地 target，不对齐时禁自动并提示）
+enum AuxValveBindingMismatch: Equatable {
+    case none
+    case deviceUnbound
+    case boundToOtherStation
+}
+
 private enum AuxValveSettingsKeys {
     static let enabled = "aux_valve_enabled"
     static let targetDeviceId = "aux_valve_target_device_id"
@@ -29,6 +36,8 @@ private enum AuxValveSettingsKeys {
     static let cachedAt = "aux_valve_cached_at"
     /// One-time migration: old default health poll was 15s (plan now 3s)
     static let migratedHealthInterval3s = "aux_valve_migrated_health_interval_3s"
+    static let ackedPhysicalUnbindSeq = "aux_valve_acked_physical_unbind_seq"
+    static let lastPhysicalUnbindAlertSeq = "aux_valve_last_physical_unbind_alert_seq"
 }
 
 /// 写入主界面日志区（由 ContentView 注入 BLEManager.appendLog）
@@ -79,6 +88,13 @@ final class AuxValveSettings: ObservableObject {
 
     @Published private(set) var lastBoundClientIdOnDevice: String?
     @Published private(set) var lastBindArmedOnDevice = false
+    @Published private(set) var lastPhysicalUnbindPending = false
+    @Published private(set) var lastPhysicalUnbindSeq: Int?
+    @Published private(set) var lastValveRevOnDevice: Int?
+    @Published private(set) var lastFirmwareVersionOnDevice: String?
+    @Published var showPhysicalUnbindNotice = false
+
+    private var valveBurstPollTask: Task<Void, Never>?
 
     /// 本工位 UUID（首次启动生成，与阀 NVS `bound_client_id` 对应）
     var workstationClientId: String {
@@ -233,13 +249,17 @@ final class AuxValveSettings: ObservableObject {
     @Published private(set) var lastStatusMoving = false
     @Published private(set) var lastHealthError: String?
 
+    /// 产线 WiFi 自动：须在线且阀 NVS 认本工位（与本地 target 对齐，方案 A 不清本地 ID）
     var canUseAuxValveAutomation: Bool {
-        enabled && !normalizedTargetDeviceId.isEmpty && isAuxValveReachable
+        enabled
+            && !normalizedTargetDeviceId.isEmpty
+            && isAuxValveReachable
+            && isWorkstationAuthorizedOnDevice
     }
 
-    /// 手动测试开/关阀：与产测编排同一可用性门槛，且阀不在 moving、阀侧已认本工位
+    /// 手动试阀：与自动同一授权门槛 + 非 moving
     var canRunManualValveTest: Bool {
-        canUseAuxValveAutomation && !lastStatusMoving && isWorkstationAuthorizedOnDevice
+        canUseAuxValveAutomation && !lastStatusMoving
     }
 
     /// health 可达时：阀 NVS `bound_client_id` 与本工位一致
@@ -247,6 +267,34 @@ final class AuxValveSettings: ObservableObject {
         guard isAuxValveReachable else { return false }
         guard let bound = lastBoundClientIdOnDevice, !bound.isEmpty else { return false }
         return bound == workstationClientId
+    }
+
+    /// 已选 target 且在线，但阀侧未认本工位（保留本地绑定，仅禁自动）
+    var deviceBindingMismatch: AuxValveBindingMismatch {
+        guard enabled, !normalizedTargetDeviceId.isEmpty, isAuxValveReachable else {
+            return .none
+        }
+        guard let bound = lastBoundClientIdOnDevice, !bound.isEmpty else {
+            return .deviceUnbound
+        }
+        if bound != workstationClientId {
+            return .boundToOtherStation
+        }
+        return .none
+    }
+
+    private var lastLoggedBindingMismatch: AuxValveBindingMismatch = .none
+
+    private var ackedPhysicalUnbindSeq: Int {
+        UserDefaults.standard.integer(forKey: AuxValveSettingsKeys.ackedPhysicalUnbindSeq)
+    }
+
+    /// 阀上 3s 物理解绑且本 App 尚未确认该序号
+    var isPhysicalUnbindOnDevice: Bool {
+        guard lastPhysicalUnbindPending, let seq = lastPhysicalUnbindSeq, seq > 0 else {
+            return false
+        }
+        return seq > ackedPhysicalUnbindSeq
     }
 
     var normalizedTargetDeviceId: String {
@@ -335,6 +383,7 @@ final class AuxValveSettings: ObservableObject {
         let wasReachable = isAuxValveReachable
         let wasError = lastHealthError
         let wasValve = lastStatusValve
+        let wasMoving = lastStatusMoving
         isAuxValveReachable = result.reachable
         lastHealthLatencyMs = result.latencyMs
         lastStatusValve = result.valve
@@ -342,13 +391,32 @@ final class AuxValveSettings: ObservableObject {
         lastHealthError = result.errorMessage
         lastBoundClientIdOnDevice = result.boundClientId
         lastBindArmedOnDevice = result.bindArmed
+        lastPhysicalUnbindPending = result.physicalUnbindPending
+        lastPhysicalUnbindSeq = result.physicalUnbindSeq
+        let wasRev = lastValveRevOnDevice
+        lastValveRevOnDevice = result.valveRev
+        if result.reachable, let fw = result.firmwareVersion?.trimmingCharacters(in: .whitespacesAndNewlines), !fw.isEmpty {
+            lastFirmwareVersionOnDevice = fw
+        }
+        processPhysicalUnbindNotice(from: result)
+        logBindingMismatchIfChanged()
+        let valveChanged = wasValve != result.valve
+            || wasMoving != result.moving
+            || wasRev != result.valveRev
         let changed = wasReachable != isAuxValveReachable
             || wasError != lastHealthError
-            || wasValve != lastStatusValve
+            || valveChanged
+        if result.reachable, valveChanged {
+            scheduleValveStateBurstPollIfNeeded(from: result)
+        }
         if !logOnlyOnChange || changed {
             if result.reachable {
                 let ms = result.latencyMs.map { String(format: "%.0f", $0) } ?? "—"
-                auxLog("health OK valve=\(result.valve ?? "?") moving=\(result.moving) latency=\(ms)ms")
+                let boundHint = result.boundClientId.map { String($0.prefix(8)) + "…" } ?? "none"
+                auxLog(
+                    "health OK valve=\(result.valve ?? "?") moving=\(result.moving) latency=\(ms)ms "
+                    + "bound=\(boundHint) auto=\(canUseAuxValveAutomation)"
+                )
             } else {
                 auxLog("health FAIL: \(result.errorMessage ?? "unknown")", level: .warning)
             }
@@ -358,6 +426,26 @@ final class AuxValveSettings: ObservableObject {
         }
         if wasReachable != isAuxValveReachable || changed {
             NotificationCenter.default.post(name: .auxValveHealthDidChange, object: self)
+        }
+    }
+
+    /// 阀动作中或阀态变化时加密 health 轮询，便于底栏跟上本地短按
+    private func scheduleValveStateBurstPollIfNeeded(from result: AuxValveHealthResult) {
+        guard result.moving || result.valve == "moving" else { return }
+        valveBurstPollTask?.cancel()
+        let intervalMs = movingPollIntervalMs
+        let maxSec = movingPollMaxSec
+        valveBurstPollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let deadline = Date().addingTimeInterval(maxSec)
+            while !Task.isCancelled, Date() < deadline {
+                try? await Task.sleep(nanoseconds: UInt64(intervalMs) * 1_000_000)
+                if Task.isCancelled { break }
+                let snap = await self.wifiClient.performHealthCheck(settings: self, periodic: true)
+                self.applyHealthResult(snap, logOnlyOnChange: true)
+                if !snap.moving, snap.valve != "moving" { break }
+            }
+            self.valveBurstPollTask = nil
         }
     }
 
@@ -376,6 +464,76 @@ final class AuxValveSettings: ObservableObject {
         lastStatusValve = nil
         lastStatusMoving = false
         lastHealthError = nil
+        lastBoundClientIdOnDevice = nil
+        lastBindArmedOnDevice = false
+        lastPhysicalUnbindPending = false
+        lastPhysicalUnbindSeq = nil
+        lastValveRevOnDevice = nil
+        lastFirmwareVersionOnDevice = nil
+        valveBurstPollTask?.cancel()
+        valveBurstPollTask = nil
+        lastLoggedBindingMismatch = .none
+        NotificationCenter.default.post(name: .auxValveHealthDidChange, object: self)
+    }
+
+    private var lastShownPhysicalUnbindAlertSeq: Int {
+        UserDefaults.standard.integer(forKey: AuxValveSettingsKeys.lastPhysicalUnbindAlertSeq)
+    }
+
+    private func processPhysicalUnbindNotice(from result: AuxValveHealthResult) {
+        guard result.reachable, !normalizedTargetDeviceId.isEmpty else { return }
+        guard result.physicalUnbindPending, let seq = result.physicalUnbindSeq, seq > ackedPhysicalUnbindSeq else {
+            return
+        }
+        guard seq > lastShownPhysicalUnbindAlertSeq else { return }
+        showPhysicalUnbindNotice = true
+        auxLog(
+            "physical unbind on valve seq=\(seq) (acked=\(ackedPhysicalUnbindSeq)) — WiFi automation disabled",
+            level: .warning
+        )
+    }
+
+    func acknowledgePhysicalUnbindNotice() {
+        guard let seq = lastPhysicalUnbindSeq, seq > 0 else {
+            showPhysicalUnbindNotice = false
+            return
+        }
+        UserDefaults.standard.set(seq, forKey: AuxValveSettingsKeys.ackedPhysicalUnbindSeq)
+        UserDefaults.standard.set(seq, forKey: AuxValveSettingsKeys.lastPhysicalUnbindAlertSeq)
+        showPhysicalUnbindNotice = false
+        auxLog("physical unbind notice acknowledged seq=\(seq)")
+    }
+
+    private func logBindingMismatchIfChanged() {
+        let mismatch = deviceBindingMismatch
+        guard mismatch != lastLoggedBindingMismatch else { return }
+        lastLoggedBindingMismatch = mismatch
+        switch mismatch {
+        case .none:
+            if !normalizedTargetDeviceId.isEmpty, isAuxValveReachable {
+                auxLog("binding sync OK: device \(normalizedTargetDeviceId) recognizes this station")
+            }
+        case .deviceUnbound:
+            if isPhysicalUnbindOnDevice {
+                auxLog(
+                    "binding drift (A): valve 3s physical unbind detected — re-bind or clear local target",
+                    level: .warning
+                )
+            } else {
+                auxLog(
+                    "binding drift (A): local target=\(normalizedTargetDeviceId) but valve has no bound_client_id — "
+                    + "WiFi automation disabled; re-bind or unbind in settings",
+                    level: .warning
+                )
+            }
+        case .boundToOtherStation:
+            let remote = lastBoundClientIdOnDevice.map { String($0.prefix(8)) + "…" } ?? "?"
+            auxLog(
+                "binding drift (A): local target=\(normalizedTargetDeviceId) valve bound to \(remote) "
+                + "(not this station) — WiFi automation disabled",
+                level: .warning
+            )
+        }
         NotificationCenter.default.post(name: .auxValveHealthDidChange, object: self)
     }
 
@@ -395,6 +553,8 @@ final class AuxValveSettings: ObservableObject {
     private func stopHealthTimer() {
         healthTimer?.invalidate()
         healthTimer = nil
+        valveBurstPollTask?.cancel()
+        valveBurstPollTask = nil
     }
 
     private func enforceYellowAtLeastGreen(persist: Bool = true) {
@@ -458,4 +618,8 @@ struct AuxValveHealthResult {
     let errorMessage: String?
     let boundClientId: String?
     let bindArmed: Bool
+    let physicalUnbindPending: Bool
+    let physicalUnbindSeq: Int?
+    let valveRev: Int?
+    let firmwareVersion: String?
 }

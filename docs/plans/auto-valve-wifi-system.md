@@ -96,10 +96,10 @@ flowchart LR
 
 | 能力 | 要点 |
 |------|------|
-| LED | 离线常亮（实现为**红**）；配网/连接中**蓝闪**；STA 在线**绿** |
-| 按键 | **短按**切阀；**3s** 工位换绑；**10s** WiFi 配网/重配网 → SoftAP |
-| 工位绑定 | 阀 NVS 存 `client_id`；**3s** 换绑窗口；App `POST /bind` / `/unbind` |
-| 解绑 | App 按钮 + `POST /unbind`；或阀 **3s** 后他站绑定 |
+| LED | 四层基色：**红**未联网（含 connecting）→ **蓝**已联网未绑 → **白**已绑无 HTTP ~8s → **绿**工位 HTTP 活跃。关阀常亮、开阀慢闪、动作快闪（见 [FIRMWARE.md](../../BOG_VALVE_WIFI/docs/FIRMWARE.md) §2） |
+| 按键 | **短按**切阀；**3s** 已绑且无 pairing → **物理解绑**；**3s** 在 `bind/request` 30s 内 → 换绑确认；**10s** WiFi 配网 → SoftAP |
+| 工位绑定 | 阀 NVS 存 `client_id`；`bind/request` + **3s** 换绑；App `POST /bind` / `/unbind` |
+| 解绑 | App `POST /unbind`；或阀 **3s 物理解绑**（`/health` 带 `physical_unbind_*`，App 方案 A 提示） |
 | 发现 | 配网前：扫热点 `BOG-VALVE-*`；上线后：mDNS `_bogvalve._tcp`，端口 **12306** |
 | 身份 | **`device_id`** = WiFi MAC 后 4 位大写 hex（如 `A1B2`），**工位绑定 ID，不绑定 IP** |
 | 阀动作 | **150ms** 脉冲，HTTP **同步**返回；典型 `elapsed_ms` ≈ 0.2–0.5s |
@@ -113,7 +113,7 @@ flowchart LR
 | 操作 | 说明 |
 |------|------|
 | 配网 / 换 WiFi | 阀 **长按 10s** → SoftAP → `POST /provision` |
-| 换绑 / 解绑 | 阀 **长按 3s** → 换绑窗口；App `POST /bind` / `/unbind` |
+| 换绑 / 解绑 | 已绑且无 pairing：**3s** 物理解绑；有 pairing：**3s** 换绑确认；App `POST /bind` / `/unbind` |
 | 发现 | 未上线：WiFi 热点列表；已上线：mDNS |
 
 Mac 验证：`tools/bog_valve_link_test.py discover`（须已 provision）。App **v1 不做** Captive Portal。
@@ -480,6 +480,7 @@ canUseAuxValveAutomation =
     enabled
     && !targetDeviceId.isEmpty
     && isAuxValveReachable    // 最近一次健康探测在 healthHttpTimeoutSec 内成功，见 §4.6.3
+    && isWorkstationAuthorizedOnDevice  // 阀 NVS bound_client_id == 本机 UUID（方案 A：漂移时禁自动、保留本地 target）
 ```
 
 | 状态 | 含义 |
@@ -658,7 +659,7 @@ P2 交付前：对 `AuxValve*.swift` + 产测编排改动文件执行 §4.11.4 c
 ## 5. 产测工位 SOP（目标）
 
 1. **BLE 连 DUT**（不变）。  
-2. **辅材上电**：已配网 → 绿灯；否则 **长按 10s** → SoftAP → `POST /provision`。  
+2. **辅材上电**：已配网且关阀 → **蓝常亮**；否则 **长按 10s** → SoftAP → `POST /provision`。  
 3. **Mac 工位**：底栏 **「阀」** → **扫描** → 点选绑定 → 测试开/关阀 → 打开 **「使用 WiFi 自动气阀」**。  
 4. **`step_read_pressure`**：WiFi 开入口阀并 `status` 确认 → **无弹窗**；失败才用现弹窗人工确认。  
 5. **`step_gas_leak_closed` Phase 2**：WiFi 关阀并确认 → **无弹窗**；失败才用现有关阀确认弹窗。  

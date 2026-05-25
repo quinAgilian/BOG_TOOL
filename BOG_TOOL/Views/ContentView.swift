@@ -315,6 +315,16 @@ struct ContentView: View {
             AuxValveSettingsView(auxValveSettings: auxValveSettings)
                 .environmentObject(appLanguage)
         }
+        .alert(
+            appLanguage.string("aux_valve.physical_unbind_alert_title"),
+            isPresented: $auxValveSettings.showPhysicalUnbindNotice
+        ) {
+            Button(appLanguage.string("aux_valve.physical_unbind_alert_ok")) {
+                auxValveSettings.acknowledgePhysicalUnbindNotice()
+            }
+        } message: {
+            Text(appLanguage.string("aux_valve.physical_unbind_alert_message"))
+        }
     }
     
     private func applyWindowFloating(_ floating: Bool) {

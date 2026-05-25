@@ -10,8 +10,16 @@ enum AuxValveProtocol {
     static let statusPath = "\(apiBasePath)/status"
     static let valvePath = "\(apiBasePath)/valve"
     static let pressurePath = "\(apiBasePath)/pressure"
+    static let bindRequestPath = "\(apiBasePath)/bind/request"
     static let bindPath = "\(apiBasePath)/bind"
     static let unbindPath = "\(apiBasePath)/unbind"
+
+    /// 与固件 `STATION_PAIRING_WINDOW_MS` 一致
+    static let pairingWindowSec: TimeInterval = 30
+    /// 与固件 `BUTTON_BIND_MS` 一致（配对物理确认）
+    static let bindHoldMs = 3000
+    static let wifiProvisionHoldMs = 10000
+    static let factoryResetHoldMs = 30000
 
     /// 固件默认端口；mDNS TXT 若带端口则优先 TXT（见 API.md）
     static let defaultHTTPPort: UInt16 = 12306

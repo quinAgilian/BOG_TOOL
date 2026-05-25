@@ -7,12 +7,15 @@ struct AuxValveDiscoveredService: Identifiable, Equatable {
     let serviceName: String
     let host: String
     let port: UInt16
+    /// From `GET /health` after scan; nil if unreachable or legacy firmware.
+    var firmwareVersion: String?
 }
 
 struct AuxValveHTTPResponse {
     let httpStatus: Int
     let ok: Bool
     let deviceId: String?
+    let firmwareVersion: String?
     let valve: String?
     let moving: Bool?
     let elapsedMs: Int?
@@ -20,6 +23,23 @@ struct AuxValveHTTPResponse {
     let latencyMs: Double
     let boundClientId: String?
     let bindArmed: Bool?
+    let bindPending: Bool?
+    let pairingSecondsLeft: Int?
+    let buttonPressed: Bool?
+    let buttonHoldMs: Int?
+    let buttonBindReady: Bool?
+    let physicalUnbindPending: Bool?
+    let physicalUnbindSeq: Int?
+    let physicalUnbindAgeMs: Int?
+    let valveRev: Int?
+}
+
+/// 配对轮询时上报给 UI 的状态（来自 `/health`）
+struct AuxValvePairingPollState {
+    let secondsLeft: Int
+    let buttonPressed: Bool
+    let buttonHoldMs: Int
+    let buttonBindReady: Bool
 }
 
 struct AuxValvePressureReading: Equatable {
@@ -42,6 +62,7 @@ enum AuxValveClientError: LocalizedError {
     case httpError(Int, String?)
     case decodeFailed
     case budgetExceeded
+    case pairingTimeout
 
     /// `Localizable.strings` 键（点号分隔，供 `AppLanguage.string` 解析）
     var localizationKey: String? {
@@ -56,6 +77,7 @@ enum AuxValveClientError: LocalizedError {
         case .httpError: return "aux_valve.error.http"
         case .decodeFailed: return "aux_valve.error.decode_failed"
         case .budgetExceeded: return "aux_valve.error.budget_exceeded"
+        case .pairingTimeout: return "aux_valve.error.pairing_timeout"
         }
     }
 
@@ -98,8 +120,12 @@ enum AuxValveUserMessage {
 
     static func from(_ error: Error) -> String {
         if let aux = error as? AuxValveClientError {
-            if case .httpError(_, let code) = aux, code == "bind_not_armed" {
-                return "aux_valve.error.bind_not_armed"
+            if case .httpError(_, let code) = aux {
+                switch code {
+                case "bind_not_armed": return "aux_valve.error.bind_not_armed"
+                case "pairing_timeout": return "aux_valve.error.pairing_timeout"
+                default: break
+                }
             }
             return aux.userFacingToken
         }
@@ -216,7 +242,8 @@ final class AuxValveWiFiClient {
                             deviceId: deviceId,
                             serviceName: name,
                             host: resolvedHost,
-                            port: resolvedPort
+                            port: resolvedPort,
+                            firmwareVersion: nil
                         )
                         lock.unlock()
                         settings?.auxLog("mDNS resolved \(name) -> \(resolvedHost):\(resolvedPort)")
@@ -234,6 +261,54 @@ final class AuxValveWiFiClient {
                     maybeFinish(force: true)
                 }
             }
+        }
+    }
+
+    /// After mDNS browse: probe each valve with `GET /health` for `firmware_version`.
+    func enrichDiscoveredWithFirmwareVersions(
+        _ services: [AuxValveDiscoveredService],
+        settings: AuxValveSettings
+    ) async -> [AuxValveDiscoveredService] {
+        guard !services.isEmpty else { return [] }
+        let timeout = settings.healthHttpTimeoutSec
+        settings.auxLog("scan: probing firmware_version on \(services.count) device(s), timeout=\(timeout)s")
+        return await withTaskGroup(of: (String, AuxValveDiscoveredService).self) { group in
+            for service in services {
+                group.addTask { [self] in
+                    var updated = service
+                    do {
+                        let response = try await self.getHealth(
+                            host: service.host,
+                            port: service.port,
+                            settings: settings,
+                            timeout: timeout
+                        )
+                        if response.httpStatus == 200,
+                           response.ok,
+                           response.deviceId?.uppercased() == service.deviceId.uppercased(),
+                           let fw = response.firmwareVersion?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                           !fw.isEmpty {
+                            updated.firmwareVersion = fw
+                        }
+                    } catch {
+                        settings.auxLog(
+                            "scan: health failed \(service.deviceId) @ \(service.host):\(service.port): "
+                            + error.localizedDescription,
+                            level: .warning
+                        )
+                    }
+                    return (service.deviceId, updated)
+                }
+            }
+            var byId: [String: AuxValveDiscoveredService] = [:]
+            for await (deviceId, item) in group {
+                byId[deviceId] = item
+            }
+            let result = services.map { byId[$0.deviceId] ?? $0 }
+            let withFw = result.filter { $0.firmwareVersion != nil }.count
+            settings.auxLog("scan: firmware_version on \(withFw)/\(result.count) device(s)")
+            return result
         }
     }
 
@@ -346,7 +421,7 @@ final class AuxValveWiFiClient {
 
     func performHealthCheck(settings: AuxValveSettings, periodic: Bool = false) async -> AuxValveHealthResult {
         guard settings.enabled, !settings.normalizedTargetDeviceId.isEmpty else {
-            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: nil, boundClientId: nil, bindArmed: false)
+            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: nil, boundClientId: nil, bindArmed: false, physicalUnbindPending: false, physicalUnbindSeq: nil, valveRev: nil, firmwareVersion: nil)
         }
         let discoveryPolicy: AuxValveDiscoveryPolicy
         if !periodic || settings.isAuxValveReachable || settings.consumePeriodicFullDiscoverySlot() {
@@ -375,14 +450,14 @@ final class AuxValveWiFiClient {
             }
             if response.httpStatus == 401 {
                 settings.auxLog("health rejected: 401 (device may require legacy token in NVS)", level: .warning)
-                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.unauthorized.userFacingToken, boundClientId: nil, bindArmed: false)
+                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.unauthorized.userFacingToken, boundClientId: nil, bindArmed: false, physicalUnbindPending: false, physicalUnbindSeq: nil, valveRev: nil, firmwareVersion: response.firmwareVersion)
             }
             guard response.ok, response.deviceId?.uppercased() == settings.normalizedTargetDeviceId else {
                 settings.auxLog(
                     "health rejected: want device_id=\(settings.normalizedTargetDeviceId) got=\(response.deviceId ?? "nil")",
                     level: .warning
                 )
-                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.wrongDevice.userFacingToken, boundClientId: nil, bindArmed: false)
+                return AuxValveHealthResult(reachable: false, latencyMs: response.latencyMs, valve: response.valve, moving: false, errorMessage: AuxValveClientError.wrongDevice.userFacingToken, boundClientId: nil, bindArmed: false, physicalUnbindPending: false, physicalUnbindSeq: nil, valveRev: nil, firmwareVersion: response.firmwareVersion)
             }
             let moving = response.moving ?? (response.valve == "moving")
             return AuxValveHealthResult(
@@ -392,10 +467,14 @@ final class AuxValveWiFiClient {
                 moving: moving,
                 errorMessage: nil,
                 boundClientId: response.boundClientId,
-                bindArmed: response.bindArmed ?? false
+                bindArmed: response.bindArmed ?? false,
+                physicalUnbindPending: response.physicalUnbindPending ?? false,
+                physicalUnbindSeq: response.physicalUnbindSeq,
+                valveRev: response.valveRev,
+                firmwareVersion: response.firmwareVersion
             )
         } catch {
-            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: AuxValveUserMessage.from(error), boundClientId: nil, bindArmed: false)
+            return AuxValveHealthResult(reachable: false, latencyMs: nil, valve: nil, moving: false, errorMessage: AuxValveUserMessage.from(error), boundClientId: nil, bindArmed: false, physicalUnbindPending: false, physicalUnbindSeq: nil, valveRev: nil, firmwareVersion: nil)
         }
     }
 
@@ -470,6 +549,71 @@ final class AuxValveWiFiClient {
         ]
         settings.auxLog("POST /valve \(host):\(port) action=\(action) device_id=\(settings.normalizedTargetDeviceId) client_id=\(settings.workstationClientId.prefix(8))…")
         return try await request(path: AuxValveProtocol.valvePath, host: host, port: port, method: "POST", body: body, settings: settings, timeout: timeout)
+    }
+
+    func postBindRequest(host: String, port: UInt16, settings: AuxValveSettings, timeout: TimeInterval) async throws -> AuxValveHTTPResponse {
+        let body: [String: Any] = [
+            "client_id": settings.workstationClientId,
+        ]
+        settings.auxLog("POST /bind/request \(host):\(port) client_id=\(settings.workstationClientId.prefix(8))…")
+        return try await request(
+            path: AuxValveProtocol.bindRequestPath,
+            host: host,
+            port: port,
+            method: "POST",
+            body: body,
+            settings: settings,
+            timeout: timeout
+        )
+    }
+
+    /// 配对申请后须阀 3s 长按；轮询 `/health` 直至 `bind_armed` 或 30s 超时
+    func waitForBindArmed(
+        host: String,
+        port: UInt16,
+        settings: AuxValveSettings,
+        deadline: Date,
+        onProgress: (@MainActor (AuxValvePairingPollState) -> Void)? = nil
+    ) async throws {
+        let pollNs: UInt64 = 500_000_000
+        while Date() < deadline {
+            let health = try await getHealth(
+                host: host,
+                port: port,
+                settings: settings,
+                timeout: settings.healthHttpTimeoutSec
+            )
+            guard health.httpStatus == 200, health.ok else {
+                throw AuxValveClientError.httpError(health.httpStatus, health.errorCode)
+            }
+            if health.bindArmed == true {
+                settings.auxLog("pairing: bind_armed=true", level: .info)
+                return
+            }
+            let left = health.pairingSecondsLeft ?? max(0, Int(deadline.timeIntervalSinceNow))
+            let poll = AuxValvePairingPollState(
+                secondsLeft: left,
+                buttonPressed: health.buttonPressed ?? false,
+                buttonHoldMs: health.buttonHoldMs ?? 0,
+                buttonBindReady: health.buttonBindReady ?? false
+            )
+            if let onProgress {
+                await onProgress(poll)
+            }
+            if health.bindPending != true {
+                settings.auxLog("pairing: window ended without bind_armed", level: .warning)
+                throw AuxValveClientError.pairingTimeout
+            }
+            if poll.buttonBindReady {
+                settings.auxLog("pairing: button_bind_ready hold=\(poll.buttonHoldMs)ms — release to confirm", level: .info)
+            } else if poll.buttonPressed {
+                settings.auxLog("pairing: button held \(poll.buttonHoldMs)ms, ~\(left)s window left", level: .info)
+            } else {
+                settings.auxLog("pairing: waiting for 3s press, ~\(left)s left", level: .info)
+            }
+            try await Task.sleep(nanoseconds: pollNs)
+        }
+        throw AuxValveClientError.pairingTimeout
     }
 
     func postBind(host: String, port: UInt16, settings: AuxValveSettings, timeout: TimeInterval) async throws -> AuxValveHTTPResponse {
@@ -573,13 +717,23 @@ final class AuxValveWiFiClient {
             httpStatus: httpStatus,
             ok: json?["ok"] as? Bool ?? false,
             deviceId: json?["device_id"] as? String,
+            firmwareVersion: json?["firmware_version"] as? String,
             valve: json?["valve"] as? String,
             moving: json?["moving"] as? Bool,
             elapsedMs: (json?["elapsed_ms"] as? NSNumber)?.intValue,
             errorCode: json?["error"] as? String,
             latencyMs: latencyMs,
             boundClientId: json?["bound_client_id"] as? String,
-            bindArmed: json?["bind_armed"] as? Bool
+            bindArmed: json?["bind_armed"] as? Bool,
+            bindPending: json?["bind_pending"] as? Bool,
+            pairingSecondsLeft: json?["pairing_seconds_left"] as? Int,
+            buttonPressed: json?["button_pressed"] as? Bool,
+            buttonHoldMs: json?["button_hold_ms"] as? Int,
+            buttonBindReady: json?["button_bind_ready"] as? Bool,
+            physicalUnbindPending: json?["physical_unbind_pending"] as? Bool,
+            physicalUnbindSeq: json?["physical_unbind_seq"] as? Int,
+            physicalUnbindAgeMs: json?["physical_unbind_age_ms"] as? Int,
+            valveRev: json?["valve_rev"] as? Int
         )
         settings.auxLog(
             "HTTP response \(httpStatus) ok=\(parsed.ok) err=\(parsed.errorCode ?? "—") "
